@@ -6,6 +6,22 @@ import { nextOccurrence } from './dates.js';
 export const PREP_WINDOW = 7;          // за сколько дней начинается подготовка
 export const PREP_WINDOW_BIRTHDAY = 3;
 
+/** Ключи названия для запрета: основное название и то, что в скобках */
+export function banKeys(name) {
+    const n = String(name || '').toLowerCase().replace(/ё/g, 'е');
+    const main = n.replace(/\([^)]*\)/g, ' ').replace(/[^\p{L}\d]+/gu, ' ').trim();
+    const alts = [...n.matchAll(/\(([^)]*)\)/g)].map(m => m[1].replace(/[^\p{L}\d]+/gu, ' ').trim());
+    return [main, ...alts].filter(k => k.length >= 3);
+}
+
+/** Запрещён ли праздник (пользователь удалил его из списка) */
+export function isBanned(state, name) {
+    const banned = state.banned || [];
+    if (!banned.length) return false;
+    const keys = banKeys(name);
+    return keys.some(k => banned.some(b => b === k || (k.length >= 5 && b.length >= 5 && (k.includes(b) || b.includes(k)))));
+}
+
 export function holidayId(h) {
     if (h.birthday) return `bday-${h.who}-${h.start}`;
     return `${String(h.name).toLowerCase().replace(/\s+/g, '-').slice(0, 40)}@${h.start}`;
@@ -13,11 +29,11 @@ export function holidayId(h) {
 
 /** Праздники из календаря + ближайшие дни рождения, по порядку */
 export function allHolidays(state) {
-    const list = (state.holidays || []).map(h => ({ ...h, id: holidayId(h) }));
+    const list = (state.holidays || []).filter(h => !isBanned(state, h.name)).map(h => ({ ...h, id: holidayId(h) }));
     if (state.today != null) {
         for (const who of ['user', 'char']) {
             const md = state.birthdays?.[who];
-            if (!md) continue;
+            if (!md || state.birthdayOff?.[who]) continue;
             // и прошедший вчера (для «после»), и ближайший
             for (const from of [state.today - 1, state.today]) {
                 const start = nextOccurrence(md, from);
@@ -59,7 +75,9 @@ export function phaseOf(state) {
 /** Нужен ли календарь: нет эпохи, нет даты или впереди меньше двух праздников */
 export function needsCalendar(state) {
     if (state.forceCal || !state.setting?.era || state.today == null) return true;
-    const ahead = (state.holidays || []).filter(h => h.start + h.days - 1 >= state.today);
+    // Эпоха без единого слова («6658, 1150-12-05») — просим описать её словами
+    if (!/\p{L}{3,}/u.test(state.setting.era)) return true;
+    const ahead = (state.holidays || []).filter(h => h.start + h.days - 1 >= state.today && !isBanned(state, h.name));
     return ahead.length < 2;
 }
 

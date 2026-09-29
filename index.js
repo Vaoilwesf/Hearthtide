@@ -11,7 +11,7 @@ import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural } from './dates.js';
 import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, stripBlocks } from './tag.js';
-import { phaseOf, requestFor, mentionEvery, holidayId } from './calendar.js';
+import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt } from './prompts.js';
 
 // ═══════════════════════════════════════════════════════════════
@@ -62,6 +62,9 @@ function defaultState() {
         recaps: [],             // { hid, name, text }
         recapDone: {},
         forceCal: false,
+        banned: [],             // ключи названий праздников, которые игрок удалил
+        bannedNames: [],        // сами названия — для промпта
+        birthdayOff: {},        // удалённые дни рождения { user: true }
         missed: 0,
         turn: 0,
         lastMention: -99,
@@ -88,12 +91,19 @@ function getCharName() {
     return c?.name || 'the characters';
 }
 
+// «деревня», «город», «village» без собственного имени — просим ИИ назвать место
+const GENERIC_PLACES = /^(деревня|село|сельцо|город|городок|посад|слобода|усадьба|двор|монастырь|лагерь|стан|дорога|лес|поле|village|town|city|court|monastery|camp|road|wilds|forest|hamlet|estate|castle|замок|крепость|острог)$/i;
+
 function ctxFor(request = null) {
     const phase = phaseOf(state);
+    const placeName = state.place || state.setting?.place || null;
     return {
         state, phase, request,
         userName: getUserName(), charName: getCharName(),
         part: dayPart(state.clock),
+        placeName,
+        placeUnnamed: !!placeName && GENERIC_PLACES.test(String(placeName).trim()),
+        banned: state.bannedNames || [],
     };
 }
 
@@ -208,6 +218,7 @@ function processReply(N) {
 
 function mergeHolidays(list) {
     for (const h of list) {
+        if (isBanned(state, h.name)) continue;
         const id = holidayId(h);
         const i = state.holidays.findIndex(x => holidayId(x) === id
             || (x.name.toLowerCase() === h.name.toLowerCase() && Math.abs(x.start - h.start) <= 3));
@@ -225,6 +236,40 @@ function pruneHolidays() {
         const hid = k.split('#')[0];
         if (!state.holidays.some(h => holidayId(h) === hid) && !hid.startsWith('bday-')) delete state.days[k];
     }
+}
+
+// ─── Удаление праздника игроком: больше не предлагается и нигде не показывается ───
+function deleteHoliday(hid) {
+    const h = allHolidays(state).find(x => x.id === hid);
+    if (!h) return;
+    if (h.birthday) {
+        state.birthdayOff = { ...(state.birthdayOff || {}), [h.who]: true };
+    } else {
+        for (const k of banKeys(h.name)) if (!state.banned.includes(k)) state.banned.push(k);
+        if (!state.bannedNames.includes(h.name)) state.bannedNames.push(h.name);
+        state.holidays = state.holidays.filter(x => !isBanned(state, x.name));
+    }
+    // Стираем всё, что с ним связано
+    if (state.prep?.hid === hid) state.prep = null;
+    for (const k of Object.keys(state.days)) if (k.startsWith(`${hid}#`)) delete state.days[k];
+    state.recaps = state.recaps.filter(r => r.hid !== hid);
+    saveState();
+    injectPrompts();
+    renderAll();
+}
+
+// В старых снимках тоже прячем удалённые праздники
+function sanitizeView(view) {
+    if (!view) return view;
+    const gone = (name, birthday, who) => (birthday ? !!state.birthdayOff?.[who] : isBanned(state, name));
+    const v = { ...view };
+    v.upcoming = (v.upcoming || []).filter(u => !gone(u.name, u.birthday, u.who));
+    v.recaps = (v.recaps || []).filter(r => !isBanned(state, r.name));
+    if (v.h && gone(v.h.name, v.h.birthday, v.h.who)) {
+        v.h = null; v.kind = 'none'; v.plan = null; v.prep = null; v.daysTo = null;
+    }
+    if (v.ended && isBanned(state, v.ended.name)) v.ended = null;
+    return v;
 }
 
 function displayName(h) {
@@ -246,7 +291,7 @@ function viewSnapshot(phase) {
         prep: phase.kind === 'prep' && state.prep?.hid === phase.h?.id ? state.prep : null,
         ended: phase.ended ? { name: displayName(phase.ended), recap: state.recaps.find(r => r.hid === phase.ended.id)?.text || null } : null,
         upcoming: (phase.upcoming || []).filter(x => !phase.h || x.id !== phase.h.id).slice(0, 4)
-            .map(x => ({ name: displayName(x), type: x.type, daysTo: x.start - state.today, birthday: !!x.birthday })),
+            .map(x => ({ id: x.id, name: displayName(x), type: x.type, daysTo: x.start - state.today, birthday: !!x.birthday, who: x.who })),
         recaps: state.recaps.slice(-3).reverse(),
     };
 }
@@ -302,7 +347,7 @@ function onAfterCombinePrompts(data) {
 // ═══════════════════════════════════════════════════════════════
 // ИНФОБЛОК
 // ═══════════════════════════════════════════════════════════════
-const ui = { open: new Map() };
+const ui = { open: new Map(), confirmDel: null };
 
 const TYPE_ICON = {
     religious: 'fa-church', folk: 'fa-wheat-awn', seasonal: 'fa-leaf', state: 'fa-flag',
@@ -348,13 +393,20 @@ function placeBlock(mesEl, block) {
     return true;
 }
 
+function shouldShow(id) {
+    const msg = chat[id];
+    if (!isEnabled() || !state || !msg || msg.is_user || msg.is_system) return false;
+    const live = id === lastBotIndex();
+    return live ? true : (showPrev() && !!msg.extra?.ht);
+}
+
 function renderBlock(id) {
     const el = getMesEl(id);
     if (!el) return;
     const msg = chat[id];
     const live = id === lastBotIndex();
     let block = el.querySelector('.ht-ib');
-    const view = state && msg && !msg.is_user && !msg.is_system ? (live ? liveView() : msg.extra?.ht) : null;
+    const view = sanitizeView(state && msg && !msg.is_user && !msg.is_system ? (live ? liveView() : msg.extra?.ht) : null);
     const show = isEnabled() && view && (live || showPrev());
     if (!show) { block?.remove(); return; }
 
@@ -424,17 +476,47 @@ function headHtml(view, open) {
     </div>`;
 }
 
-function section(icon, title, html) {
-    return html ? `<section class="ht-sec"><h5><i class="fa-solid ${icon}"></i>${title}</h5>${html}</section>` : '';
+// Сворачиваемые разделы; что свёрнуто — помним между перезагрузками
+const SEC_KEY = 'hearthtide_sections';
+const SEC_DEFAULT_CLOSED = { upcoming: true, memories: true };
+function secClosed(key) {
+    try {
+        const saved = JSON.parse(localStorage.getItem(SEC_KEY) || '{}');
+        return key in saved ? !!saved[key] : !!SEC_DEFAULT_CLOSED[key];
+    } catch { return !!SEC_DEFAULT_CLOSED[key]; }
+}
+function toggleSec(key) {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(SEC_KEY) || '{}'); } catch { /* пусто */ }
+    saved[key] = !secClosed(key);
+    localStorage.setItem(SEC_KEY, JSON.stringify(saved));
+}
+
+function section(key, icon, title, html, extra = '') {
+    if (!html) return '';
+    const closed = secClosed(key);
+    return `<section class="ht-sec${closed ? ' ht-sec-closed' : ''}">
+        <h5 role="button" tabindex="0" data-act="sec" data-key="${key}" aria-expanded="${!closed}">
+            <i class="fa-solid ${icon}"></i><span>${title}</span>${extra}<i class="fa-solid fa-chevron-down ht-sec-chev"></i>
+        </h5>
+        ${closed ? '' : `<div class="ht-sec-body">${html}</div>`}
+    </section>`;
 }
 
 function bodyHtml(view, live) {
+    const delBtn = (hid) => {
+        if (!live || !hid) return '';
+        const confirm = ui.confirmDel === hid;
+        return `<button class="ht-del${confirm ? ' ht-del-confirm' : ''}" data-act="del" data-hid="${esc(hid)}" title="${confirm ? 'Точно удалить?' : 'Убрать праздник'}" aria-label="Убрать праздник">
+            <i class="fa-solid ${confirm ? 'fa-check' : 'fa-trash-can'}"></i>${confirm ? '<span>Удалить?</span>' : ''}</button>`;
+    };
     const s = view.setting || {};
+    const kv = (icon, label, value) => `<div class="ht-kv"><i class="fa-solid ${icon}"></i><div><span>${label}</span><b>${esc(value)}</b></div></div>`;
     const world = [
-        s.era && `<div class="ht-kv"><span>Эпоха</span><b>${esc(s.era)}</b></div>`,
-        s.faith && `<div class="ht-kv"><span>Вера</span><b>${esc(s.faith)}</b></div>`,
-        (view.place || s.place) && `<div class="ht-kv"><span>Место</span><b>${esc(view.place || s.place)}</b></div>`,
-        view.when && `<div class="ht-kv"><span>Дата</span><b>${esc(view.when)}</b></div>`,
+        s.era && kv('fa-hourglass-half', 'Эпоха', s.era),
+        s.faith && kv('fa-hands-praying', 'Вера', s.faith),
+        (view.place || s.place) && kv('fa-location-dot', 'Место', view.place || s.place),
+        view.when && kv('fa-calendar-day', 'Дата', view.when),
     ].filter(Boolean).join('');
 
     let main = '';
@@ -447,34 +529,33 @@ function bodyHtml(view, live) {
                     <i class="fa-solid ${PART_ICON[p]}"></i>
                     <div><b>${PART_LABEL[p]}${p === view.part ? ' · сейчас' : ''}</b><span>${esc(plan[p])}</span></div>
                 </div>`).join('');
-            main = section('fa-fire', plan.title ? esc(plan.title) : 'Праздник', `<div class="ht-parts">${rows}</div>`);
+            main = section('main', 'fa-fire', plan.title ? esc(plan.title) : 'Праздник', `<div class="ht-parts">${rows}</div>`, delBtn(h.id));
         } else {
-            main = section('fa-fire', 'Праздник', `<p class="ht-text">${esc(h.meaning || '')}</p><p class="ht-mute">Распорядок дня появится в следующем ответе.</p>`);
+            main = section('main', 'fa-fire', 'Праздник', `<p class="ht-text">${esc(h.meaning || '')}</p><p class="ht-mute">Распорядок дня появится в следующем ответе.</p>`, delBtn(h.id));
         }
     } else if (view.kind === 'prep' && h) {
         const p = view.prep;
-        main = section('fa-people-group', 'Подготовка', p ? `
+        main = section('main', 'fa-people-group', 'Подготовка', p ? `
             ${p.people ? `<div class="ht-line"><i class="fa-solid fa-users"></i><span>${esc(p.people)}</span></div>` : ''}
             ${p.mood ? `<div class="ht-line"><i class="fa-solid fa-face-smile"></i><span>${esc(p.mood)}</span></div>` : ''}
             ${p.char ? `<div class="ht-line"><i class="fa-solid fa-user"></i><span>${esc(p.char)}</span></div>` : ''}`
-            : `<p class="ht-text">${esc(h.meaning || '')}</p><p class="ht-mute">Как готовятся — появится в следующем ответе.</p>`);
+            : `<p class="ht-text">${esc(h.meaning || '')}</p><p class="ht-mute">Как готовятся — появится в следующем ответе.</p>`, delBtn(h.id));
     } else if (view.kind === 'after' && view.ended) {
-        main = section('fa-moon', `Отгуляли: ${esc(view.ended.name)}`, `<p class="ht-text">${esc(view.ended.recap || 'Усталость, остатки угощения, разговоры о том, как всё прошло.')}</p>`);
+        main = section('main', 'fa-moon', `Отгуляли: ${esc(view.ended.name)}`, `<p class="ht-text">${esc(view.ended.recap || 'Усталость, остатки угощения, разговоры о том, как всё прошло.')}</p>`);
     } else if (h) {
-        main = section(TYPE_ICON[h.type] || 'fa-star', esc(h.name), h.meaning ? `<p class="ht-text">${esc(h.meaning)}</p>` : '');
+        main = section('main', TYPE_ICON[h.type] || 'fa-star', esc(h.name), `<p class="ht-text">${esc(h.meaning || '')}</p>`, delBtn(h.id));
     }
 
     const upcoming = (view.upcoming || []).map(u => `
         <div class="ht-up"><i class="fa-solid ${TYPE_ICON[u.birthday ? 'personal' : u.type] || 'fa-star'}"></i>
-        <span>${esc(u.name)}</span><b>${u.daysTo === 1 ? 'завтра' : `через ${daysWord(u.daysTo)}`}</b></div>`).join('');
+        <span>${esc(u.name)}</span><b>${u.daysTo === 1 ? 'завтра' : `через ${daysWord(u.daysTo)}`}</b>${delBtn(u.id)}</div>`).join('');
     const memories = (view.recaps || []).map(r => `<div class="ht-line"><i class="fa-solid fa-bookmark"></i><span><b>${esc(r.name)}:</b> ${esc(r.text)}</span></div>`).join('');
 
     return `<div class="ht-body">
         ${world ? `<div class="ht-world">${world}</div>` : ''}
         ${main}
-        ${section('fa-calendar-days', 'Дальше', upcoming)}
-        ${section('fa-bookmark', 'Вспоминают', memories)}
-        ${live ? `<div class="ht-actions"><button class="ht-btn" data-act="refresh"><i class="fa-solid fa-arrows-rotate"></i>Обновить календарь</button></div>` : ''}
+        ${section('upcoming', 'fa-calendar-days', 'Дальше', upcoming)}
+        ${section('memories', 'fa-bookmark', 'Вспоминают', memories)}
     </div>`;
 }
 
@@ -487,15 +568,22 @@ function bindBlock(block) {
         if (t.dataset.act === 'toggle') {
             ui.open.set(id, !block.classList.contains('ht-open'));
             renderBlock(id);
-        } else if (t.dataset.act === 'refresh') {
-            state.forceCal = true;
-            saveState();
-            injectPrompts();
-            window.toastr?.info?.('Календарь обновится в следующем ответе', 'Hearthtide');
+        } else if (t.dataset.act === 'sec') {
+            toggleSec(t.dataset.key);
+            renderAll();   // во всех инфоблоках раздел свёрнут одинаково
+        } else if (t.dataset.act === 'del') {
+            const hid = t.dataset.hid;
+            if (ui.confirmDel === hid) {
+                ui.confirmDel = null;
+                deleteHoliday(hid);
+            } else {
+                ui.confirmDel = hid;
+                renderBlock(id);
+            }
         }
     });
     block.addEventListener('keydown', (e) => {
-        if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.ht-head')) {
+        if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.ht-head, .ht-sec h5')) {
             e.preventDefault();
             e.target.click();
         }
@@ -516,7 +604,7 @@ function injectSettingsPanel() {
         container.insertAdjacentHTML('beforeend', `
         <div class="inline-drawer" id="ht-settings">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b><i class="fa-solid fa-fire"></i> Hearthtide</b>
+                <b><i class="fa-solid fa-holly-berry"></i> Hearthtide</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content ht-settings">
@@ -612,12 +700,37 @@ function observeChat() {
     const target = document.getElementById('chat');
     if (!target) { setTimeout(observeChat, 500); return; }
     if (chatObserver) return;
+    // Следим и за новыми сообщениями, и за перерисовкой текста внутри них: другие
+    // расширения могут переписать текст ответа и стереть инфоблок (особенно в середине)
     chatObserver = new MutationObserver((muts) => {
-        for (const m of muts) for (const n of m.addedNodes) {
-            if (n.nodeType === 1 && (n.classList?.contains('mes') || n.querySelector?.('.mes'))) { scheduleRenderAll(); return; }
+        let changed = false;
+        for (const m of muts) {
+            const t = m.target;
+            if (t.nodeType === 1 && t.closest?.('.ht-ib')) continue;          // наши собственные изменения
+            const nodes = [...m.addedNodes, ...m.removedNodes];
+            if (nodes.length && nodes.every(n => n.nodeType === 1 && n.classList?.contains('ht-ib'))) continue;
+            changed = true;
+            break;
         }
+        if (changed) scheduleEnsure();
     });
-    chatObserver.observe(target, { childList: true });
+    chatObserver.observe(target, { childList: true, subtree: true });
+}
+
+// Вернуть инфоблоки, которые кто-то стёр (во время генерации не трогаем — текст ещё пишется)
+let ensureTimer = null;
+function scheduleEnsure() {
+    clearTimeout(ensureTimer);
+    ensureTimer = setTimeout(ensureBlocks, 150);
+}
+function ensureBlocks() {
+    if (!isEnabled() || generating) return;
+    if (!state && chat.length) loadState();
+    document.querySelectorAll('#chat .mes[mesid]').forEach(el => {
+        const id = Number(el.getAttribute('mesid'));
+        const has = el.querySelector('.ht-ib');
+        if (shouldShow(id) && !has) renderBlock(id);
+    });
 }
 
 function on(evt, fn) { if (evt) eventSource.on(evt, fn); }
@@ -627,8 +740,8 @@ function init() {
     loadState();
     injectPrompts();
     on(event_types.GENERATION_STARTED, onGenerationStarted);
-    on(event_types.GENERATION_ENDED, () => { generating = false; });
-    on(event_types.GENERATION_STOPPED, () => { generating = false; });
+    on(event_types.GENERATION_ENDED, () => { generating = false; scheduleEnsure(); });
+    on(event_types.GENERATION_STOPPED, () => { generating = false; scheduleEnsure(); });
     on(event_types.MESSAGE_RECEIVED, onMessageReceived);
     on(event_types.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     on(event_types.GENERATE_AFTER_COMBINE_PROMPTS, onAfterCombinePrompts);

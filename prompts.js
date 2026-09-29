@@ -66,7 +66,7 @@ export function buildTagPrompt(ctx) {
     const out = [`[Hearthtide tag — required]
 End every reply with one hidden line:
 <!-- HT date=YYYY-MM-DD | time=HH:MM | when=DATE_TEXT -->
-date: the in-world date, numeric, in the story's own calendar (map fictional months to 1–12). time: the in-world clock now. when: the same date as the story would say it, short, in the roleplay's language. Add place=… only when ${userName} moves to a different kind of place (village, town, court, monastery, camp, road, wilds…).`];
+date: the in-world date, numeric, in the story's own calendar (map fictional months to 1–12). time: the in-world clock now. when: the same date as the story would say it, short, in the roleplay's language. Add place=KIND NAME (e.g. "village Smolyanka", "Novgorod", "the prince's court in Kiev") only when ${userName} moves somewhere else${ctx.placeUnnamed ? ` — and THIS reply, because the current place has no name yet: use the name the story gives it (or a fitting one if the story never named it)` : ''}.`];
 
     if (state.missed > 0) out.push(`Your previous reply had no HT line — include it now.`);
     const h = phase.h;
@@ -80,13 +80,13 @@ date: the in-world date, numeric, in the story's own calendar (map fictional mon
 S | ERA_AND_YEAR | FAITH | PLACE
 H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE
 ${needB ? `B | user | MM-DD\nB | char | MM-DD\n` : ''}-->
-- S: the era and year, the faith(s) people actually live by, the kind of place ${userName} is in.
+- S: ERA_AND_YEAR in words, as people of that time would say it plus our reckoning (e.g. "Ancient Rus, year 6658 from Creation (1150 AD)") — no bare numbers or dates; FAITH — the faith(s) people actually live by; PLACE — the kind of place and its proper name as the story gives it (e.g. "village Smolyanka"; never invent a different name for a place the story already named).
 - H: the next 5 holidays from the current date, in date order${known.length ? `, continuing after: ${known.join(', ')}` : ''}. Think beyond the famous ones: for this era, place and faith list what people really kept — church feasts, folk and seasonal festivals, fasts, memorial days, local customs. Take the character card, world info and lore into account, including supernatural nights and rites if the setting has spirits or magic. Compute movable feasts properly for that year and calendar. DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | supernatural | fast | memorial.${needB ? `\n- B: birthdays of ${userName} and ${charName} from the card and persona; if not stated, choose plausible ones.` : ''}
-- NAME and MEANING in the roleplay's language.`);
+- NAME and MEANING in the roleplay's language.${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}`);
     }
     if (request === 'prep' && h) {
         out.push(`ALSO add after the HT line: <!-- HT-PREP people=… | mood=… | char=… -->
-How the place around ${userName} gets ready for ${hName(h, ctx)} (in ${phase.daysTo} day${phase.daysTo === 1 ? '' : 's'}): people — what the locals are busy with; mood — the general feeling; char — what ${charName} is doing or thinking about it. One or two vivid sentences each, true to the customs of this era and place, in the roleplay's language.${h.birthday && h.who === 'user' ? ` People secretly prepare a surprise for ${userName} — describe it from outside without spoiling it.` : ''}`);
+How ${ctx.placeName || `the place around ${userName}`} gets ready for ${hName(h, ctx)} (in ${phase.daysTo} day${phase.daysTo === 1 ? '' : 's'}): people — what the locals are busy with; mood — the general feeling; char — what ${charName} is doing or thinking about it. One or two vivid sentences each, true to the customs of this era and place, in the roleplay's language.${h.birthday && h.who === 'user' ? ` People secretly prepare a surprise for ${userName} — describe it from outside without spoiling it.` : ''}`);
     }
     if (request === 'day' && h) {
         out.push(`ALSO add after the HT line: <!-- HT-DAY title=… | morning=… | day=… | evening=… | night=… -->

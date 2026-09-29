@@ -42,11 +42,17 @@
     user-select: none;
 }
 .ht-head:hover { background: var(--ht-soft); }
-.ht-head-text { display: flex; flex-direction: column; flex: 1; min-width: 0; line-height: 1.25; }
-.ht-title { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ht-head-text {
+    display: flex; flex-direction: column; align-items: center;
+    flex: 1; min-width: 0; line-height: 1.3; text-align: center;
+}
+.ht-title { font-weight: 700; font-size: 1.05em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; letter-spacing: 0.01em; }
 .ht-title i { color: var(--ht-acc); margin-right: 5px; }
 .ht-sub { color: var(--ht-mute); font-size: 0.92em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ht-chev { color: var(--ht-mute); transition: transform 0.2s ease; flex: none; }
+.ht-chev {
+    color: var(--ht-mute); transition: transform 0.2s ease;
+    flex: none; width: 42px; text-align: center;
+}
 .ht-open .ht-chev { transform: rotate(180deg); }
 
 /* ─── Кольцо дней ─── */
@@ -74,10 +80,19 @@
     padding-bottom: 8px;
     border-bottom: 2px solid var(--ht-line-strong);
 }
-.ht-kv { display: flex; flex-direction: column; min-width: 0; }
+.ht-kv { display: flex; gap: 8px; min-width: 0; }
+.ht-kv > i { color: var(--ht-acc); padding-top: 3px; }
+.ht-kv > div { display: flex; flex-direction: column; min-width: 0; }
 .ht-kv span { color: var(--ht-mute); font-size: 0.85em; }
 .ht-kv b { font-weight: 600; }
 
+.ht-sec h5 > span { flex: 1; min-width: 0; }
+.ht-sec h5 { cursor: pointer; user-select: none; padding: 3px 0; border-radius: 4px; }
+.ht-sec h5:hover > span { color: var(--ht-acc); }
+.ht-sec-chev { color: var(--ht-mute); font-size: 0.85em; transition: transform 0.2s ease; }
+.ht-sec-closed .ht-sec-chev { transform: rotate(-90deg); }
+.ht-sec-closed h5 { margin-bottom: 0 !important; }
+.ht-sec + .ht-sec { border-top: 1px solid var(--ht-line); padding-top: 8px; }
 .ht-sec h5 {
     display: flex; align-items: center; gap: 6px;
     margin: 0 0 6px; font-size: 0.95em; font-weight: 700;
@@ -130,3 +145,13 @@
 .ht-settings { display: flex; flex-direction: column; gap: 6px; }
 .ht-settings .ht-settings-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .ht-settings .ht-settings-row .text_pole { flex: 1; min-width: 120px; margin: 0; }
+
+/* ─── Удалить праздник ─── */
+.ht-ib .ht-del {
+    display: inline-flex; align-items: center; gap: 4px;
+    flex: none; padding: 2px 6px; border-radius: 5px;
+    color: var(--ht-mute); font-size: 0.85em; font-weight: 400;
+}
+.ht-ib .ht-del:hover { color: var(--ht-fg); background: var(--ht-soft-2); }
+.ht-ib .ht-del-confirm { color: var(--ht-fire); border: 1px solid var(--ht-fire); }
+.ht-up { align-items: center; }
