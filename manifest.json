@@ -1,0 +1,12 @@
+{
+    "display_name": "Hearthtide",
+    "loading_order": 16,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Mooxsy",
+    "version": "1.0.0",
+    "homePage": "",
+    "auto_update": false
+}
