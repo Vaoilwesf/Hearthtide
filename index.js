@@ -410,8 +410,8 @@ function headHtml(view, open) {
         sub = view.daysTo === 1 ? 'завтра' : `через ${daysWord(view.daysTo)}`;
         if (view.kind === 'prep') sub += ' · готовятся';
     } else {
-        title = 'Календарь';
-        sub = 'составится в следующем ответе';
+        title = 'Ближайший праздник';
+        sub = 'появится в следующем ответе';
     }
     const icon = h ? TYPE_ICON[h.birthday ? 'personal' : h.type] || 'fa-star' : 'fa-calendar-days';
     return `<div class="ht-head" role="button" tabindex="0" data-act="toggle" aria-expanded="${open}">
