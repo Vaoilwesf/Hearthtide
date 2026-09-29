@@ -10,9 +10,10 @@ import {
 import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural } from './dates.js';
-import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, stripBlocks } from './tag.js';
+import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parseEvent, stripBlocks } from './tag.js';
 import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt } from './prompts.js';
+import { strings } from './i18n.js';
 
 // ═══════════════════════════════════════════════════════════════
 // НАСТРОЙКИ
@@ -26,6 +27,7 @@ const LS = {
     showPrev: 'hearthtide_showPrev',   // показывать в предыдущих ответах
     era: 'hearthtide_era',             // ancient | modern — какие праздники подбирать
     faith: 'hearthtide_faith',         // faith | secular — только для современности
+    lang: 'hearthtide_lang',           // ru | en — язык инфоблока
 };
 const lsGet = (k, d) => { const v = localStorage.getItem(k); return v === null ? d : v; };
 const isEnabled = () => lsGet(LS.enabled, 'true') !== 'false';
@@ -33,6 +35,8 @@ const position = () => lsGet(LS.position, 'bottom');
 const showPrev = () => lsGet(LS.showPrev, 'true') !== 'false';
 const eraMode = () => lsGet(LS.era, 'ancient');
 const faithMode = () => lsGet(LS.faith, 'faith');
+const langMode = () => lsGet(LS.lang, 'ru');
+const L = () => strings(langMode());
 
 const KEEP_TAGS_IN_PROMPT = 3;
 
@@ -65,6 +69,8 @@ function defaultState() {
         days: {},               // `${hid}#${n}` → { title, morning, day, evening, night }
         recaps: [],             // { hid, name, text }
         recapDone: {},
+        events: {},             // hid → [{ who, kind, text, turn, day }] — живая лента праздника
+        lastEventTurn: -99,
         forceCal: false,
         banned: [],             // ключи названий праздников, которые игрок удалил
         bannedNames: [],        // сами названия — для промпта
@@ -109,6 +115,7 @@ function ctxFor(request = null) {
         placeUnnamed: !!placeName && GENERIC_PLACES.test(String(placeName).trim()),
         banned: state.bannedNames || [],
         eraMode: eraMode(),
+        lang: L().promptLang,
         faithMode: faithMode(),
     };
 }
@@ -120,10 +127,23 @@ function takeSnapshot(beforeMsg) {
     state.snapshots.push({ beforeMsg, data: clone(rest) });
     if (state.snapshots.length > 20) state.snapshots = state.snapshots.slice(-20);
 }
+// Решения игрока (удалённые праздники) переживают откаты
+const USER_FIELDS = ['banned', 'bannedNames', 'birthdayOff', 'calIgnore'];
+
 function restoreSnapshot(snap) {
     const keep = state.snapshots;
+    const user = Object.fromEntries(USER_FIELDS.map(k => [k, clone(state[k] ?? null)]));
     Object.assign(state, clone(snap.data));
+    for (const [k, v] of Object.entries(user)) if (v != null) state[k] = v;
     state.snapshots = keep;
+    // удалённые игроком праздники не возвращаются вместе со старым снимком
+    state.holidays = (state.holidays || []).filter(h => !isBanned(state, h.name));
+}
+
+// «Подобрать заново» — тоже решение игрока: применяем и к сохранённым снимкам,
+// чтобы свайп не вернул старый календарь
+function applyToSnapshots(fn) {
+    for (const snap of state.snapshots) fn(snap.data);
 }
 const lastProcessedMsg = () => state.snapshots.reduce((m, s) => Math.max(m, s.beforeMsg), -1);
 
@@ -153,10 +173,11 @@ function processReply(N) {
     const source = saved && saved.hash === hashText(text) ? saved.raw : text;
 
     const small = parseSmall(source);
-    const cal = parseCalendar(source);
+    const cal = (state.calIgnore || []).includes(hashText(source)) ? null : parseCalendar(source);
     const prep = parsePrep(source);
     const day = parseDay(source);
     const recap = parseRecap(source);
+    const event = parseEvent(source);
 
     // Чистим текст сообщения от крупных блоков и «неправильных» форм тега
     const cleaned = stripBlocks(text);
@@ -172,6 +193,13 @@ function processReply(N) {
     // ── Дата, время, место ──
     if (small) {
         state.missed = 0;
+        // Скип через несколько дней: праздники внутри скипа молча пропускаем (без итога)
+        if (small.date != null && state.today != null && small.date - state.today > 1) {
+            for (const h of allHolidays(state)) {
+                const end = h.start + h.days - 1;
+                if (end >= state.today && end < small.date) state.recapDone[h.id] = true;
+            }
+        }
         if (small.date != null) state.today = small.date;
         if (small.when) state.when = small.when;
         if (small.clock != null) state.clock = small.clock;
@@ -199,6 +227,12 @@ function processReply(N) {
     }
     if (day && phase.kind === 'today') {
         state.days[`${phase.h.id}#${phase.dayIndex}`] = day;
+    }
+    if (event && phase.h && (phase.kind === 'prep' || phase.kind === 'today')) {
+        const list = state.events[phase.h.id] || (state.events[phase.h.id] = []);
+        if (!list.some(e => e.text === event.text)) list.push({ ...event, turn: state.turn, day: state.today });
+        if (list.length > 10) state.events[phase.h.id] = list.slice(-10);
+        state.lastEventTurn = state.turn;
     }
     if (recap && phase.ended) {
         state.recaps.push({ hid: phase.ended.id, name: displayName(phase.ended), text: recap });
@@ -238,6 +272,9 @@ function mergeHolidays(list) {
 function pruneHolidays() {
     if (state.today == null) return;
     state.holidays = state.holidays.filter(h => h.start + h.days - 1 >= state.today - 7).slice(0, 20);
+    for (const k of Object.keys(state.events || {})) {
+        if (!state.holidays.some(h => holidayId(h) === k) && !k.startsWith('bday-')) delete state.events[k];
+    }
     for (const k of Object.keys(state.days)) {
         const hid = k.split('#')[0];
         if (!state.holidays.some(h => holidayId(h) === hid) && !hid.startsWith('bday-')) delete state.days[k];
@@ -247,18 +284,33 @@ function pruneHolidays() {
 // ─── Смена эпохи или веры: будущие праздники подбираются заново ───
 function rebuildCalendar() {
     if (!state) loadState();
-    if (state.today != null) {
-        // идущий сегодня праздник оставляем, остальные будущие — убираем
-        state.holidays = state.holidays.filter(h => h.start <= state.today && h.start + h.days - 1 >= state.today);
-    } else {
-        state.holidays = [];
+    const drop = (st) => {
+        if (st.today != null) {
+            // идущий сегодня праздник оставляем, остальные будущие — убираем
+            st.holidays = (st.holidays || []).filter(h => h.start <= st.today && h.start + h.days - 1 >= st.today);
+        } else {
+            st.holidays = [];
+        }
+        st.prep = null;
+        st.forceCal = true;
+    };
+    drop(state);
+    applyToSnapshots(drop);
+    // Календари из уже пришедших ответов больше не принимаем (при правке или повторной обработке);
+    // новый свайп — новый текст, его календарь примется
+    state.calIgnore = state.calIgnore || [];
+    for (const m of chat) {
+        const raw = m?.extra?.ht_raw?.raw;
+        if (raw && /HT-CAL/i.test(raw)) {
+            const hsh = hashText(raw);
+            if (!state.calIgnore.includes(hsh)) state.calIgnore.push(hsh);
+        }
     }
-    state.prep = null;
-    state.forceCal = true;
+    if (state.calIgnore.length > 200) state.calIgnore = state.calIgnore.slice(-200);
     saveState();
     injectPrompts();
     renderAll();
-    window.toastr?.info?.('Праздники подберутся заново в следующем ответе', 'Hearthtide');
+    window.toastr?.info?.(L().rebuildToast, 'Hearthtide');
 }
 
 // ─── Удаление праздника игроком: больше не предлагается и нигде не показывается ───
@@ -272,10 +324,17 @@ function deleteHoliday(hid) {
         if (!state.bannedNames.includes(h.name)) state.bannedNames.push(h.name);
         state.holidays = state.holidays.filter(x => !isBanned(state, x.name));
     }
-    // Стираем всё, что с ним связано
+    // Стираем всё, что с ним связано — и в сохранённых снимках тоже
+    applyToSnapshots(st => {
+        st.holidays = (st.holidays || []).filter(x => !isBanned(state, x.name));
+        if (st.prep?.hid === hid) st.prep = null;
+        if (st.events) delete st.events[hid];
+        if (h.birthday) st.birthdayOff = { ...(st.birthdayOff || {}), [h.who]: true };
+    });
     if (state.prep?.hid === hid) state.prep = null;
     for (const k of Object.keys(state.days)) if (k.startsWith(`${hid}#`)) delete state.days[k];
     state.recaps = state.recaps.filter(r => r.hid !== hid);
+    if (state.events) delete state.events[hid];
     saveState();
     injectPrompts();
     renderAll();
@@ -289,7 +348,7 @@ function sanitizeView(view) {
     v.upcoming = (v.upcoming || []).filter(u => !gone(u.name, u.birthday, u.who));
     v.recaps = (v.recaps || []).filter(r => !isBanned(state, r.name));
     if (v.h && gone(v.h.name, v.h.birthday, v.h.who)) {
-        v.h = null; v.kind = 'none'; v.plan = null; v.prep = null; v.daysTo = null;
+        v.h = null; v.kind = 'none'; v.plan = null; v.prep = null; v.daysTo = null; v.events = [];
     }
     if (v.ended && isBanned(state, v.ended.name)) v.ended = null;
     return v;
@@ -297,7 +356,7 @@ function sanitizeView(view) {
 
 function displayName(h) {
     if (!h) return '';
-    if (h.birthday) return `День рождения · ${h.who === 'user' ? getUserName() : getCharName()}`;
+    if (h.birthday) return L().birthday(h.who === 'user' ? getUserName() : getCharName());
     return h.name;
 }
 
@@ -316,6 +375,7 @@ function viewSnapshot(phase) {
         upcoming: (phase.upcoming || []).filter(x => !phase.h || x.id !== phase.h.id).slice(0, 4)
             .map(x => ({ id: x.id, name: displayName(x), type: x.type, daysTo: x.start - state.today, birthday: !!x.birthday, who: x.who })),
         recaps: state.recaps.slice(-3).reverse(),
+        events: phase.h && (phase.kind === 'prep' || phase.kind === 'today') ? (state.events[phase.h.id] || []).slice(-6).reverse() : [],
     };
 }
 
@@ -374,9 +434,13 @@ const ui = { open: new Map(), confirmDel: null };
 
 const TYPE_ICON = {
     religious: 'fa-church', folk: 'fa-wheat-awn', seasonal: 'fa-leaf', state: 'fa-flag',
-    personal: 'fa-cake-candles', supernatural: 'fa-ghost', fast: 'fa-hourglass-half', memorial: 'fa-feather',
+    personal: 'fa-cake-candles', family: 'fa-house-chimney', supernatural: 'fa-ghost', fast: 'fa-hourglass-half', memorial: 'fa-feather',
 };
-const PART_LABEL = { morning: 'Утро', day: 'День', evening: 'Вечер', night: 'Ночь' };
+
+const EVENT_ICON = {
+    gift: 'fa-gift', wish: 'fa-star', rumor: 'fa-comments', prep: 'fa-hammer',
+    family: 'fa-people-roof', custom: 'fa-bell', mishap: 'fa-triangle-exclamation', thought: 'fa-cloud',
+};
 const PART_ICON = { morning: 'fa-cloud-sun', day: 'fa-sun', evening: 'fa-cloud-moon', night: 'fa-moon' };
 
 function lastBotIndex() {
@@ -469,24 +533,24 @@ function ring(view) {
     </span>`;
 }
 
-function daysWord(n) { return `${n} ${plural(n, ['день', 'дня', 'дней'])}`; }
+function daysWord(n) { return L().days(n, plural); }
 
 function headHtml(view, open) {
     let title, sub = '';
     const h = view.h;
     if (view.kind === 'today' && h) {
-        title = `Сегодня: ${h.name}`;
-        sub = view.plan?.title || (h.days > 1 ? `день ${view.dayIndex} из ${h.days}` : h.meaning || '');
+        title = L().today(h.name);
+        sub = view.plan?.title || (h.days > 1 ? L().dayOf(view.dayIndex, h.days) : h.meaning || '');
     } else if (view.kind === 'after' && view.ended) {
-        title = `Отгуляли: ${view.ended.name}`;
-        sub = h ? `дальше — ${h.name}, через ${daysWord(view.daysTo)}` : '';
+        title = L().ended(view.ended.name);
+        sub = h ? L().nextIn(h.name, daysWord(view.daysTo)) : '';
     } else if (h) {
         title = h.name;
-        sub = view.daysTo === 1 ? 'завтра' : `через ${daysWord(view.daysTo)}`;
-        if (view.kind === 'prep') sub += ' · готовятся';
+        sub = view.daysTo === 1 ? L().tomorrow : L().inDays(daysWord(view.daysTo));
+        if (view.kind === 'prep') sub += L().preparing;
     } else {
-        title = 'Ближайший праздник';
-        sub = 'появится в следующем ответе';
+        title = L().nearest;
+        sub = L().soon;
     }
     const icon = h ? TYPE_ICON[h.birthday ? 'personal' : h.type] || 'fa-star' : 'fa-calendar-days';
     return `<div class="ht-head" role="button" tabindex="0" data-act="toggle" aria-expanded="${open}">
@@ -530,16 +594,16 @@ function bodyHtml(view, live) {
     const delBtn = (hid) => {
         if (!live || !hid) return '';
         const confirm = ui.confirmDel === hid;
-        return `<button class="ht-del${confirm ? ' ht-del-confirm' : ''}" data-act="del" data-hid="${esc(hid)}" title="${confirm ? 'Точно удалить?' : 'Убрать праздник'}" aria-label="Убрать праздник">
-            <i class="fa-solid ${confirm ? 'fa-check' : 'fa-trash-can'}"></i>${confirm ? '<span>Удалить?</span>' : ''}</button>`;
+        return `<button class="ht-del${confirm ? ' ht-del-confirm' : ''}" data-act="del" data-hid="${esc(hid)}" title="${confirm ? L().removeSure : L().remove}" aria-label="${L().remove}">
+            <i class="fa-solid ${confirm ? 'fa-check' : 'fa-trash-can'}"></i>${confirm ? `<span>${L().removeQ}</span>` : ''}</button>`;
     };
     const s = view.setting || {};
     const kv = (icon, label, value) => `<div class="ht-kv"><i class="fa-solid ${icon}"></i><div><span>${label}</span><b>${esc(value)}</b></div></div>`;
     const world = [
-        s.era && kv('fa-hourglass-half', 'Эпоха', s.era),
-        s.faith && kv('fa-hands-praying', 'Вера', s.faith),
-        (view.place || s.place) && kv('fa-location-dot', 'Место', view.place || s.place),
-        view.when && kv('fa-calendar-day', 'Дата', view.when),
+        s.era && kv('fa-hourglass-half', L().era, s.era),
+        s.faith && kv('fa-hands-praying', L().faith, s.faith),
+        (view.place || s.place) && kv('fa-location-dot', L().place, view.place || s.place),
+        view.when && kv('fa-calendar-day', L().date, view.when),
     ].filter(Boolean).join('');
 
     let main = '';
@@ -550,36 +614,40 @@ function bodyHtml(view, live) {
             const rows = ['morning', 'day', 'evening', 'night'].filter(p => plan[p]).map(p => `
                 <div class="ht-part${p === view.part ? ' ht-now' : ''}">
                     <i class="fa-solid ${PART_ICON[p]}"></i>
-                    <div><b>${PART_LABEL[p]}${p === view.part ? ' · сейчас' : ''}</b><span>${esc(plan[p])}</span></div>
+                    <div><b>${L().part[p]}${p === view.part ? L().now : ''}</b><span>${esc(plan[p])}</span></div>
                 </div>`).join('');
-            main = section('main', 'fa-fire', plan.title ? esc(plan.title) : 'Праздник', `<div class="ht-parts">${rows}</div>`, delBtn(h.id));
+            main = section('main', 'fa-fire', plan.title ? esc(plan.title) : L().holiday, `<div class="ht-parts">${rows}</div>`, delBtn(h.id));
         } else {
-            main = section('main', 'fa-fire', 'Праздник', `<p class="ht-text">${esc(h.meaning || '')}</p><p class="ht-mute">Распорядок дня появится в следующем ответе.</p>`, delBtn(h.id));
+            main = section('main', 'fa-fire', L().holiday, `<p class="ht-text">${esc(h.meaning || '')}</p><p class="ht-mute">${L().planSoon}</p>`, delBtn(h.id));
         }
     } else if (view.kind === 'prep' && h) {
         const p = view.prep;
-        main = section('main', 'fa-people-group', 'Подготовка', p ? `
+        main = section('main', 'fa-people-group', L().prep, p ? `
             ${p.people ? `<div class="ht-line"><i class="fa-solid fa-users"></i><span>${esc(p.people)}</span></div>` : ''}
             ${p.mood ? `<div class="ht-line"><i class="fa-solid fa-face-smile"></i><span>${esc(p.mood)}</span></div>` : ''}
             ${p.char ? `<div class="ht-line"><i class="fa-solid fa-user"></i><span>${esc(p.char)}</span></div>` : ''}`
-            : `<p class="ht-text">${esc(h.meaning || '')}</p><p class="ht-mute">Как готовятся — появится в следующем ответе.</p>`, delBtn(h.id));
+            : `<p class="ht-text">${esc(h.meaning || '')}</p><p class="ht-mute">${L().prepSoon}</p>`, delBtn(h.id));
     } else if (view.kind === 'after' && view.ended) {
-        main = section('main', 'fa-moon', `Отгуляли: ${esc(view.ended.name)}`, `<p class="ht-text">${esc(view.ended.recap || 'Усталость, остатки угощения, разговоры о том, как всё прошло.')}</p>`);
+        main = section('main', 'fa-moon', esc(L().ended(view.ended.name)), `<p class="ht-text">${esc(view.ended.recap || L().afterDefault)}</p>`);
     } else if (h) {
         main = section('main', TYPE_ICON[h.type] || 'fa-star', esc(h.name), `<p class="ht-text">${esc(h.meaning || '')}</p>`, delBtn(h.id));
     }
 
     const upcoming = (view.upcoming || []).map(u => `
         <div class="ht-up"><i class="fa-solid ${TYPE_ICON[u.birthday ? 'personal' : u.type] || 'fa-star'}"></i>
-        <span>${esc(u.name)}</span><b>${u.daysTo === 1 ? 'завтра' : `через ${daysWord(u.daysTo)}`}</b>${delBtn(u.id)}</div>`).join('');
+        <span>${esc(u.name)}</span><b>${u.daysTo === 1 ? L().tomorrow : L().inDays(daysWord(u.daysTo))}</b>${delBtn(u.id)}</div>`).join('');
+    const happenings = (view.events || []).map(e => `
+        <div class="ht-line ht-event"><i class="fa-solid ${EVENT_ICON[e.kind] || 'fa-bell'}"></i>
+        <span>${e.who ? `<b>${esc(e.who)}:</b> ` : ''}${esc(e.text)}</span></div>`).join('');
     const memories = (view.recaps || []).map(r => `<div class="ht-line"><i class="fa-solid fa-bookmark"></i><span><b>${esc(r.name)}:</b> ${esc(r.text)}</span></div>`).join('');
 
     return `<div class="ht-body">
         ${world ? `<div class="ht-world">${world}</div>` : ''}
         ${main}
-        ${section('upcoming', 'fa-calendar-days', 'Дальше', upcoming)}
-        ${section('memories', 'fa-bookmark', 'Вспоминают', memories)}
-        ${live ? `<div class="ht-actions"><button class="ht-btn" data-act="rebuild" title="Убрать будущие праздники и подобрать по текущим настройкам эпохи и веры"><i class="fa-solid fa-arrows-rotate"></i>Подобрать праздники заново</button></div>` : ''}
+        ${section('happening', 'fa-wand-magic-sparkles', L().happening, happenings)}
+        ${section('upcoming', 'fa-calendar-days', L().upcoming, upcoming)}
+        ${section('memories', 'fa-bookmark', L().memories, memories)}
+        ${live ? `<div class="ht-actions"><button class="ht-btn" data-act="rebuild" title="${L().rebuildTip}"><i class="fa-solid fa-arrows-rotate"></i>${L().rebuild}</button></div>` : ''}
     </div>`;
 }
 
@@ -643,6 +711,12 @@ function injectSettingsPanel() {
                     </select>
                 </label>
                 <label class="checkbox_label"><input type="checkbox" id="ht-set-prev" ${showPrev() ? 'checked' : ''}>Показывать в предыдущих ответах</label>
+                <label class="ht-settings-row">Язык инфоблока
+                    <select id="ht-set-lang" class="text_pole">
+                        <option value="ru" ${langMode() === 'ru' ? 'selected' : ''}>русский</option>
+                        <option value="en" ${langMode() === 'en' ? 'selected' : ''}>English</option>
+                    </select>
+                </label>
                 <label class="ht-settings-row">Эпоха
                     <select id="ht-set-era" class="text_pole">
                         <option value="ancient" ${eraMode() === 'ancient' ? 'selected' : ''}>Древность</option>
@@ -665,6 +739,11 @@ function injectSettingsPanel() {
         document.getElementById('ht-set-position')?.addEventListener('change', e => {
             localStorage.setItem(LS.position, e.target.value);
             document.querySelectorAll('.ht-ib').forEach(b => b.remove());
+            renderAll();
+        });
+        document.getElementById('ht-set-lang')?.addEventListener('change', e => {
+            localStorage.setItem(LS.lang, e.target.value);
+            injectPrompts();
             renderAll();
         });
         document.getElementById('ht-set-era')?.addEventListener('change', e => {

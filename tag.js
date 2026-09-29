@@ -70,7 +70,7 @@ export function parseCalendar(text) {
     return res;
 }
 
-const TYPES = ['religious', 'folk', 'seasonal', 'state', 'personal', 'supernatural', 'fast', 'memorial'];
+const TYPES = ['religious', 'folk', 'seasonal', 'state', 'personal', 'family', 'supernatural', 'fast', 'memorial'];
 function normType(v) {
     const x = String(v || '').toLowerCase();
     return TYPES.find(t => x.startsWith(t.slice(0, 4))) || 'folk';
@@ -94,6 +94,18 @@ export function parseDay(text) {
     return r.morning || r.day || r.evening || r.night ? r : null;
 }
 
+/** Событие праздника: кто, что за событие, одна фраза */
+const EVENT_KINDS = ['gift', 'wish', 'rumor', 'prep', 'family', 'custom', 'mishap', 'thought'];
+export function parseEvent(text) {
+    const inner = findBlock(text, 'HT-EVENT');
+    if (inner == null) return null;
+    const f = fields(inner);
+    const txt = clean(f.text, 300);
+    if (!txt) return null;
+    const k = String(f.kind || '').toLowerCase();
+    return { who: clean(f.who, 60), kind: EVENT_KINDS.find(x => k.startsWith(x.slice(0, 4))) || 'custom', text: txt };
+}
+
 /** Итог прошедшего праздника — одна строка */
 export function parseRecap(text) {
     const inner = findBlock(text, 'HT-RECAP');
@@ -108,8 +120,8 @@ export function parseRecap(text) {
 export function stripBlocks(text) {
     let t = String(text ?? '');
     t = t.replace(/```[a-z]*\s*(?:<!--\s*)?HT(?:-[A-Z]+)?\b[\s\S]*?```/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP)\b[\s\S]*?-->/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP)\b(?![\s\S]*-->)[\s\S]*$/i, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT)\b[\s\S]*?-->/gi, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT)\b(?![\s\S]*-->)[\s\S]*$/i, '');
     t = t.replace(/^\s*HT(?:-[A-Z]+)?\b[\s:]+[^\n]*$/gim, '');
     return t.replace(/\s+$/, '');
 }

@@ -1,0 +1,66 @@
+// Hearthtide — i18n.js
+// Язык инфоблока (подписи + то, что ИИ пишет для инфоблока). Инджект всегда на английском.
+
+const RU = {
+    part: { morning: 'Утро', day: 'День', evening: 'Вечер', night: 'Ночь' },
+    days: (n, plural) => `${n} ${plural(n, ['день', 'дня', 'дней'])}`,
+    today: (name) => `Сегодня: ${name}`,
+    dayOf: (i, n) => `день ${i} из ${n}`,
+    ended: (name) => `Отгуляли: ${name}`,
+    nextIn: (name, d) => `дальше — ${name}, через ${d}`,
+    tomorrow: 'завтра',
+    inDays: (d) => `через ${d}`,
+    preparing: ' · готовятся',
+    nearest: 'Ближайший праздник',
+    soon: 'появится в следующем ответе',
+    era: 'Эпоха', faith: 'Вера', place: 'Место', date: 'Дата',
+    now: ' · сейчас',
+    holiday: 'Праздник',
+    planSoon: 'Распорядок дня появится в следующем ответе.',
+    prep: 'Подготовка',
+    prepSoon: 'Как готовятся — появится в следующем ответе.',
+    afterDefault: 'Усталость, остатки угощения, разговоры о том, как всё прошло.',
+    happening: 'Что происходит',
+    upcoming: 'Дальше',
+    memories: 'Вспоминают',
+    rebuild: 'Подобрать праздники заново',
+    rebuildTip: 'Убрать будущие праздники и подобрать по текущим настройкам эпохи и веры',
+    remove: 'Убрать праздник', removeQ: 'Удалить?', removeSure: 'Точно удалить?',
+    birthday: (who) => `День рождения · ${who}`,
+    rebuildToast: 'Праздники подберутся заново в следующем ответе',
+    promptLang: 'Russian',
+};
+
+const EN = {
+    part: { morning: 'Morning', day: 'Day', evening: 'Evening', night: 'Night' },
+    days: (n) => `${n} ${n === 1 ? 'day' : 'days'}`,
+    today: (name) => `Today: ${name}`,
+    dayOf: (i, n) => `day ${i} of ${n}`,
+    ended: (name) => `Celebrated: ${name}`,
+    nextIn: (name, d) => `next — ${name}, in ${d}`,
+    tomorrow: 'tomorrow',
+    inDays: (d) => `in ${d}`,
+    preparing: ' · preparing',
+    nearest: 'Next holiday',
+    soon: 'will appear in the next reply',
+    era: 'Era', faith: 'Faith', place: 'Place', date: 'Date',
+    now: ' · now',
+    holiday: 'Holiday',
+    planSoon: "The day's schedule will appear in the next reply.",
+    prep: 'Preparations',
+    prepSoon: 'How people prepare will appear in the next reply.',
+    afterDefault: 'Tiredness, leftovers, and talk of how it all went.',
+    happening: "What's happening",
+    upcoming: 'Coming up',
+    memories: 'Remembered',
+    rebuild: 'Pick holidays again',
+    rebuildTip: 'Remove upcoming holidays and pick new ones by the current era and faith settings',
+    remove: 'Remove holiday', removeQ: 'Remove?', removeSure: 'Remove for sure?',
+    birthday: (who) => `Birthday · ${who}`,
+    rebuildToast: 'Holidays will be picked again in the next reply',
+    promptLang: 'English',
+};
+
+export function strings(lang) {
+    return lang === 'en' ? EN : RU;
+}

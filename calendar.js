@@ -83,12 +83,19 @@ export function needsCalendar(state) {
 
 /** Какой дополнительный блок попросить у ИИ в этот ответ (не больше одного за раз) */
 export function requestFor(state, phase) {
+    // Итог — первым: окно у него один день, а календарь подождёт до следующего ответа
+    if (phase.kind === 'after' && phase.ended && !state.recapDone?.[phase.ended.id]) return 'recap';
     if (needsCalendar(state)) return 'cal';
     if (phase.kind === 'today' && !state.days?.[`${phase.h.id}#${phase.dayIndex}`]) return 'day';
     if (phase.kind === 'after' && phase.ended && !state.recapDone?.[phase.ended.id]) return 'recap';
     if (phase.kind === 'prep') {
         const p = state.prep;
         if (!p || p.hid !== phase.h.id || p.day !== state.today) return 'prep';
+    }
+    // Живая лента: новое маленькое событие — на подготовке раз в 3 ответа, в праздник раз в 2
+    if ((phase.kind === 'prep' || phase.kind === 'today') && phase.h) {
+        const every = phase.kind === 'today' ? 2 : 3;
+        if ((state.turn || 0) - (state.lastEventTurn ?? -99) >= every) return 'event';
     }
     return null;
 }

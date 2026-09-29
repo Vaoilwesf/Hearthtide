@@ -51,6 +51,13 @@ export function buildStatePrompt(ctx) {
         lines.push(`Yesterday ${hName(phase.ended, ctx)} ended: tiredness, leftovers, cleanup, talk of how it went.`);
         if (h) lines.push(`Next: ${hName(h, ctx)} in ${phase.daysTo} days.`);
     }
+    // Свежее событие ленты (за последние 2 ответа) — чтобы сцена могла его подхватить
+    if ((phase.kind === 'prep' || phase.kind === 'today') && h) {
+        const last = (state.events?.[h.id] || []).slice(-1)[0];
+        if (last && (state.turn || 0) - (last.turn || 0) <= 2) {
+            lines.push(`Happening now: ${last.who ? `${last.who} — ` : ''}${last.text} (let it surface if it fits the scene; ${charName} may act on it).`);
+        }
+    }
     const mem = (state.recaps || []).slice(-2);
     if (mem.length) lines.push(`Remembered: ${mem.map(r => `${r.name} — ${r.text}`).join(' · ')}`);
 
@@ -77,9 +84,12 @@ export function buildTagPrompt(ctx) {
     const out = [`[Hearthtide tag — required]
 End every reply with one hidden line:
 <!-- HT date=YYYY-MM-DD | time=HH:MM | when=DATE_TEXT -->
-date: the in-world date, numeric, in the story's own calendar (map fictional months to 1–12). time: the in-world clock now. when: the same date as the story would say it, short, in the roleplay's language. Add place=KIND NAME (e.g. "village Smolyanka", "Novgorod", "the prince's court in Kiev") only when ${userName} moves somewhere else${ctx.placeUnnamed ? ` — and THIS reply, because the current place has no name yet: use the name the story gives it (or a fitting one if the story never named it)` : ''}.`];
+date: the in-world date, numeric, in the story's own calendar (map fictional months to 1–12). time: the in-world clock now. when: the same date as the story would say it, short, in ${ctx.lang || 'the roleplay\'s language'}. Add place=KIND NAME (e.g. "village Smolyanka", "Novgorod", "the prince's court in Kiev") only when ${userName} moves somewhere else${ctx.placeUnnamed ? ` — and THIS reply, because the current place has no name yet: use the name the story gives it (or a fitting one if the story never named it)` : ''}.`];
 
     if (state.missed > 0) out.push(`Your previous reply had no HT line — include it now.`);
+    if (request !== 'cal') {
+        out.push(`If the story sets a new personal or family occasion (a wedding day, a christening, a name day, an anniversary), add once after the HT line: <!-- HT-CAL\nH | YYYY-MM-DD | DAYS | NAME | MEANING | family\n-->`);
+    }
     const h = phase.h;
 
     if (request === 'cal') {
@@ -92,19 +102,24 @@ S | ERA_AND_YEAR | FAITH | PLACE
 H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE
 ${needB ? `B | user | MM-DD\nB | char | MM-DD\n` : ''}-->
 - S: ERA_AND_YEAR in words${ctx.eraMode === 'modern' ? ' (e.g. "modern Russia, 2026")' : `, as people of that time would say it plus our reckoning (e.g. "Ancient Rus, year 6658 from Creation (1150 AD)")`} — no bare numbers or dates; FAITH — ${ctx.eraMode === 'modern' && ctx.faithMode === 'secular' ? 'write "secular"' : 'the faith(s) people actually live by'}; PLACE — the kind of place and its proper name as the story gives it (e.g. "village Smolyanka"; never invent a different name for a place the story already named).
-- H: the next 5 holidays from the current date, in date order${known.length ? `, continuing after: ${known.join(', ')}` : ''}. ${holidayGuide(ctx)} Compute movable feasts properly for that year and calendar. DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | supernatural | fast | memorial.${needB ? `\n- B: birthdays of ${userName} and ${charName} from the card and persona; if not stated, choose plausible ones.` : ''}
-- NAME and MEANING in the roleplay's language.${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}`);
+- H: the next 5 holidays from the current date, in date order${known.length ? `, continuing after: ${known.join(', ')}` : ''}. ${holidayGuide(ctx)} Compute movable feasts properly for that year and calendar. Also add personal and family occasions the story gives grounds for: birthdays and name days of the characters and people close to them, weddings, anniversaries, a christening or a baby's naming, memorial days of relatives, a housewarming. DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | family | supernatural | fast | memorial.${needB ? `\n- B: birthdays of ${userName} and ${charName} from the card and persona; if not stated, choose plausible ones.` : ''}
+- NAME and MEANING in ${ctx.lang || 'the roleplay\'s language'}.${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}`);
     }
     if (request === 'prep' && h) {
         out.push(`ALSO add after the HT line: <!-- HT-PREP people=… | mood=… | char=… -->
-How ${ctx.placeName || `the place around ${userName}`} gets ready for ${hName(h, ctx)} (in ${phase.daysTo} day${phase.daysTo === 1 ? '' : 's'}): people — what the locals are busy with; mood — the general feeling; char — what ${charName} is doing or thinking about it. One or two vivid sentences each, true to the customs of this era and place, in the roleplay's language.${h.birthday && h.who === 'user' ? ` People secretly prepare a surprise for ${userName} — describe it from outside without spoiling it.` : ''}`);
+How ${ctx.placeName || `the place around ${userName}`} gets ready for ${hName(h, ctx)} (in ${phase.daysTo} day${phase.daysTo === 1 ? '' : 's'}): people — what the locals are busy with; mood — the general feeling; char — what ${charName} is doing or thinking about it. One or two vivid sentences each, true to the customs of this era and place, in ${ctx.lang || 'the roleplay\'s language'}.${h.birthday && h.who === 'user' ? ` People secretly prepare a surprise for ${userName} — describe it from outside without spoiling it.` : ''}`);
     }
     if (request === 'day' && h) {
         out.push(`ALSO add after the HT line: <!-- HT-DAY title=… | morning=… | day=… | evening=… | night=… -->
-How ${hName(h, ctx)} is celebrated TODAY${h.days > 1 ? ` (day ${phase.dayIndex} of ${h.days} — each day may have its own meaning)` : ''} by the traditions of this era and place, from morning to night: rites, food, games, songs, what the people and ${charName} do. title = this day's name or meaning. One or two sentences per part, in the roleplay's language.`);
+How ${hName(h, ctx)} is celebrated TODAY${h.days > 1 ? ` (day ${phase.dayIndex} of ${h.days} — each day may have its own meaning)` : ''} by the traditions of this era and place, from morning to night: rites, food, games, songs, what the people and ${charName} do. title = this day's name or meaning. One or two sentences per part, in ${ctx.lang || 'the roleplay\'s language'}.`);
+    }
+    if (request === 'event' && h) {
+        const recent = (state.events?.[h.id] || []).slice(-3).map(e => e.text);
+        out.push(`ALSO add after the HT line: <!-- HT-EVENT who=NAME | kind=KIND | text=… -->
+One fresh small happening around ${hName(h, ctx)} right now in ${ctx.placeName || 'this place'}, one sentence, in ${ctx.lang || 'the roleplay\'s language'}. Prefer people already known in the story (${charName}, family, neighbours, friends); only if there are none, a fitting local. Vary it: a gift being made or hidden, a wish or fortune-telling, gossip, a family custom, a mishap in the preparations, or ${charName}'s own thought or plan about the day or about ${userName}. KIND: gift | wish | rumor | prep | family | custom | mishap | thought.${recent.length ? ` Something different from: ${recent.join(' / ')}` : ''}`);
     }
     if (request === 'recap' && phase.ended) {
-        out.push(`ALSO add after the HT line: <!-- HT-RECAP one sentence, in the roleplay's language: how ${hName(phase.ended, ctx)} went for ${userName} and ${charName} -->`);
+        out.push(`ALSO add after the HT line: <!-- HT-RECAP one sentence, in ${ctx.lang || 'the roleplay\'s language'}: how ${hName(phase.ended, ctx)} went for ${userName} and ${charName} -->`);
     }
     out.push('Never skip, mention or explain these comments.');
     return out.join('\n');
