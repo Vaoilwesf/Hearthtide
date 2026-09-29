@@ -24,11 +24,15 @@ const LS = {
     enabled: 'hearthtide_enabled',
     position: 'hearthtide_position',   // top | middle | bottom — внутри ответа бота
     showPrev: 'hearthtide_showPrev',   // показывать в предыдущих ответах
+    era: 'hearthtide_era',             // ancient | modern — какие праздники подбирать
+    faith: 'hearthtide_faith',         // faith | secular — только для современности
 };
 const lsGet = (k, d) => { const v = localStorage.getItem(k); return v === null ? d : v; };
 const isEnabled = () => lsGet(LS.enabled, 'true') !== 'false';
 const position = () => lsGet(LS.position, 'bottom');
 const showPrev = () => lsGet(LS.showPrev, 'true') !== 'false';
+const eraMode = () => lsGet(LS.era, 'ancient');
+const faithMode = () => lsGet(LS.faith, 'faith');
 
 const KEEP_TAGS_IN_PROMPT = 3;
 
@@ -104,6 +108,8 @@ function ctxFor(request = null) {
         placeName,
         placeUnnamed: !!placeName && GENERIC_PLACES.test(String(placeName).trim()),
         banned: state.bannedNames || [],
+        eraMode: eraMode(),
+        faithMode: faithMode(),
     };
 }
 
@@ -236,6 +242,23 @@ function pruneHolidays() {
         const hid = k.split('#')[0];
         if (!state.holidays.some(h => holidayId(h) === hid) && !hid.startsWith('bday-')) delete state.days[k];
     }
+}
+
+// ─── Смена эпохи или веры: будущие праздники подбираются заново ───
+function rebuildCalendar() {
+    if (!state) loadState();
+    if (state.today != null) {
+        // идущий сегодня праздник оставляем, остальные будущие — убираем
+        state.holidays = state.holidays.filter(h => h.start <= state.today && h.start + h.days - 1 >= state.today);
+    } else {
+        state.holidays = [];
+    }
+    state.prep = null;
+    state.forceCal = true;
+    saveState();
+    injectPrompts();
+    renderAll();
+    window.toastr?.info?.('Праздники подберутся заново в следующем ответе', 'Hearthtide');
 }
 
 // ─── Удаление праздника игроком: больше не предлагается и нигде не показывается ───
@@ -556,6 +579,7 @@ function bodyHtml(view, live) {
         ${main}
         ${section('upcoming', 'fa-calendar-days', 'Дальше', upcoming)}
         ${section('memories', 'fa-bookmark', 'Вспоминают', memories)}
+        ${live ? `<div class="ht-actions"><button class="ht-btn" data-act="rebuild" title="Убрать будущие праздники и подобрать по текущим настройкам эпохи и веры"><i class="fa-solid fa-arrows-rotate"></i>Подобрать праздники заново</button></div>` : ''}
     </div>`;
 }
 
@@ -568,6 +592,8 @@ function bindBlock(block) {
         if (t.dataset.act === 'toggle') {
             ui.open.set(id, !block.classList.contains('ht-open'));
             renderBlock(id);
+        } else if (t.dataset.act === 'rebuild') {
+            rebuildCalendar();
         } else if (t.dataset.act === 'sec') {
             toggleSec(t.dataset.key);
             renderAll();   // во всех инфоблоках раздел свёрнут одинаково
@@ -617,6 +643,18 @@ function injectSettingsPanel() {
                     </select>
                 </label>
                 <label class="checkbox_label"><input type="checkbox" id="ht-set-prev" ${showPrev() ? 'checked' : ''}>Показывать в предыдущих ответах</label>
+                <label class="ht-settings-row">Эпоха
+                    <select id="ht-set-era" class="text_pole">
+                        <option value="ancient" ${eraMode() === 'ancient' ? 'selected' : ''}>Древность</option>
+                        <option value="modern" ${eraMode() === 'modern' ? 'selected' : ''}>Современность</option>
+                    </select>
+                </label>
+                <label class="ht-settings-row" id="ht-row-faith" ${eraMode() === 'modern' ? '' : 'style="display:none"'}>Праздники
+                    <select id="ht-set-faith" class="text_pole">
+                        <option value="faith" ${faithMode() === 'faith' ? 'selected' : ''}>с верой — крупные религиозные тоже</option>
+                        <option value="secular" ${faithMode() === 'secular' ? 'selected' : ''}>светские — без религиозных</option>
+                    </select>
+                </label>
             </div>
         </div>`);
         document.getElementById('ht-set-enabled')?.addEventListener('change', e => {
@@ -628,6 +666,16 @@ function injectSettingsPanel() {
             localStorage.setItem(LS.position, e.target.value);
             document.querySelectorAll('.ht-ib').forEach(b => b.remove());
             renderAll();
+        });
+        document.getElementById('ht-set-era')?.addEventListener('change', e => {
+            localStorage.setItem(LS.era, e.target.value);
+            const row = document.getElementById('ht-row-faith');
+            if (row) row.style.display = e.target.value === 'modern' ? '' : 'none';
+            rebuildCalendar();
+        });
+        document.getElementById('ht-set-faith')?.addEventListener('change', e => {
+            localStorage.setItem(LS.faith, e.target.value);
+            rebuildCalendar();
         });
         document.getElementById('ht-set-prev')?.addEventListener('change', e => {
             localStorage.setItem(LS.showPrev, e.target.checked ? 'true' : 'false');

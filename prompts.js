@@ -60,6 +60,17 @@ export function buildStatePrompt(ctx) {
     return lines.join('\n');
 }
 
+// ─── Какие праздники брать: зависит от эпохи и веры из настроек ───
+function holidayGuide(ctx) {
+    if (ctx.eraMode !== 'modern') {
+        return `Think beyond the famous ones: for this era, place and faith list what people really kept — church feasts, folk and seasonal festivals, fasts, memorial days, local customs. Take the character card, world info and lore into account, including supernatural nights and rites if the setting has spirits or magic.`;
+    }
+    const faith = ctx.faithMode === 'secular'
+        ? `No religious feasts at all — these characters live secular lives.`
+        : `Religious feasts: only the biggest ones of the main faith of the place and of the characters (e.g. Orthodox Christmas on Jan 7, Easter on its correct date that year) — not every church feast.`;
+    return `MODERN SETTING: only what most people in this country actually celebrate today — major public holidays and days off, big festive days everyone knows, and personal dates. Skip minor official days, professional days, awareness and memorial days, and niche imported holidays, unless one matters to these characters personally. For Russia, for example: New Year (Dec 31 and the January holidays), Defender of the Fatherland Day (Feb 23), International Women's Day (Mar 8), Spring and Labour Day (May 1), Victory Day (May 9), Russia Day (Jun 12), National Unity Day (Nov 4); also widely kept: Valentine's Day, Maslenitsa, Knowledge Day (Sep 1). ${faith} Take the character card and lore into account.`;
+}
+
 // ─── 2. Правило тега (конец промпта) ───
 export function buildTagPrompt(ctx) {
     const { state, phase, request, userName, charName } = ctx;
@@ -80,8 +91,8 @@ date: the in-world date, numeric, in the story's own calendar (map fictional mon
 S | ERA_AND_YEAR | FAITH | PLACE
 H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE
 ${needB ? `B | user | MM-DD\nB | char | MM-DD\n` : ''}-->
-- S: ERA_AND_YEAR in words, as people of that time would say it plus our reckoning (e.g. "Ancient Rus, year 6658 from Creation (1150 AD)") — no bare numbers or dates; FAITH — the faith(s) people actually live by; PLACE — the kind of place and its proper name as the story gives it (e.g. "village Smolyanka"; never invent a different name for a place the story already named).
-- H: the next 5 holidays from the current date, in date order${known.length ? `, continuing after: ${known.join(', ')}` : ''}. Think beyond the famous ones: for this era, place and faith list what people really kept — church feasts, folk and seasonal festivals, fasts, memorial days, local customs. Take the character card, world info and lore into account, including supernatural nights and rites if the setting has spirits or magic. Compute movable feasts properly for that year and calendar. DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | supernatural | fast | memorial.${needB ? `\n- B: birthdays of ${userName} and ${charName} from the card and persona; if not stated, choose plausible ones.` : ''}
+- S: ERA_AND_YEAR in words${ctx.eraMode === 'modern' ? ' (e.g. "modern Russia, 2026")' : `, as people of that time would say it plus our reckoning (e.g. "Ancient Rus, year 6658 from Creation (1150 AD)")`} — no bare numbers or dates; FAITH — ${ctx.eraMode === 'modern' && ctx.faithMode === 'secular' ? 'write "secular"' : 'the faith(s) people actually live by'}; PLACE — the kind of place and its proper name as the story gives it (e.g. "village Smolyanka"; never invent a different name for a place the story already named).
+- H: the next 5 holidays from the current date, in date order${known.length ? `, continuing after: ${known.join(', ')}` : ''}. ${holidayGuide(ctx)} Compute movable feasts properly for that year and calendar. DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | supernatural | fast | memorial.${needB ? `\n- B: birthdays of ${userName} and ${charName} from the card and persona; if not stated, choose plausible ones.` : ''}
 - NAME and MEANING in the roleplay's language.${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}`);
     }
     if (request === 'prep' && h) {
