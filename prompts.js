@@ -96,7 +96,7 @@ export function buildStatePrompt(ctx) {
 // ─── Какие праздники брать: зависит от эпохи и веры из настроек ───
 function holidayGuide(ctx) {
     if (ctx.eraMode !== 'modern') {
-        return `Think beyond the famous ones: for this era, place and faith list what people really kept — church feasts, folk and seasonal festivals, fasts, memorial days, local customs. Take the character card, world info and lore into account, including supernatural nights and rites if the setting has spirits or magic.`;
+        return `The setting decides the calendar: card, world info and lore first, history second. Weigh faiths as the setting does — old gods, spirits or magic get their nights and rites on par with church feasts; include folk, seasonal and local customs.`;
     }
     const faith = ctx.faithMode === 'secular'
         ? `No religious feasts at all — these characters live secular lives.`
@@ -119,7 +119,7 @@ export function buildTagPrompt(ctx) {
     const out = [`[Hearthtide tag — required]
 End every reply with one hidden line:
 <!-- HT date=YYYY-MM-DD | time=HH:MM | when=DATE_TEXT -->
-date: the in-world date, numeric, in the story's own calendar (map fictional months to 1–12). time: the in-world clock now. when: the date as the story would say it, short. Add place=KIND NAME (the kind of place and its proper name) only when ${userName} moves somewhere else${ctx.placeUnnamed ? ` — and THIS reply, because the current place has no name yet: the name the story gives it, or a fitting one` : ''}.
+date: the in-world date, numeric, in the story's own calendar (map fictional months to 1–12). time: the in-world clock now. when: the date as the story would say it, short. Add place=KIND NAME, as the story names it, when ${userName} moves or the recorded place is wrong${ctx.placeUnnamed ? ` — and THIS reply, because the current place has no name yet: the name the story gives it, or a fitting one` : ''}.
 Every text value in these comments is written in ${lang} only.`];
 
     if (state.langSlip) out.push(`Your last values were not in ${lang} — write them in ${lang}.`);
@@ -145,8 +145,8 @@ Every text value in these comments is written in ${lang} only.`];
 S | ERA_AND_YEAR | FAITH | PLACE
 H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP
 ${needB ? `B | user | MM-DD | PREP\nB | char | MM-DD | PREP\n` : ''}-->
-- S: the era and the year in words${ctx.eraMode === 'modern' ? '' : ', as people of that time would say it, with our reckoning in brackets'} — no bare numbers or dates; FAITH — ${ctx.eraMode === 'modern' && ctx.faithMode === 'secular' ? 'secular' : 'the faith(s) people actually live by'}; PLACE — the kind of place and its proper name as the story gives it (never invent a different name for a place the story already named).
-- H: the next 5 holidays from the current date, in date order${known.length ? `, continuing after: ${known.join(', ')}` : ''}. ${holidayGuide(ctx)} Compute movable feasts properly for that year and calendar. Also add personal and family occasions the story gives grounds for (birthdays and name days of the characters and people close to them, weddings, anniversaries, a newborn's naming, memorial days of relatives, a housewarming). DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | family | supernatural | fast | memorial. PREP = how many days before it people actually start getting ready or feel it coming (0 for a minor day; a great feast may be weeks). Birthdays of ${userName} and ${charName} go only in B lines, never as H.${needB ? `\n- B: birthdays of ${userName} and ${charName} from the card and persona; if not stated, choose plausible ones.` : ''}${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}`);
+- S: the era and the year in words${ctx.eraMode === 'modern' ? '' : ', as people of that time would say it, with our reckoning in brackets'} — no bare numbers or dates; FAITH — ${ctx.eraMode === 'modern' && ctx.faithMode === 'secular' ? 'secular' : 'the faith(s) people actually live by'}; PLACE — the kind of place and its proper name exactly as the story gives it (never invent a name the story doesn't use).
+- H: the next 4 holidays from the current date, in date order, decided briskly${known.length ? `, continuing after: ${known.join(', ')}` : ''}. ${holidayGuide(ctx)} Compute movable feasts properly for that year and calendar. Also add personal and family occasions the story gives grounds for (birthdays and name days of the characters and people close to them, weddings, anniversaries, a newborn's naming, memorial days of relatives, a housewarming). DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | family | supernatural | fast | memorial. PREP = how many days before it people actually start getting ready or feel it coming (0 for a minor day; a great feast may be weeks). Birthdays of ${userName} and ${charName} go only in B lines, never as H.${needB ? `\n- B: birthdays of ${userName} and ${charName} from the card and persona; if not stated, choose plausible ones.` : ''}${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}`);
     }
     if (request === 'prep' && h) {
         const prev = state.prep?.hid === h.id ? state.prep : null;

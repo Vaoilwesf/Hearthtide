@@ -70,6 +70,7 @@ function defaultState() {
         recaps: [],             // { hid, name, text }
         recapDone: {},
         people: [],             // [{ name, group, now, gift }] — текущий список, заменяется целиком
+        activeHid: null,        // праздник, к которому относятся люди и мысли персонажа
         lastPeopleTurn: -99,
         care: {},               // hid → high | normal | low — насколько праздник важен персонажу
         gifts: {},              // hid → true/false — предполагает ли праздник подарки
@@ -209,6 +210,7 @@ function processReply(N) {
 
     // ── Дата, время, место ──
     let slip = false;
+    const prevToday = state.today;
     if (small) {
         state.missed = 0;
         // Скип через несколько дней: праздники внутри скипа молча пропускаем (без итога)
@@ -292,6 +294,17 @@ function processReply(N) {
     }
     phase = phaseOf(state);
     if (small || cal || prep || people || day || recap) state.langSlip = slip;
+    // Праздник сменился или был скип на несколько дней — люди и мысли прошлого праздника больше не актуальны
+    const curHid = phase.h && (phase.kind === 'prep' || phase.kind === 'today') ? phase.h.id : null;
+    const jumped = prevToday != null && state.today != null && state.today - prevToday > 1;
+    if (curHid !== state.activeHid || jumped) {
+        if (!people) {                       // свежий список, пришедший в этом же ответе, не трогаем
+            state.people = [];
+            state.lastPeopleTurn = -99;
+        }
+        if (state.charNow?.hid !== curHid) state.charNow = null;
+        state.activeHid = curHid;
+    }
     // Праздник прошёл — люди и мысли персонажа к нему больше не относятся
     if (!phase.h || (phase.kind !== 'prep' && phase.kind !== 'today')) {
         if (state.charNow && state.charNow.hid !== phase.h?.id) state.charNow = null;
