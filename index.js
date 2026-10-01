@@ -10,8 +10,8 @@ import {
 import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural } from './dates.js';
-import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parseEvent, stripBlocks } from './tag.js';
-import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned } from './calendar.js';
+import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, stripBlocks } from './tag.js';
+import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, hasGifts } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt } from './prompts.js';
 import { strings } from './i18n.js';
 
@@ -69,8 +69,13 @@ function defaultState() {
         days: {},               // `${hid}#${n}` → { title, morning, day, evening, night }
         recaps: [],             // { hid, name, text }
         recapDone: {},
-        events: {},             // hid → [{ who, kind, text, turn, day }] — живая лента праздника
-        lastEventTurn: -99,
+        people: [],             // [{ name, group, now, gift }] — текущий список, заменяется целиком
+        lastPeopleTurn: -99,
+        care: {},               // hid → high | normal | low — насколько праздник важен персонажу
+        gifts: {},              // hid → true/false — предполагает ли праздник подарки
+        charNow: null,          // { hid, text, turn } — мысль или действие персонажа сейчас
+        charGift: null,         // { hid, text, done } — подарок персонажа игроку
+        langSlip: false,        // в прошлом ответе значения пришли не на том языке
         forceCal: false,
         banned: [],             // ключи названий праздников, которые игрок удалил
         bannedNames: [],        // сами названия — для промпта
@@ -157,6 +162,14 @@ function hashText(t) {
     return h;
 }
 
+// Значение на нужном языке? Для русского — есть кириллица (или вовсе нет букв), для английского — латиница
+function langOk(v) {
+    if (!v) return true;
+    const s = String(v);
+    const cyr = /[а-яё]/i.test(s), lat = /[a-z]/i.test(s);
+    return langMode() === 'en' ? (lat || !cyr) : (cyr || !lat);
+}
+
 function processReply(N) {
     const msg = chat[N];
     if (!state || !msg || msg.is_user || msg.is_system || !msg.mes) return;
@@ -177,7 +190,7 @@ function processReply(N) {
     const prep = parsePrep(source);
     const day = parseDay(source);
     const recap = parseRecap(source);
-    const event = parseEvent(source);
+    const people = parsePeople(source);
 
     // Чистим текст сообщения от крупных блоков и «неправильных» форм тега
     const cleaned = stripBlocks(text);
@@ -191,6 +204,7 @@ function processReply(N) {
     if (source !== text || !saved) msg.extra.ht_raw = { raw: source, hash: hashText(text) };
 
     // ── Дата, время, место ──
+    let slip = false;
     if (small) {
         state.missed = 0;
         // Скип через несколько дней: праздники внутри скипа молча пропускаем (без итога)
@@ -201,16 +215,21 @@ function processReply(N) {
             }
         }
         if (small.date != null) state.today = small.date;
-        if (small.when) state.when = small.when;
         if (small.clock != null) state.clock = small.clock;
-        if (small.place) state.place = small.place;
+        slip = slip || !langOk(small.when) || !langOk(small.place);
+        if (small.when && langOk(small.when)) state.when = small.when;
+        if (small.place && langOk(small.place)) state.place = small.place;
     } else {
         state.missed = (state.missed || 0) + 1;
     }
 
     // ── Календарь ──
     if (cal) {
+        const before = cal.holidays.length;
+        cal.holidays = cal.holidays.filter(h => langOk(h.name));
+        if (cal.holidays.length < before) slip = true;
         if (cal.setting) {
+            for (const k of ['era', 'faith', 'place']) if (cal.setting[k] && !langOk(cal.setting[k])) { cal.setting[k] = null; slip = true; }
             state.setting = { ...(state.setting || {}), ...Object.fromEntries(Object.entries(cal.setting).filter(([, v]) => v)) };
             if (cal.setting.place) state.place = cal.setting.place;
         }
@@ -222,24 +241,52 @@ function processReply(N) {
 
     // ── Подготовка, день праздника, итог — привязываем к текущей фазе ──
     let phase = phaseOf(state);
-    if (prep && phase.h && (phase.kind === 'prep' || phase.kind === 'far')) {
-        state.prep = { hid: phase.h.id, day: state.today, ...prep };
+    if (prep && phase.h && (phase.kind === 'prep' || phase.kind === 'far' || phase.kind === 'today')) {
+        if (langOk(prep.people) && langOk(prep.mood)) {
+            state.prep = { hid: phase.h.id, day: state.today, people: prep.people, mood: prep.mood };
+        } else slip = true;
+        if (prep.gifts != null) state.gifts[phase.h.id] = prep.gifts;
+        if (prep.care) state.care[phase.h.id] = prep.care;
     }
-    if (day && phase.kind === 'today') {
+    // Люди: список заменяется целиком — один человек, одна строка
+    if (people && phase.h && (phase.kind === 'prep' || phase.kind === 'today')) {
+        const ok = people.filter(p => langOk(p.now) && langOk(p.gift));
+        if (ok.length < people.length) slip = true;
+        if (ok.length) state.people = ok;
+        state.lastPeopleTurn = state.turn;
+    }
+    // Мысль/действие персонажа и его подарок — из маленького тега
+    if (small && phase.h && (phase.kind === 'prep' || phase.kind === 'today')) {
+        if (small.char) {
+            if (langOk(small.char)) state.charNow = { hid: phase.h.id, text: small.char, turn: state.turn };
+            else slip = true;
+        }
+        if (small.gift || small.giftDone) {
+            if (small.gift && !langOk(small.gift)) slip = true;
+            const prev = state.charGift?.hid === phase.h.id ? state.charGift : null;
+            state.charGift = {
+                hid: phase.h.id,
+                text: small.gift && langOk(small.gift) ? small.gift : prev?.text || null,
+                done: !!(small.giftDone || prev?.done),
+            };
+        }
+    }
+    if (day && phase.kind === 'today' && !langOk(day.title || day.morning || day.day)) { slip = true; }
+    else if (day && phase.kind === 'today') {
         state.days[`${phase.h.id}#${phase.dayIndex}`] = day;
     }
-    if (event && phase.h && (phase.kind === 'prep' || phase.kind === 'today')) {
-        const list = state.events[phase.h.id] || (state.events[phase.h.id] = []);
-        if (!list.some(e => e.text === event.text)) list.push({ ...event, turn: state.turn, day: state.today });
-        if (list.length > 10) state.events[phase.h.id] = list.slice(-10);
-        state.lastEventTurn = state.turn;
-    }
-    if (recap && phase.ended) {
+    if (recap && !langOk(recap)) slip = true;
+    if (recap && phase.ended && langOk(recap)) {
         state.recaps.push({ hid: phase.ended.id, name: displayName(phase.ended), text: recap });
         if (state.recaps.length > 30) state.recaps = state.recaps.slice(-30);
         state.recapDone[phase.ended.id] = true;
     }
     phase = phaseOf(state);
+    if (small || cal || prep || people || day || recap) state.langSlip = slip;
+    // Праздник прошёл — люди и мысли персонажа к нему больше не относятся
+    if (!phase.h || (phase.kind !== 'prep' && phase.kind !== 'today')) {
+        if (state.charNow && state.charNow.hid !== phase.h?.id) state.charNow = null;
+    }
 
     // ── Упоминать ли подготовку в следующем ответе (чем ближе, тем чаще) ──
     state.mentionNow = false;
@@ -272,9 +319,6 @@ function mergeHolidays(list) {
 function pruneHolidays() {
     if (state.today == null) return;
     state.holidays = state.holidays.filter(h => h.start + h.days - 1 >= state.today - 7).slice(0, 20);
-    for (const k of Object.keys(state.events || {})) {
-        if (!state.holidays.some(h => holidayId(h) === k) && !k.startsWith('bday-')) delete state.events[k];
-    }
     for (const k of Object.keys(state.days)) {
         const hid = k.split('#')[0];
         if (!state.holidays.some(h => holidayId(h) === hid) && !hid.startsWith('bday-')) delete state.days[k];
@@ -328,13 +372,15 @@ function deleteHoliday(hid) {
     applyToSnapshots(st => {
         st.holidays = (st.holidays || []).filter(x => !isBanned(state, x.name));
         if (st.prep?.hid === hid) st.prep = null;
-        if (st.events) delete st.events[hid];
+        if (st.charNow?.hid === hid) st.charNow = null;
+        if (st.charGift?.hid === hid) st.charGift = null;
         if (h.birthday) st.birthdayOff = { ...(st.birthdayOff || {}), [h.who]: true };
     });
     if (state.prep?.hid === hid) state.prep = null;
     for (const k of Object.keys(state.days)) if (k.startsWith(`${hid}#`)) delete state.days[k];
     state.recaps = state.recaps.filter(r => r.hid !== hid);
-    if (state.events) delete state.events[hid];
+    if (state.charNow?.hid === hid) state.charNow = null;
+    if (state.charGift?.hid === hid) state.charGift = null;
     saveState();
     injectPrompts();
     renderAll();
@@ -348,7 +394,8 @@ function sanitizeView(view) {
     v.upcoming = (v.upcoming || []).filter(u => !gone(u.name, u.birthday, u.who));
     v.recaps = (v.recaps || []).filter(r => !isBanned(state, r.name));
     if (v.h && gone(v.h.name, v.h.birthday, v.h.who)) {
-        v.h = null; v.kind = 'none'; v.plan = null; v.prep = null; v.daysTo = null; v.events = [];
+        v.h = null; v.kind = 'none'; v.plan = null; v.prep = null; v.daysTo = null;
+        v.people = []; v.charNow = null; v.charGift = null; v.care = null; v.gifts = false;
     }
     if (v.ended && isBanned(state, v.ended.name)) v.ended = null;
     return v;
@@ -375,7 +422,18 @@ function viewSnapshot(phase) {
         upcoming: (phase.upcoming || []).filter(x => !phase.h || x.id !== phase.h.id).slice(0, 4)
             .map(x => ({ id: x.id, name: displayName(x), type: x.type, daysTo: x.start - state.today, birthday: !!x.birthday, who: x.who })),
         recaps: state.recaps.slice(-3).reverse(),
-        events: phase.h && (phase.kind === 'prep' || phase.kind === 'today') ? (state.events[phase.h.id] || []).slice(-6).reverse() : [],
+        ...(() => {
+            const act = phase.h && (phase.kind === 'prep' || phase.kind === 'today');
+            if (!act) return { people: [], care: null, charNow: null, charGift: null, gifts: false };
+            const hid = phase.h.id;
+            return {
+                people: clone(state.people || []),
+                care: state.care[hid] || null,
+                charNow: state.charNow?.hid === hid ? state.charNow.text : null,
+                charGift: state.charGift?.hid === hid ? { text: state.charGift.text, done: state.charGift.done } : null,
+                gifts: hasGifts(state, phase.h) && !(phase.h.birthday && phase.h.who === 'char'),
+            };
+        })(),
     };
 }
 
@@ -565,7 +623,7 @@ function headHtml(view, open) {
 
 // Сворачиваемые разделы; что свёрнуто — помним между перезагрузками
 const SEC_KEY = 'hearthtide_sections';
-const SEC_DEFAULT_CLOSED = { upcoming: true, memories: true };
+const SEC_DEFAULT_CLOSED = { upcoming: true, memories: true, people: true };
 function secClosed(key) {
     try {
         const saved = JSON.parse(localStorage.getItem(SEC_KEY) || '{}');
@@ -636,15 +694,41 @@ function bodyHtml(view, live) {
     const upcoming = (view.upcoming || []).map(u => `
         <div class="ht-up"><i class="fa-solid ${TYPE_ICON[u.birthday ? 'personal' : u.type] || 'fa-star'}"></i>
         <span>${esc(u.name)}</span><b>${u.daysTo === 1 ? L().tomorrow : L().inDays(daysWord(u.daysTo))}</b>${delBtn(u.id)}</div>`).join('');
-    const happenings = (view.events || []).map(e => `
-        <div class="ht-line ht-event"><i class="fa-solid ${EVENT_ICON[e.kind] || 'fa-bell'}"></i>
-        <span>${e.who ? `<b>${esc(e.who)}:</b> ` : ''}${esc(e.text)}</span></div>`).join('');
+    // Персонаж: важность праздника, мысль или действие сейчас
+    let charSec = '';
+    if ((view.kind === 'prep' || view.kind === 'today') && view.care) {
+        charSec = section('char', 'fa-user', esc(getCharName()), `
+            <div class="ht-care ht-care-${view.care}">${esc(L().care[view.care])}</div>
+            ${view.care !== 'low' ? `<div class="ht-line"><i class="fa-solid fa-cloud"></i><span>${esc(view.charNow || L().charIdle)}</span></div>` : ''}`);
+    }
+    // Подарки: персонаж → игрок и подарки NPC; на подготовке — замыслы, в праздник — вручение
+    let giftsSec = '';
+    if (view.gifts) {
+        const rows = [];
+        const g = view.charGift;
+        rows.push(`<div class="ht-gift${g?.done ? ' ht-gift-done' : ''}"><i class="fa-solid ${g?.done ? 'fa-circle-check' : 'fa-gift'}"></i>
+            <span><b>${esc(L().giftFor(getCharName(), getUserName()))}:</b> ${esc(g?.done ? (g.text || L().giftGiven) : (g?.text || L().giftUndecided))}</span></div>`);
+        for (const p of (view.people || []).filter(x => x.gift)) {
+            rows.push(`<div class="ht-gift"><i class="fa-solid fa-gift"></i><span><b>${esc(p.name)}:</b> ${esc(p.gift)}</span></div>`);
+        }
+        giftsSec = section('gifts', 'fa-gift', view.kind === 'today' ? L().giving : L().gifts, rows.join(''));
+    }
+    // Люди: по группам, один человек — одна строка
+    const groups = ['relative', 'friend', 'acquaintance'].map(gk => {
+        const list = (view.people || []).filter(p => p.group === gk);
+        if (!list.length) return '';
+        return `<div class="ht-group"><div class="ht-group-title">${L().groups[gk]}</div>${list.map(p => `
+            <div class="ht-person"><b>${esc(p.name)}</b><span>${esc(p.now || '')}</span></div>`).join('')}</div>`;
+    }).join('');
+    const peopleSec = section('people', 'fa-users', L().people, groups);
     const memories = (view.recaps || []).map(r => `<div class="ht-line"><i class="fa-solid fa-bookmark"></i><span><b>${esc(r.name)}:</b> ${esc(r.text)}</span></div>`).join('');
 
     return `<div class="ht-body">
         ${world ? `<div class="ht-world">${world}</div>` : ''}
         ${main}
-        ${section('happening', 'fa-wand-magic-sparkles', L().happening, happenings)}
+        ${charSec}
+        ${giftsSec}
+        ${peopleSec}
         ${section('upcoming', 'fa-calendar-days', L().upcoming, upcoming)}
         ${section('memories', 'fa-bookmark', L().memories, memories)}
         ${live ? `<div class="ht-actions"><button class="ht-btn" data-act="rebuild" title="${L().rebuildTip}"><i class="fa-solid fa-arrows-rotate"></i>${L().rebuild}</button></div>` : ''}

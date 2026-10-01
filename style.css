@@ -165,3 +165,16 @@
 .ht-ib .ht-del:hover { color: var(--ht-fg); background: var(--ht-soft-2); }
 .ht-ib .ht-del-confirm { color: var(--ht-fire); border: 1px solid var(--ht-fire); }
 .ht-up { align-items: center; }
+
+/* ─── Персонаж, подарки, люди ─── */
+.ht-care { display: inline-block; margin-bottom: 4px; padding: 1px 8px; border-radius: 999px; font-size: 0.82em; border: 1px solid var(--ht-line-strong); color: var(--ht-mute); }
+.ht-care-high { border-color: var(--ht-fire); color: var(--ht-fire); }
+.ht-gift { display: flex; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--ht-line); }
+.ht-gift:last-child { border-bottom: 0; }
+.ht-gift > i { color: var(--ht-acc); padding-top: 2px; }
+.ht-gift-done { opacity: 0.65; }
+.ht-group + .ht-group { margin-top: 6px; }
+.ht-group-title { font-size: 0.82em; color: var(--ht-mute); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
+.ht-person { display: flex; flex-direction: column; padding: 4px 0 4px 10px; border-left: 2px solid var(--ht-line-strong); margin-bottom: 4px; }
+.ht-person b { font-weight: 600; }
+.ht-person span { color: var(--ht-fg); }

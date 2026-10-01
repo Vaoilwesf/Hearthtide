@@ -92,10 +92,10 @@ export function requestFor(state, phase) {
         const p = state.prep;
         if (!p || p.hid !== phase.h.id || p.day !== state.today) return 'prep';
     }
-    // Живая лента: новое маленькое событие — на подготовке раз в 3 ответа, в праздник раз в 2
+    // Люди праздника: текущее состояние каждого обновляется по ходу ролплея
     if ((phase.kind === 'prep' || phase.kind === 'today') && phase.h) {
-        const every = phase.kind === 'today' ? 2 : 3;
-        if ((state.turn || 0) - (state.lastEventTurn ?? -99) >= every) return 'event';
+        const every = (state.people || []).length ? (phase.kind === 'today' ? 3 : 4) : 6;
+        if ((state.turn || 0) - (state.lastPeopleTurn ?? -99) >= every) return 'people';
     }
     return null;
 }
@@ -106,4 +106,23 @@ export function mentionEvery(daysTo) {
     if (daysTo >= 5) return 4;
     if (daysTo >= 2) return 3;
     return 2;
+}
+
+/** Предполагает ли праздник подарки: день рождения — всегда, остальное отмечает ИИ */
+export function hasGifts(state, h) {
+    if (!h) return false;
+    if (h.birthday) return true;
+    return state.gifts?.[h.id] === true;
+}
+
+/** Нужно ли в этом ответе обновить мысль/действие персонажа: зависит от важности праздника для него */
+export function charDue(state, phase) {
+    if (!phase.h || (phase.kind !== 'prep' && phase.kind !== 'today')) return false;
+    const care = state.care?.[phase.h.id];
+    if (care === 'high') return true;
+    if (care === 'normal') {
+        const cur = state.charNow?.hid === phase.h.id ? state.charNow : null;
+        return !cur || (state.turn || 0) - (cur.turn || 0) >= 3;
+    }
+    return false;
 }
