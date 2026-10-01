@@ -78,6 +78,9 @@ export function buildStatePrompt(ctx) {
             const g = state.charGift?.hid === h.id ? state.charGift.text : null;
             lines.push(`${charName}'s gift for ${userName}: ${g || 'not decided yet'} — it moves forward in small steps when the scene allows, never all at once.`);
         }
+        // Кто уже отличился — помним до конца праздника
+        const hl = (state.highlights?.[h.id] || []).slice(-5);
+        if (hl.length) lines.push(`So far: ${hl.map(x => `${x.name} — ${x.text}`).join(' · ')}.`);
         // Люди: по одной строке на человека
         const people = (state.people || []).filter(p => p.now).slice(0, 4);
         if (people.length) {
@@ -107,9 +110,9 @@ function holidayGuide(ctx) {
 // Список людей — общий текст для подготовки и обновлений
 function peopleRules(ctx) {
     const { userName, charName } = ctx;
-    return `HT-PEOPLE is the CURRENT list, replacing the previous one: up to 6 people already known in the story (not ${charName}, not ${userName}) who are involved in or affected by this holiday, one line each. GROUP: relative | friend | acquaintance (to ${userName}). NOW: their single latest action or plan for this holiday, a few words — update it as it moves on; drop people with nothing to do with it. Only what the story has already shown or mentioned, or what is common knowledge — never reveal a secret plan that hasn't appeared in the story. GIFT: their gift, under the same rule, only while it is still pending; else empty. Skip the block if nobody qualifies.`;
+    return `HT-PEOPLE replaces the previous list. P lines: up to 6 people already known in the story (not ${charName}, not ${userName}) involved in this holiday. GROUP: relative | friend | acquaintance (to ${userName}). NOW: their latest action or plan for it, a few words. GIFT: their gift while still pending, else empty. Only what the story has shown or mentioned, or common knowledge — no secret plans it hasn't shown. D lines: people whose part is done (gave their gift, did their bit) — what they did, a few words; they leave the P list. Skip the block if nobody qualifies.`;
 }
-const PEOPLE_BLOCK = '<!-- HT-PEOPLE\nP | NAME | GROUP | NOW | GIFT\n-->';
+const PEOPLE_BLOCK = '<!-- HT-PEOPLE\nP | NAME | GROUP | NOW | GIFT\nD | NAME | WHAT_THEY_DID\n-->';
 
 // ─── 2. Правило тега (конец промпта) ───
 export function buildTagPrompt(ctx) {
@@ -131,6 +134,9 @@ Every text value in these comments is written in ${lang} only.`];
     }
     if (charGiftActive(ctx)) {
         out.push(`Add gift=… to the HT line: ${charName}'s current step with a gift for ${userName}, a few words; it moves as the story does (idea → finding or making → ready and hidden → given). Add gift_done=true once it is given.`);
+    }
+    if (phase.kind === 'today' && h && request !== 'day' && request !== 'replan' && state.days?.[`${h.id}#${phase.dayIndex}`]) {
+        out.push(`If today's plans change in the story, re-send <!-- HT-DAY … --> with the parts still ahead.`);
     }
     if (request !== 'cal') {
         out.push(`If the story sets a new personal or family occasion, add once after the HT line: <!-- HT-CAL\nH | YYYY-MM-DD | DAYS | NAME | MEANING | family | PREP\n-->`);
@@ -160,6 +166,13 @@ How things get ready for ${hName(h, ctx)} (in ${phase.daysTo} day${phase.daysTo 
     if (request === 'day' && h) {
         out.push(`ALSO add after the HT line: <!-- HT-DAY title=… | morning=… | day=… | evening=… | night=… -->
 How ${hName(h, ctx)} is celebrated TODAY${h.days > 1 ? ` (day ${phase.dayIndex} of ${h.days} — each day may have its own meaning)` : ''} by the traditions of this era and place, from morning to night: rites, food, games, songs, what people do. title = this day's name or meaning. One or two sentences per part.`);
+    }
+    if (request === 'replan' && h) {
+        const plan = state.days?.[`${h.id}#${phase.dayIndex}`] || {};
+        const ahead = ['morning', 'day', 'evening', 'night'];
+        const from = Math.max(0, ahead.indexOf(ctx.part));
+        out.push(`ALSO add after the HT line: <!-- HT-DAY ${ahead.slice(from).map(p => `${p}=…`).join(' | ')} -->
+The day has moved on: rewrite the parts from now on so they follow from what has actually happened today — what is done is not repeated, changed plans are kept. One or two sentences each.${plan[ahead[from]] ? ` The plan was: ${ahead.slice(from).filter(p => plan[p]).map(p => `${p}: ${plan[p]}`).join('; ')}.` : ''}`);
     }
     if (request === 'people' && h) {
         out.push(`ALSO add after the HT line:

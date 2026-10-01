@@ -1,7 +1,7 @@
 // Hearthtide — calendar.js
 // Фазы праздника и что попросить у ИИ в следующем ответе.
 
-import { nextOccurrence } from './dates.js';
+import { nextOccurrence, dayPart } from './dates.js';
 
 // За сколько дней начинается подготовка: ИИ указывает сам для каждого праздника,
 // это — запасные значения, если не указал
@@ -100,6 +100,12 @@ export function requestFor(state, phase) {
     if (phase.kind === 'after' && phase.ended && !state.recapDone?.[phase.ended.id]) return 'recap';
     if (needsCalendar(state)) return 'cal';
     if (phase.kind === 'today' && !state.days?.[`${phase.h.id}#${phase.dayIndex}`]) return 'day';
+    // Началась следующая часть дня — переписать оставшиеся части по тому, что уже произошло
+    if (phase.kind === 'today') {
+        const key = `${phase.h.id}#${phase.dayIndex}`;
+        const part = dayPart(state.clock);
+        if (part && state.planPart?.[key] && state.planPart[key] !== part) return 'replan';
+    }
     if (phase.kind === 'after' && phase.ended && !state.recapDone?.[phase.ended.id]) return 'recap';
     if (phase.kind === 'prep') {
         const p = state.prep;

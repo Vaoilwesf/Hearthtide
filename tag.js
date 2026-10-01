@@ -118,15 +118,26 @@ export function parseEvent(text) {
     return { who: clean(f.who, 60), kind: EVENT_KINDS.find(x => k.startsWith(x.slice(0, 4))) || 'custom', text: txt };
 }
 
-/** Люди вокруг: P | ИМЯ | relative|friend|acquaintance | ЧЕМ ЗАНЯТ | ИДЕЯ ПОДАРКА */
+/**
+ * Люди вокруг:
+ *   P | ИМЯ | relative|friend|acquaintance | ЧЕМ ЗАНЯТ | ПОДАРОК  — активные
+ *   D | ИМЯ | ЧТО СДЕЛАЛ                                         — своё отыграли, уходят из списка, но помнятся
+ */
 const GROUPS = ['relative', 'friend', 'acquaintance'];
 export function parsePeople(text) {
     const inner = findBlock(text, 'HT-PEOPLE');
     if (inner == null) return null;
     const out = [];
+    const done = [];
     for (const raw of inner.split(/\n+/)) {
         const cols = raw.split('|').map(x => x.trim());
-        if ((cols[0] || '').toUpperCase() !== 'P') continue;
+        const kind = (cols[0] || '').toUpperCase();
+        if (kind === 'D') {
+            const name = clean(cols[1], 60), text = clean(cols[2], 160);
+            if (name && text) done.push({ name, text });
+            continue;
+        }
+        if (kind !== 'P') continue;
         const name = clean(cols[1], 60);
         if (!name) continue;
         const g = String(cols[2] || '').toLowerCase();
@@ -137,7 +148,8 @@ export function parsePeople(text) {
             gift: clean(cols[4], 120),
         });
     }
-    return out.length ? out.slice(0, 8) : null;
+    if (!out.length && !done.length) return null;
+    return { active: out.slice(0, 8), done: done.slice(0, 8) };
 }
 
 /** Итог прошедшего праздника — одна строка */

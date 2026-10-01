@@ -255,3 +255,7 @@
 .ht-chip i { color: var(--ht-acc); width: auto; }
 .ht-sec h5 > .ht-badge { flex: 0 0 24px; width: 24px; }
 .ht-sec h5 > span:not(.ht-badge) { flex: 1 1 auto; min-width: 0; }
+
+.ht-standout .ht-group-title { display: flex; align-items: center; gap: 5px; }
+.ht-standout .ht-group-title i { color: var(--ht-acc); width: auto; }
+.ht-standout .ht-person { border-left-color: color-mix(in srgb, var(--ht-acc) 60%, transparent); }

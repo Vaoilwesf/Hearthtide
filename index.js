@@ -71,6 +71,8 @@ function defaultState() {
         recapDone: {},
         people: [],             // [{ name, group, now, gift }] — текущий список, заменяется целиком
         activeHid: null,        // праздник, к которому относятся люди и мысли персонажа
+        highlights: {},         // hid → [{ name, text }] — кто чем отличился, помним до конца праздника
+        planPart: {},           // `${hid}#${день}` → часть дня, к которой распорядок уже подстроен
         lastPeopleTurn: -99,
         care: {},               // hid → high | normal | low — насколько праздник важен персонажу
         gifts: {},              // hid → true/false — предполагает ли праздник подарки
@@ -256,9 +258,23 @@ function processReply(N) {
     }
     // Люди: список заменяется целиком — один человек, одна строка
     if (people && phase.h && (phase.kind === 'prep' || phase.kind === 'today')) {
-        const ok = people.filter(p => langOk(p.now) && langOk(p.gift));
-        if (ok.length < people.length) slip = true;
-        if (ok.length) state.people = ok;
+        const hid = phase.h.id;
+        // Отыгравшие своё — в «отличились» (одна строка на человека, новая заменяет старую)
+        const doneOk = people.done.filter(d => langOk(d.text));
+        if (doneOk.length < people.done.length) slip = true;
+        if (doneOk.length) {
+            const hl = state.highlights[hid] || (state.highlights[hid] = []);
+            for (const d of doneOk) {
+                const i = hl.findIndex(x => x.name.toLowerCase() === d.name.toLowerCase());
+                if (i >= 0) hl[i] = d; else hl.push(d);
+            }
+            if (hl.length > 8) state.highlights[hid] = hl.slice(-8);
+        }
+        const doneNames = new Set(doneOk.map(d => d.name.toLowerCase()));
+        const active = people.active.filter(p => !doneNames.has(p.name.toLowerCase()));
+        const ok = active.filter(p => langOk(p.now) && langOk(p.gift));
+        if (ok.length < active.length) slip = true;
+        state.people = ok;
         state.lastPeopleTurn = state.turn;
     }
     // Мысль/действие персонажа и его подарок — из маленького тега
@@ -282,8 +298,14 @@ function processReply(N) {
             };
         }
     }
-    if (day && phase.kind === 'today' && !langOk(day.title || day.morning || day.day)) { slip = true; }
+    if (day && phase.kind === 'today' && ['title', 'morning', 'day', 'evening', 'night'].some(k => day[k] && !langOk(day[k]))) { slip = true; }
     else if (day && phase.kind === 'today') {
+        // Распорядок дополняется: пришедшие части заменяют старые, прошедшие остаются
+        const key = `${phase.h.id}#${phase.dayIndex}`;
+        const prevPlan = state.days[key] || {};
+        for (const k of Object.keys(day)) if (day[k] == null) delete day[k];
+        Object.assign(day, { ...prevPlan, ...day });
+        state.planPart[key] = dayPart(state.clock) || 'morning';
         state.days[`${phase.h.id}#${phase.dayIndex}`] = day;
     }
     if (recap && !langOk(recap)) slip = true;
@@ -361,6 +383,9 @@ function pruneHolidays() {
     state.holidays = (state.holidays || []).filter(h => !birthdayOwner(h.name));
     if (state.today == null) return;
     state.holidays = state.holidays.filter(h => h.start + h.days - 1 >= state.today - 7).slice(0, 20);
+    for (const k of Object.keys(state.highlights || {})) {
+        if (!state.holidays.some(h => holidayId(h) === k) && !k.startsWith('bday-')) delete state.highlights[k];
+    }
     for (const k of Object.keys(state.charLog || {})) {
         if (!state.holidays.some(h => holidayId(h) === k) && !k.startsWith('bday-')) delete state.charLog[k];
     }
@@ -426,6 +451,7 @@ function deleteHoliday(hid) {
     state.recaps = state.recaps.filter(r => r.hid !== hid);
     if (state.charNow?.hid === hid) state.charNow = null;
     if (state.charGift?.hid === hid) state.charGift = null;
+    if (state.highlights) delete state.highlights[hid];
     saveState();
     injectPrompts();
     renderAll();
@@ -469,13 +495,14 @@ function viewSnapshot(phase) {
         recaps: state.recaps.slice(-3).reverse(),
         ...(() => {
             const act = phase.h && (phase.kind === 'prep' || phase.kind === 'today');
-            if (!act) return { people: [], care: null, charNow: null, charSteps: [], charGift: null, gifts: false };
+            if (!act) return { people: [], highlights: [], care: null, charNow: null, charSteps: [], charGift: null, gifts: false };
             const hid = phase.h.id;
             return {
                 people: clone(state.people || []),
                 care: state.care[hid] || null,
                 charNow: state.charNow?.hid === hid ? state.charNow.text : null,
                 charSteps: (state.charLog?.[hid] || []).slice(-4, -1).map(x => x.text),
+                highlights: clone(state.highlights?.[hid] || []),
                 charGift: state.charGift?.hid === hid ? { text: state.charGift.text, done: state.charGift.done } : null,
                 gifts: hasGifts(state, phase.h) && !(phase.h.birthday && phase.h.who === 'char'),
             };
@@ -766,7 +793,9 @@ function bodyHtml(view, live) {
         return `<div class="ht-group"><div class="ht-group-title">${L().groups[gk]}</div>${list.map(p => `
             <div class="ht-person"><b>${esc(p.name)}</b><span>${esc(p.now || '')}</span>${p.gift ? `<em class="ht-chip"><i class="fa-solid fa-gift"></i>${esc(p.gift)}</em>` : ''}</div>`).join('')}</div>`;
     }).join('');
-    const peopleSec = section('people', 'fa-users', L().people, groups);
+    const standout = (view.highlights || []).length ? `<div class="ht-group ht-standout"><div class="ht-group-title"><i class="fa-solid fa-star"></i>${L().standout}</div>${view.highlights.map(x => `
+            <div class="ht-person"><b>${esc(x.name)}</b><span>${esc(x.text)}</span></div>`).join('')}</div>` : '';
+    const peopleSec = section('people', 'fa-users', L().people, groups + standout);
     const memories = (view.recaps || []).map(r => `<div class="ht-line"><i class="fa-solid fa-bookmark"></i><span><b>${esc(r.name)}:</b> ${esc(r.text)}</span></div>`).join('');
 
     return `<div class="ht-body">
