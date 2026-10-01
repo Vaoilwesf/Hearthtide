@@ -2,7 +2,7 @@
 // Весь инджект — на английском. Значения для инфоблока ИИ пишет на выбранном языке.
 
 import { isoOf } from './dates.js';
-import { hasGifts, charDue } from './calendar.js';
+import { hasGifts, charDue, isIntimate } from './calendar.js';
 
 const PART_EN = { morning: 'morning', day: 'daytime', evening: 'evening', night: 'night' };
 
@@ -68,9 +68,10 @@ export function buildStatePrompt(ctx) {
     if (active) {
         // Персонаж: насколько праздник для него важен
         const care = state.care?.[h.id];
-        const now = state.charNow?.hid === h.id ? state.charNow.text : null;
-        if (care === 'high') lines.push(`${charName} cares about this a lot${now ? ` — now: ${now}` : ''}. It shapes ${charName}'s thoughts and actions; ${charName} acts on them in small steps across replies when the scene allows.`);
-        else if (care === 'normal') lines.push(`For ${charName} it matters moderately${now ? ` — now: ${now}` : ''}.`);
+        const steps = (state.charLog?.[h.id] || []).slice(-4).map(x => x.text);
+        const trail = steps.length ? ` Steps so far: ${steps.join(' → ')}.` : '';
+        if (care === 'high') lines.push(`${charName} cares about this a lot.${trail} ${charName} acts on it in small steps across replies when the scene allows; each step follows from the previous ones — no reversal without a reason shown in the story.`);
+        else if (care === 'normal') lines.push(`For ${charName} it matters moderately.${trail}`);
         else if (care === 'low') lines.push(`For ${charName} it means little — a passing remark at most.`);
         // Подарок персонажа
         if (charGiftActive(ctx)) {
@@ -106,7 +107,7 @@ function holidayGuide(ctx) {
 // Список людей — общий текст для подготовки и обновлений
 function peopleRules(ctx) {
     const { userName, charName } = ctx;
-    return `HT-PEOPLE is the CURRENT list, replacing the previous one: up to 6 people already known in the story (not ${charName}, not ${userName}), one line each. GROUP: relative | friend | acquaintance (to ${userName}). NOW: their single latest thought or action, a few words — it may be about anything in their life, not only the holiday; when it moves on, write the new state instead; drop people who no longer matter. GIFT: their gift plan only while it is still pending, else empty. Skip the block if nobody is known.`;
+    return `HT-PEOPLE is the CURRENT list, replacing the previous one: up to 6 people already known in the story (not ${charName}, not ${userName}) who are involved in or affected by this holiday, one line each. GROUP: relative | friend | acquaintance (to ${userName}). NOW: their single latest action or plan for this holiday, a few words — update it as it moves on; drop people with nothing to do with it. Only what the story has already shown or mentioned, or what is common knowledge — never reveal a secret plan that hasn't appeared in the story. GIFT: their gift, under the same rule, only while it is still pending; else empty. Skip the block if nobody qualifies.`;
 }
 const PEOPLE_BLOCK = '<!-- HT-PEOPLE\nP | NAME | GROUP | NOW | GIFT\n-->';
 
@@ -122,15 +123,17 @@ date: the in-world date, numeric, in the story's own calendar (map fictional mon
 Every text value in these comments is written in ${lang} only.`];
 
     if (state.langSlip) out.push(`Your last values were not in ${lang} — write them in ${lang}.`);
+    if (ctx.fixPlace) out.push(`Add place=… to the HT line THIS reply: the current place rewritten in ${lang}.`);
+    if (ctx.fixSetting) out.push(`ALSO add after the HT line: <!-- HT-CAL\nS | ERA_AND_YEAR | FAITH | PLACE\n--> — the current setting rewritten in ${lang}.`);
     if (state.missed > 0) out.push(`Your previous reply had no HT line — include it now.`);
     if (charDue(state, phase)) {
-        out.push(`Add char=… to the HT line: what ${charName} is thinking or doing about the holiday right now, a few words — the next step, not a repeat of the last one.`);
+        out.push(`Add char=… to the HT line: ${charName}'s current step about the holiday, a few words — it follows logically from the steps so far, never repeats or reverses them without a reason shown in the story.`);
     }
     if (charGiftActive(ctx)) {
         out.push(`Add gift=… to the HT line: ${charName}'s current step with a gift for ${userName}, a few words; it moves as the story does (idea → finding or making → ready and hidden → given). Add gift_done=true once it is given.`);
     }
     if (request !== 'cal') {
-        out.push(`If the story sets a new personal or family occasion, add once after the HT line: <!-- HT-CAL\nH | YYYY-MM-DD | DAYS | NAME | MEANING | family\n-->`);
+        out.push(`If the story sets a new personal or family occasion, add once after the HT line: <!-- HT-CAL\nH | YYYY-MM-DD | DAYS | NAME | MEANING | family | PREP\n-->`);
     }
 
     if (request === 'cal') {
@@ -140,17 +143,19 @@ Every text value in these comments is written in ${lang} only.`];
         out.push(`ALSO, this reply only — after the HT line add the calendar block:
 <!-- HT-CAL
 S | ERA_AND_YEAR | FAITH | PLACE
-H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE
-${needB ? `B | user | MM-DD\nB | char | MM-DD\n` : ''}-->
+H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP
+${needB ? `B | user | MM-DD | PREP\nB | char | MM-DD | PREP\n` : ''}-->
 - S: the era and the year in words${ctx.eraMode === 'modern' ? '' : ', as people of that time would say it, with our reckoning in brackets'} — no bare numbers or dates; FAITH — ${ctx.eraMode === 'modern' && ctx.faithMode === 'secular' ? 'secular' : 'the faith(s) people actually live by'}; PLACE — the kind of place and its proper name as the story gives it (never invent a different name for a place the story already named).
-- H: the next 5 holidays from the current date, in date order${known.length ? `, continuing after: ${known.join(', ')}` : ''}. ${holidayGuide(ctx)} Compute movable feasts properly for that year and calendar. Also add personal and family occasions the story gives grounds for (birthdays and name days of the characters and people close to them, weddings, anniversaries, a newborn's naming, memorial days of relatives, a housewarming). DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | family | supernatural | fast | memorial.${needB ? `\n- B: birthdays of ${userName} and ${charName} from the card and persona; if not stated, choose plausible ones.` : ''}${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}`);
+- H: the next 5 holidays from the current date, in date order${known.length ? `, continuing after: ${known.join(', ')}` : ''}. ${holidayGuide(ctx)} Compute movable feasts properly for that year and calendar. Also add personal and family occasions the story gives grounds for (birthdays and name days of the characters and people close to them, weddings, anniversaries, a newborn's naming, memorial days of relatives, a housewarming). DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | family | supernatural | fast | memorial. PREP = how many days before it people actually start getting ready or feel it coming (0 for a minor day; a great feast may be weeks). Birthdays of ${userName} and ${charName} go only in B lines, never as H.${needB ? `\n- B: birthdays of ${userName} and ${charName} from the card and persona; if not stated, choose plausible ones.` : ''}${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}`);
     }
     if (request === 'prep' && h) {
+        const prev = state.prep?.hid === h.id ? state.prep : null;
+        const scope = isIntimate(h)
+            ? `This is a personal or family occasion: only ${h.birthday && h.who === 'user' ? `the people close to ${userName}` : 'the household and close circle'} get ready — not the whole community.`
+            : `This is a public holiday: the community around ${userName} gets ready.`;
         out.push(`ALSO add after the HT line:
 <!-- HT-PREP people=… | mood=… | gifts=yes|no | care=high|normal|low -->
-${PEOPLE_BLOCK}
-HT-PREP: how ${ctx.placeName || `the place around ${userName}`} gets ready for ${hName(h, ctx)} (in ${phase.daysTo} day${phase.daysTo === 1 ? '' : 's'}) — people: what the locals are busy with; mood: the general feeling; one or two vivid sentences each, true to the customs of this era and place. gifts: does this holiday involve giving gifts by custom. care: how much this holiday matters to ${charName} personally, judging by who ${charName} is.${h.birthday && h.who === 'user' ? ` People secretly prepare a surprise for ${userName} — describe it from outside without spoiling it.` : ''}
-${peopleRules(ctx)}`);
+How things get ready for ${hName(h, ctx)} (in ${phase.daysTo} day${phase.daysTo === 1 ? '' : 's'}) in ${ctx.placeName || `the place around ${userName}`}. ${scope} people: what is being done now, one or two sentences true to the customs of this era and place; mood: the feeling in the air.${prev?.people ? ` Before it was: "${prev.people}" — show what has moved on since, don't restate it.` : ''} Only what is visible or commonly known — no secret plans the story hasn't shown. gifts: does this holiday involve giving gifts by custom. care: how much it matters to ${charName} personally, judging by who ${charName} is.${h.birthday && h.who === 'user' ? ` A surprise for ${userName} stays unspoiled.` : ''}`);
     }
     if (request === 'day' && h) {
         out.push(`ALSO add after the HT line: <!-- HT-DAY title=… | morning=… | day=… | evening=… | night=… -->

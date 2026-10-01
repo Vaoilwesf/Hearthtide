@@ -63,11 +63,14 @@ export function parseCalendar(text) {
             const days = Math.max(1, Math.min(14, parseInt(cols[2]) || 1));
             const name = clean(cols[3], 80);
             if (start == null || !name) continue;
-            res.holidays.push({ start, days, name, meaning: clean(cols[4], 240), type: normType(cols[5]) });
+            const prep = parseInt(cols[6]);
+            res.holidays.push({ start, days, name, meaning: clean(cols[4], 240), type: normType(cols[5]),
+                prep: isNaN(prep) ? null : Math.max(0, Math.min(45, prep)) });
         } else if (kind === 'B') {
             const who = /char|bot|{{char}}/i.test(cols[1] || '') ? 'char' : 'user';
             const md = parseMonthDay(cols[2]);
-            if (md) res.birthdays[who] = md;
+            const prep = parseInt(cols[3]);
+            if (md) res.birthdays[who] = { ...md, prep: isNaN(prep) ? null : Math.max(0, Math.min(14, prep)) };
         }
     }
     return res;

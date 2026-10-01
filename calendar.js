@@ -3,8 +3,21 @@
 
 import { nextOccurrence } from './dates.js';
 
-export const PREP_WINDOW = 7;          // за сколько дней начинается подготовка
-export const PREP_WINDOW_BIRTHDAY = 3;
+// За сколько дней начинается подготовка: ИИ указывает сам для каждого праздника,
+// это — запасные значения, если не указал
+export const PREP_DEFAULT = { personal: 2, family: 3, fast: 1, memorial: 1 };
+export const PREP_DEFAULT_OTHER = 5;
+export function prepWindow(state, h) {
+    if (!h) return 0;
+    if (h.birthday) return state.birthdays?.[h.who]?.prep ?? PREP_DEFAULT.personal;
+    if (h.prep != null) return h.prep;
+    return PREP_DEFAULT[h.type] ?? PREP_DEFAULT_OTHER;
+}
+
+/** Камерный праздник (личный, семейный) или общий — от этого зависит масштаб подготовки */
+export function isIntimate(h) {
+    return !!h && (h.birthday || h.type === 'personal' || h.type === 'family');
+}
 
 /** Ключи названия для запрета: основное название и то, что в скобках */
 export function banKeys(name) {
@@ -65,7 +78,7 @@ export function phaseOf(state) {
     }
     const next = upcoming[0] || null;
     const daysTo = next ? next.start - today : null;
-    const window = next?.birthday ? PREP_WINDOW_BIRTHDAY : PREP_WINDOW;
+    const window = prepWindow(state, next);
     const base = { h: next, daysTo, upcoming, ended: ended || null };
     if (ended) return { kind: 'after', ...base };
     if (!next) return { kind: 'none', ...base };
@@ -90,7 +103,7 @@ export function requestFor(state, phase) {
     if (phase.kind === 'after' && phase.ended && !state.recapDone?.[phase.ended.id]) return 'recap';
     if (phase.kind === 'prep') {
         const p = state.prep;
-        if (!p || p.hid !== phase.h.id || p.day !== state.today) return 'prep';
+        if (!p || p.hid !== phase.h.id || p.day !== state.today || (state.turn || 0) - (p.turn ?? -99) >= 5) return 'prep';
     }
     // Люди праздника: текущее состояние каждого обновляется по ходу ролплея
     if ((phase.kind === 'prep' || phase.kind === 'today') && phase.h) {
@@ -103,6 +116,7 @@ export function requestFor(state, phase) {
 /** Как часто упоминать подготовку: чем ближе праздник, тем чаще (в ответах) */
 export function mentionEvery(daysTo) {
     if (daysTo == null) return 99;
+    if (daysTo >= 14) return 7;      // долгая подготовка (Новый год за месяц) — изредка
     if (daysTo >= 5) return 4;
     if (daysTo >= 2) return 3;
     return 2;
