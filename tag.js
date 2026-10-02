@@ -44,6 +44,11 @@ export function parseSmall(text) {
         place: clean(f.place, 60),
         char: clean(f.char, 160),                                   // мысль или действие персонажа сейчас
         gift: clean(f.gift, 160),                                   // мысль персонажа о подарке
+        ev: (() => {                                                // статус текущего ивента
+            const v = String(f.ev || '').trim().toLowerCase();
+            return ['done', 'skipped', 'joined', 'declined'].find(x => v.startsWith(x.slice(0, 4))) || null;
+        })(),
+        evNote: clean(f.ev_note, 300),
         giftDone: /^(true|yes|1|да)$/i.test(String(f.gift_done || '').trim()),
     };
 }
@@ -152,6 +157,25 @@ export function parsePeople(text) {
     return { active: out.slice(0, 8), done: done.slice(0, 8) };
 }
 
+/**
+ * Ивенты: <!-- HT-EV kind=event|party|moment | title=… | who=… -->
+ * event — небольшое событие в сцене; party — мероприятие (сначала приглашение); moment — что-то на мероприятии
+ */
+export function parseEvents(text) {
+    const t = String(text ?? '');
+    const out = [];
+    const re = /<!--\s*HT-EV(?![\w-])[\s:]*([\s\S]*?)-->/gi;
+    let m;
+    while ((m = re.exec(t)) !== null) {
+        const f = fields(m[1]);
+        const title = clean(f.title, 160);
+        if (!title) continue;
+        const k = String(f.kind || '').toLowerCase();
+        out.push({ kind: k.startsWith('part') ? 'party' : k.startsWith('mom') ? 'moment' : 'event', title, who: clean(f.who, 80) });
+    }
+    return out;
+}
+
 /** Итог прошедшего праздника — одна строка */
 export function parseRecap(text) {
     const inner = findBlock(text, 'HT-RECAP');
@@ -166,8 +190,8 @@ export function parseRecap(text) {
 export function stripBlocks(text) {
     let t = String(text ?? '');
     t = t.replace(/```[a-z]*\s*(?:<!--\s*)?HT(?:-[A-Z]+)?\b[\s\S]*?```/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE)\b[\s\S]*?-->/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE)\b(?![\s\S]*-->)[\s\S]*$/i, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV)\b[\s\S]*?-->/gi, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV)\b(?![\s\S]*-->)[\s\S]*$/i, '');
     t = t.replace(/^\s*HT(?:-[A-Z]+)?\b[\s:]+[^\n]*$/gim, '');
     return t.replace(/\s+$/, '');
 }

@@ -96,25 +96,38 @@ export function needsCalendar(state) {
 
 /** Какой дополнительный блок попросить у ИИ в этот ответ (не больше одного за раз) */
 export function requestFor(state, phase) {
+    const r = requestForRaw(state, phase);
+    return r && (state.backoff?.[r] ?? -1) > (state.turn || 0) ? requestForRaw(state, phase, r) : r;
+}
+
+// skip — тип запроса на паузе (ИИ его проигнорировал), берём следующий по важности
+function requestForRaw(state, phase, skip = null) {
+    const ok = (t) => t !== skip && !((state.backoff?.[t] ?? -1) > (state.turn || 0));
     // Итог — первым: окно у него один день, а календарь подождёт до следующего ответа
-    if (phase.kind === 'after' && phase.ended && !state.recapDone?.[phase.ended.id]) return 'recap';
-    if (needsCalendar(state)) return 'cal';
-    if (phase.kind === 'today' && !state.days?.[`${phase.h.id}#${phase.dayIndex}`]) return 'day';
+    if (phase.kind === 'after' && phase.ended && !state.recapDone?.[phase.ended.id]) { if (ok('recap')) return 'recap'; }
+    if (needsCalendar(state)) { if (ok('cal')) return 'cal'; }
+    if (phase.kind === 'today' && !state.days?.[`${phase.h.id}#${phase.dayIndex}`]) { if (ok('day')) return 'day'; }
     // Началась следующая часть дня — переписать оставшиеся части по тому, что уже произошло
     if (phase.kind === 'today') {
         const key = `${phase.h.id}#${phase.dayIndex}`;
         const part = dayPart(state.clock);
-        if (part && state.planPart?.[key] && state.planPart[key] !== part) return 'replan';
+        if (part && state.planPart?.[key] && state.planPart[key] !== part) { if (ok('replan')) return 'replan'; }
     }
-    if (phase.kind === 'after' && phase.ended && !state.recapDone?.[phase.ended.id]) return 'recap';
+    if (phase.kind === 'after' && phase.ended && !state.recapDone?.[phase.ended.id]) { if (ok('recap')) return 'recap'; }
     if (phase.kind === 'prep') {
         const p = state.prep;
-        if (!p || p.hid !== phase.h.id || p.day !== state.today || (state.turn || 0) - (p.turn ?? -99) >= 5) return 'prep';
+        if (!p || p.hid !== phase.h.id || p.day !== state.today || (state.turn || 0) - (p.turn ?? -99) >= 5) { if (ok('prep')) return 'prep'; }
+    }
+    // Ивенты праздничного дня: новый — когда сейчас ничего не идёт; на мероприятии — новые моменты
+    if (phase.kind === 'today' && phase.h && state.days?.[`${phase.h.id}#${phase.dayIndex}`]) {
+        const ev = openEvent(state, phase.h.id);
+        if (ev?.kind === 'party' && ev.status === 'joined' && (state.turn || 0) - (ev.lastMoment ?? ev.turn) >= 3) { if (ok('moment')) return 'moment'; }
+        if (!ev && (state.turn || 0) - (state.lastEventEnd ?? -99) >= 4) { if (ok('event')) return 'event'; }
     }
     // Люди праздника: текущее состояние каждого обновляется по ходу ролплея
     if ((phase.kind === 'prep' || phase.kind === 'today') && phase.h) {
-        const every = (state.people || []).length ? (phase.kind === 'today' ? 3 : 4) : 6;
-        if ((state.turn || 0) - (state.lastPeopleTurn ?? -99) >= every) return 'people';
+        const every = (state.people || []).length ? (phase.kind === 'today' ? 2 : 4) : 5;
+        if ((state.turn || 0) - (state.lastPeopleTurn ?? -99) >= every) { if (ok('people')) return 'people'; }
     }
     return null;
 }
@@ -145,4 +158,10 @@ export function charDue(state, phase) {
         return !cur || (state.turn || 0) - (cur.turn || 0) >= 3;
     }
     return false;
+}
+
+/** Ивент, который сейчас в игре (или приглашение, на которое ещё не ответили) */
+export const OPEN_STATUSES = ['active', 'invited', 'joined'];
+export function openEvent(state, hid) {
+    return (state.evts || []).find(e => e.hid === hid && OPEN_STATUSES.includes(e.status)) || null;
 }

@@ -2,7 +2,7 @@
 // Весь инджект — на английском. Значения для инфоблока ИИ пишет на выбранном языке.
 
 import { isoOf } from './dates.js';
-import { hasGifts, charDue, isIntimate } from './calendar.js';
+import { hasGifts, charDue, isIntimate, openEvent } from './calendar.js';
 
 const PART_EN = { morning: 'morning', day: 'daytime', evening: 'evening', night: 'night' };
 
@@ -82,14 +82,23 @@ export function buildStatePrompt(ctx) {
         const hl = (state.highlights?.[h.id] || []).slice(-5);
         if (hl.length) lines.push(`So far: ${hl.map(x => `${x.name} — ${x.text}`).join(' · ')}.`);
         // Люди: по одной строке на человека
-        const people = (state.people || []).filter(p => p.now).slice(0, 4);
+        const people = (ctx.peopleSeen || state.people || []).filter(p => p.now).slice(0, 4);
         if (people.length) {
             lines.push(`People: ${people.map(p => `${p.name} (${p.group}) — ${p.now}${p.gift ? `; gift: ${p.gift}` : ''}`).join(' · ')}. They live their own lives in the background; one may cross paths with the scene.`);
         }
     }
 
-    const mem = (state.recaps || []).slice(-2);
-    if (mem.length) lines.push(`Remembered: ${mem.map(r => `${r.name} — ${r.text}`).join(' · ')}`);
+    // Воспоминание по кнопке «вспомнить» — один раз
+    const fb = state.recall && (state.flashbacks || []).find(f => f.id === state.recall);
+    if (fb) lines.push(`${charName} suddenly remembers: ${fb.title} — ${fb.text} Let it surface naturally in this reply.`);
+    // Что сейчас в игре: ивент, приглашение или мероприятие
+    const ev = h && phase.kind === 'today' ? openEvent(state, h.id) : null;
+    if (ev) {
+        const who = ev.who ? ` (${ev.who})` : '';
+        if (ev.status === 'invited') lines.push(`Invitation pending: ${ev.title}${who}. ${userName} decides whether to go.`);
+        else if (ev.kind === 'party') lines.push(`At the gathering: ${ev.title}${who}${ev.moments?.length ? `; so far: ${ev.moments.slice(-2).map(m => m.title).join('; ')}` : ''}. It unfolds around the scene.`);
+        else lines.push(`In play: ${ev.title}${who}. Let it unfold over the next replies; ${userName} chooses whether to take part.`);
+    }
     if (active) {
         lines.push(`If ${userName} is away from people (road, wilds, danger), the feast stays distant. The calendar never overrides the scene: an urgent or dramatic moment always comes first. Never write ${userName}'s thoughts, feelings, words or choices.`);
     }
@@ -110,7 +119,7 @@ function holidayGuide(ctx) {
 // Список людей — общий текст для подготовки и обновлений
 function peopleRules(ctx) {
     const { userName, charName } = ctx;
-    return `HT-PEOPLE replaces the previous list. P lines: up to 6 people already known in the story (not ${charName}, not ${userName}) involved in this holiday. GROUP: relative | friend | acquaintance (to ${userName}). NOW: their latest action or plan for it, a few words. GIFT: their gift while still pending, else empty. Only what the story has shown or mentioned, or common knowledge — no secret plans it hasn't shown. D lines: people whose part is done (gave their gift, did their bit) — what they did, a few words; they leave the P list. Skip the block if nobody qualifies.`;
+    return `HT-PEOPLE replaces the previous list. P lines: up to 6 people already in the story (not ${charName}, not ${userName}) taking part in this holiday right now. GROUP: relative | friend | acquaintance (to ${userName}). NOW: what they do for THIS holiday — preparing, celebrating, a gift; nothing else. GIFT: their gift while still pending, else empty. Only what the story has shown — no secret plans, no one who has left. D lines: people whose part is done (gave their gift, did their bit) — what they did; they leave the P list. Skip the block if nobody qualifies.`;
 }
 const PEOPLE_BLOCK = '<!-- HT-PEOPLE\nP | NAME | GROUP | NOW | GIFT\nD | NAME | WHAT_THEY_DID\n-->';
 
@@ -122,7 +131,7 @@ export function buildTagPrompt(ctx) {
     const out = [`[Hearthtide tag — required]
 End every reply with one hidden line:
 <!-- HT date=YYYY-MM-DD | time=HH:MM | when=DATE_TEXT -->
-date: the in-world date, numeric, in the story's own calendar (map fictional months to 1–12). time: the in-world clock now. when: the date as the story would say it, short. Add place=KIND NAME, as the story names it, when ${userName} moves or the recorded place is wrong${ctx.placeUnnamed ? ` — and THIS reply, because the current place has no name yet: the name the story gives it, or a fitting one` : ''}.
+date: in-world date, numeric, in the story's own calendar (fictional months → 1–12). time: in-world clock now. when: the date as the story says it, short. Add place=KIND NAME (settlement or area as the story names it, not a building) when ${userName} moves or it's wrong${ctx.placeUnnamed ? ` — and THIS reply, because the current place has no name yet: the name the story gives it, or a fitting one` : ''}.
 Every text value in these comments is written in ${lang} only.`];
 
     if (state.langSlip) out.push(`Your last values were not in ${lang} — write them in ${lang}.`);
@@ -135,6 +144,9 @@ Every text value in these comments is written in ${lang} only.`];
     if (charGiftActive(ctx)) {
         out.push(`Add gift=… to the HT line: ${charName}'s current step with a gift for ${userName}, a few words; it moves as the story does (idea → finding or making → ready and hidden → given). Add gift_done=true once it is given.`);
     }
+    const evOpen = h && phase.kind === 'today' ? openEvent(state, h.id) : null;
+    if (evOpen?.status === 'invited') out.push(`Add ev=joined to the HT line if ${userName} accepts the invitation, ev=declined if not.`);
+    else if (evOpen) out.push(`When "${evOpen.title}" ends, add ev=done | ev_note=its outcome in one sentence to the HT line${evOpen.kind === 'party' ? '' : `; ev=skipped if ${userName} turned away`}.`);
     if (phase.kind === 'today' && h && request !== 'day' && request !== 'replan' && state.days?.[`${h.id}#${phase.dayIndex}`]) {
         out.push(`If today's plans change in the story, re-send <!-- HT-DAY … --> with the parts still ahead.`);
     }
@@ -174,13 +186,24 @@ How ${hName(h, ctx)} is celebrated TODAY${h.days > 1 ? ` (day ${phase.dayIndex} 
         out.push(`ALSO add after the HT line: <!-- HT-DAY ${ahead.slice(from).map(p => `${p}=…`).join(' | ')} -->
 The day has moved on: rewrite the parts from now on so they follow from what has actually happened today — what is done is not repeated, changed plans are kept. One or two sentences each.${plan[ahead[from]] ? ` The plan was: ${ahead.slice(from).filter(p => plan[p]).map(p => `${p}: ${plan[p]}`).join('; ')}.` : ''}`);
     }
+    if (request === 'event' && h) {
+        const past = (state.evts || []).filter(e => e.hid === h.id && e.kind !== 'moment').map(e => e.title).slice(-3);
+        out.push(`ALSO, this reply: let something that fits ${hName(h, ctx)} and this place come up in the scene and draw ${charName} and ${userName} in — someone involves them, by chance or on purpose; ${userName} still chooses. It must actually appear in your narration. About one time in three make it a gathering someone hosts or invites them to (kind=party — it starts as an invitation). Then add after the HT line: <!-- HT-EV kind=event|party | title=… | who=… -->, title in ${lang}.${past.length ? ` Something different from: ${past.join(' / ')}.` : ''}`);
+    }
+    if (request === 'moment' && h) {
+        const ev = openEvent(state, h.id);
+        out.push(`ALSO, this reply: something new happens at "${ev?.title || 'the gathering'}" that involves ${charName} or ${userName}, shown in your narration. Then add after the HT line: <!-- HT-EV kind=moment | title=… -->, a few words in ${lang}.`);
+    }
     if (request === 'people' && h) {
         out.push(`ALSO add after the HT line:
 ${PEOPLE_BLOCK}
 ${peopleRules(ctx)}`);
     }
     if (request === 'recap' && phase.ended) {
-        out.push(`ALSO add after the HT line: <!-- HT-RECAP one sentence: how ${hName(phase.ended, ctx)} went for ${userName} and ${charName} -->`);
+        const e = phase.ended;
+        const hl = (state.highlights?.[e.id] || []).map(x => `${x.name} — ${x.text}`).join('; ');
+        const g = state.charGift?.hid === e.id && state.charGift.done ? state.charGift.text : null;
+        out.push(`ALSO add after the HT line: <!-- HT-RECAP 2–3 sentences in ${lang}: how ${hName(e, ctx)} went for ${userName} and ${charName}, the gifts given and who stood out -->${hl || g ? ` Facts: ${[g && `${charName}'s gift: ${g}`, hl].filter(Boolean).join('; ')}.` : ''}`);
     }
     out.push('Never skip, mention or explain these comments.');
     return out.join('\n');

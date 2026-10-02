@@ -10,8 +10,8 @@ import {
 import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural } from './dates.js';
-import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, stripBlocks } from './tag.js';
-import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, hasGifts } from './calendar.js';
+import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, stripBlocks } from './tag.js';
+import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, hasGifts, openEvent, OPEN_STATUSES } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt } from './prompts.js';
 import { strings } from './i18n.js';
 
@@ -72,6 +72,11 @@ function defaultState() {
         people: [],             // [{ name, group, now, gift }] — текущий список, заменяется целиком
         activeHid: null,        // праздник, к которому относятся люди и мысли персонажа
         highlights: {},         // hid → [{ name, text }] — кто чем отличился, помним до конца праздника
+        backoff: {},            // тип запроса → ход, до которого его не повторяем (ИИ проигнорировал)
+        evts: [],               // ивенты и мероприятия: { id, hid, kind, title, who, status, turn, lastUpdate, note, moments }
+        lastEventEnd: -99,
+        flashbacks: [],         // воспоминания: { id, title, text, when, kind } — в контекст только по кнопке
+        recall: null,           // id воспоминания, которое уйдёт в следующий ответ
         planPart: {},           // `${hid}#${день}` → часть дня, к которой распорядок уже подстроен
         lastPeopleTurn: -99,
         care: {},               // hid → high | normal | low — насколько праздник важен персонажу
@@ -97,6 +102,10 @@ function loadState() {
     state = chat_metadata[META_KEY];
     const def = defaultState();
     for (const k of Object.keys(def)) if (state[k] === undefined) state[k] = def[k];
+    // старые итоги праздников → в воспоминания
+    if (!state.flashbacks.length && state.recaps?.length) {
+        state.flashbacks = state.recaps.map((r, i) => ({ id: `fb-old-${i}`, title: r.name, text: r.text, when: null, kind: 'holiday' }));
+    }
 }
 
 function saveState() {
@@ -126,6 +135,7 @@ function ctxFor(request = null) {
         fixPlace: !!placeName && !langOk(placeName),
         fixSetting: !!state.setting && (!langOk(state.setting.era) || !langOk(state.setting.faith)),
         banned: state.bannedNames || [],
+        peopleSeen: peopleSeen(),
         eraMode: eraMode(),
         lang: L().promptLang,
         faithMode: faithMode(),
@@ -169,6 +179,91 @@ function hashText(t) {
     return h;
 }
 
+// ─── Был ли человек в ролплее: имя в последних сообщениях (с учётом падежей) ───
+function recentStoryText(n = 8) {
+    return chat.slice(-n).filter(m => m?.mes && !m.is_system)
+        .map(m => String(m.mes).replace(/<!--[\s\S]*?-->/g, ' '))
+        .join(' ').toLowerCase().replace(/ё/g, 'е');
+}
+function nameStem(name) {
+    // «бабка Агафья» → по последнему слову; «Любава» → «люба» (ловит Любаву, Любавы)
+    const words = String(name || '').toLowerCase().replace(/ё/g, 'е').split(/[^\p{L}]+/u).filter(w => w.length >= 3);
+    const w = words[words.length - 1] || '';
+    return w.length > 4 ? w.slice(0, w.length - 2) : w;
+}
+function seenInStory(name, text) {
+    const st = nameStem(name);
+    return !!st && new RegExp(`(?<![\\p{L}])${st.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'u').test(text);
+}
+/** Люди, которые действительно есть в последних сообщениях — только их показываем и отправляем ИИ */
+function peopleSeen() {
+    const text = recentStoryText(6);
+    return (state.people || []).filter(p => seenInStory(p.name, text));
+}
+
+// ─── Воспоминания ───
+function addFlashback(title, text, kind) {
+    state.flashbacks.push({ id: `fb-${state.turn}-${state.flashbacks.length}`, title, text, when: state.when, kind });
+    if (state.flashbacks.length > 40) state.flashbacks = state.flashbacks.slice(-40);
+}
+
+// ─── Ивенты: появились, идут, закончились ───
+function processEvents(phase, small, evs) {
+    const today = phase.kind === 'today' && phase.h ? phase.h.id : null;
+    // ивенты прошлого праздника, которые так и не закрылись, — забылись
+    for (const e of state.evts) {
+        if (OPEN_STATUSES.includes(e.status) && e.hid !== today) e.status = 'faded';
+    }
+    if (!today) return;
+    let ev = openEvent(state, today);
+
+    // Статус от ИИ
+    if (ev && small?.ev) {
+        const note = small.evNote && langOk(small.evNote) ? small.evNote : null;
+        if (ev.status === 'invited' && (small.ev === 'joined' || small.ev === 'declined')) {
+            ev.status = small.ev;
+            ev.lastUpdate = state.turn;
+            if (small.ev === 'declined') state.lastEventEnd = state.turn;
+        } else if (small.ev === 'done' || small.ev === 'skipped') {
+            ev.status = small.ev;
+            ev.note = note;
+            state.lastEventEnd = state.turn;
+            if (small.ev === 'done' && note) addFlashback(ev.title, note, ev.kind);
+        }
+        ev = openEvent(state, today);
+    }
+    // Новые ивенты и моменты
+    for (const e of evs || []) {
+        if (!langOk(e.title)) continue;
+        if (e.kind === 'moment') {
+            if (ev?.kind === 'party' && ev.status === 'joined') {
+                ev.moments = ev.moments || [];
+                if (!ev.moments.some(m => m.title === e.title)) ev.moments.push({ title: e.title, turn: state.turn });
+                if (ev.moments.length > 8) ev.moments = ev.moments.slice(-8);
+                ev.lastMoment = state.turn;
+                ev.lastUpdate = state.turn;
+            }
+            continue;
+        }
+        if (ev) continue;   // одновременно — только одно событие
+        ev = {
+            id: `ev-${state.turn}`, hid: today, kind: e.kind, title: e.title, who: e.who,
+            status: e.kind === 'party' ? 'invited' : 'active', turn: state.turn, lastUpdate: state.turn, note: null, moments: [],
+        };
+        state.evts.push(ev);
+    }
+    // Забытые: ИИ долго не закрывает — тихо закрываем
+    for (const e of state.evts) {
+        if (!OPEN_STATUSES.includes(e.status)) continue;
+        const idle = state.turn - (e.lastUpdate ?? e.turn);
+        if ((e.status === 'invited' && idle > 6) || (e.status === 'active' && idle > 8) || (e.status === 'joined' && idle > 25)) {
+            e.status = e.status === 'invited' ? 'missed' : 'faded';
+            state.lastEventEnd = state.turn;
+        }
+    }
+    if (state.evts.length > 30) state.evts = state.evts.slice(-30);
+}
+
 // Значение на нужном языке? Для русского — есть кириллица (или вовсе нет букв), для английского — латиница
 function langOk(v) {
     if (!v) return true;
@@ -184,6 +279,8 @@ function processReply(N) {
     const snap = state.snapshots.find(s => s.beforeMsg === N);
     if (snap) restoreSnapshot(snap);
     takeSnapshot(N);
+    // какой запрос ИИ видел в промпте этого ответа — чтобы не повторять проигнорированный каждый ход
+    const asked = requestFor(state, phaseOf(state));
     state.turn += 1;
 
     // Крупные блоки после первого разбора вырезаются из текста и живут в extra —
@@ -198,6 +295,7 @@ function processReply(N) {
     const day = parseDay(source);
     const recap = parseRecap(source);
     const people = parsePeople(source);
+    const evs = parseEvents(source);
 
     // Чистим текст сообщения от крупных блоков и «неправильных» форм тега
     const cleaned = stripBlocks(text);
@@ -260,8 +358,10 @@ function processReply(N) {
     if (people && phase.h && (phase.kind === 'prep' || phase.kind === 'today')) {
         const hid = phase.h.id;
         // Отыгравшие своё — в «отличились» (одна строка на человека, новая заменяет старую)
-        const doneOk = people.done.filter(d => langOk(d.text));
-        if (doneOk.length < people.done.length) slip = true;
+        const recent = recentStoryText(10);
+        const doneLang = people.done.filter(d => langOk(d.text));
+        if (doneLang.length < people.done.length) slip = true;
+        const doneOk = doneLang.filter(d => seenInStory(d.name, recent));   // выдуманные не принимаем
         if (doneOk.length) {
             const hl = state.highlights[hid] || (state.highlights[hid] = []);
             for (const d of doneOk) {
@@ -310,10 +410,36 @@ function processReply(N) {
     }
     if (recap && !langOk(recap)) slip = true;
     if (recap && phase.ended && langOk(recap)) {
+        addFlashback(displayName(phase.ended), recap, 'holiday');
         state.recaps.push({ hid: phase.ended.id, name: displayName(phase.ended), text: recap });
         if (state.recaps.length > 30) state.recaps = state.recaps.slice(-30);
         state.recapDone[phase.ended.id] = true;
     }
+    // ── Ивенты и мероприятия ──
+    processEvents(phase, small, evs);
+    // Проигнорированные запросы повторяем не сразу, а через несколько ответов
+    const answered = { cal: !!cal, day: !!day, prep: !!prep, people: !!people, recap: !!recap };
+    const WAIT = { cal: 2, day: 1, prep: 3, people: 3, recap: 1 };
+    state.backoff = state.backoff || {};
+    if (asked in WAIT) {
+        if (answered[asked]) delete state.backoff[asked];
+        else state.backoff[asked] = state.turn + WAIT[asked];
+    }
+    if (asked === 'event' && !evs.some(e => e.kind !== 'moment')) state.lastEventEnd = state.turn - 1;
+    if (asked === 'moment' && !evs.some(e => e.kind === 'moment') && phase.h) {
+        const ev = openEvent(state, phase.h.id);
+        if (ev) ev.lastMoment = state.turn - 1;
+    }
+    if (asked === 'replan' && !day && phase.kind === 'today' && phase.h) {
+        state.planPart[`${phase.h.id}#${phase.dayIndex}`] = dayPart(state.clock) || 'morning';
+    }
+    // воспоминание по кнопке ушло в этот ответ — больше не повторяем
+    if (state.recall) {
+        const fb = state.flashbacks.find(f => f.id === state.recall);
+        if (fb) fb.recalled = (fb.recalled || 0) + 1;
+        state.recall = null;
+    }
+
     phase = phaseOf(state);
     if (small || cal || prep || people || day || recap) state.langSlip = slip;
     // Праздник сменился или был скип на несколько дней — люди и мысли прошлого праздника больше не актуальны
@@ -493,16 +619,19 @@ function viewSnapshot(phase) {
         upcoming: (phase.upcoming || []).filter(x => !phase.h || x.id !== phase.h.id).slice(0, 4)
             .map(x => ({ id: x.id, name: displayName(x), type: x.type, daysTo: x.start - state.today, birthday: !!x.birthday, who: x.who })),
         recaps: state.recaps.slice(-3).reverse(),
+        flashbacks: clone(state.flashbacks.slice(-10).reverse()),
+        recall: state.recall,
         ...(() => {
             const act = phase.h && (phase.kind === 'prep' || phase.kind === 'today');
-            if (!act) return { people: [], highlights: [], care: null, charNow: null, charSteps: [], charGift: null, gifts: false };
+            if (!act) return { people: [], highlights: [], evts: [], care: null, charNow: null, charSteps: [], charGift: null, gifts: false };
             const hid = phase.h.id;
             return {
-                people: clone(state.people || []),
+                people: clone(peopleSeen()),
                 care: state.care[hid] || null,
                 charNow: state.charNow?.hid === hid ? state.charNow.text : null,
                 charSteps: (state.charLog?.[hid] || []).slice(-4, -1).map(x => x.text),
                 highlights: clone(state.highlights?.[hid] || []),
+                evts: phase.kind === 'today' ? clone(state.evts.filter(e => e.hid === hid)) : [],
                 charGift: state.charGift?.hid === hid ? { text: state.charGift.text, done: state.charGift.done } : null,
                 gifts: hasGifts(state, phase.h) && !(phase.h.birthday && phase.h.who === 'char'),
             };
@@ -796,15 +925,39 @@ function bodyHtml(view, live) {
     const standout = (view.highlights || []).length ? `<div class="ht-group ht-standout"><div class="ht-group-title"><i class="fa-solid fa-star"></i>${L().standout}</div>${view.highlights.map(x => `
             <div class="ht-person"><b>${esc(x.name)}</b><span>${esc(x.text)}</span></div>`).join('')}</div>` : '';
     const peopleSec = section('people', 'fa-users', L().people, groups + standout);
-    const memories = (view.recaps || []).map(r => `<div class="ht-line"><i class="fa-solid fa-bookmark"></i><span><b>${esc(r.name)}:</b> ${esc(r.text)}</span></div>`).join('');
+    // События дня: идущее сверху, мероприятие — своей раскрывающейся карточкой
+    const evRows = (view.evts || []).slice().reverse().map(e => {
+        const st = L().evStatus[e.status] || e.status;
+        const open = ['active', 'invited', 'joined'].includes(e.status);
+        if (e.kind === 'party') {
+            const moments = (e.moments || []).map(m => `<li>${esc(m.title)}</li>`).join('');
+            return `<details class="ht-party ht-ev-${e.status}"${open ? ' open' : ''}>
+                <summary><i class="fa-solid fa-champagne-glasses"></i><span><b>${esc(e.title)}</b>${e.who ? ` · ${esc(e.who)}` : ''}</span><em>${esc(st)}</em></summary>
+                ${moments ? `<div class="ht-moments"><span>${L().moments}</span><ul>${moments}</ul></div>` : ''}
+                ${e.note ? `<p class="ht-ev-note">${esc(e.note)}</p>` : ''}
+            </details>`;
+        }
+        return `<div class="ht-ev ht-ev-${e.status}"><i class="fa-solid ${open ? 'fa-bolt' : e.status === 'done' ? 'fa-circle-check' : 'fa-circle-minus'}"></i>
+            <div><span><b>${esc(e.title)}</b>${e.who ? ` · ${esc(e.who)}` : ''} <em>${esc(st)}</em></span>${e.note ? `<p class="ht-ev-note">${esc(e.note)}</p>` : ''}</div></div>`;
+    }).join('');
+    const eventsSec = section('events', 'fa-bolt', L().events, evRows);
+
+    // Воспоминания: в контекст только по кнопке «вспомнить»
+    const memories = (view.flashbacks || []).map(f => {
+        const queued = view.recall === f.id;
+        const btn = live ? `<button class="ht-recall${queued ? ' ht-on' : ''}" data-act="recall" data-fb="${esc(f.id)}" title="${queued ? L().recallQueued : L().recall}">
+            <i class="fa-solid fa-clock-rotate-left"></i><span>${queued ? L().recallShort : L().recall}</span></button>` : '';
+        return `<div class="ht-fb"><div><b>${esc(f.title)}</b>${f.when ? `<span class="ht-mute"> · ${esc(f.when)}</span>` : ''}<p>${esc(f.text)}</p></div>${btn}</div>`;
+    }).join('');
 
     return `<div class="ht-body">
         ${world ? `<div class="ht-world">${world}</div>` : ''}
         ${charCard}
         ${main}
+        ${eventsSec}
         ${peopleSec}
         ${section('upcoming', 'fa-calendar-days', L().upcoming, upcoming)}
-        ${section('memories', 'fa-bookmark', L().memories, memories)}
+        ${section('memories', 'fa-clock-rotate-left', L().flashbacks, memories)}
         ${live ? `<div class="ht-actions"><button class="ht-btn" data-act="rebuild" title="${L().rebuildTip}"><i class="fa-solid fa-arrows-rotate"></i>${L().rebuild}</button></div>` : ''}
     </div>`;
 }
@@ -819,6 +972,13 @@ function bindBlock(block) {
             const opening = !block.classList.contains('ht-open');
             if (opening) for (const k of SESSION_SECTIONS) delete secSession[k];
             ui.open.set(id, opening);
+            renderBlock(id);
+        } else if (t.dataset.act === 'recall') {
+            const fbId = t.dataset.fb;
+            state.recall = state.recall === fbId ? null : fbId;   // повторное нажатие отменяет
+            saveState();
+            injectPrompts();
+            if (state.recall) window.toastr?.info?.(L().recallToast(getCharName()), 'Hearthtide');
             renderBlock(id);
         } else if (t.dataset.act === 'rebuild') {
             rebuildCalendar();

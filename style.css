@@ -259,3 +259,39 @@
 .ht-standout .ht-group-title { display: flex; align-items: center; gap: 5px; }
 .ht-standout .ht-group-title i { color: var(--ht-acc); width: auto; }
 .ht-standout .ht-person { border-left-color: color-mix(in srgb, var(--ht-acc) 60%, transparent); }
+
+/* ─── События дня ─── */
+.ht-ib { --ht-party: color-mix(in srgb, var(--ht-acc) 35%, #a56bd6); }
+.ht-ev { display: flex; gap: 9px; padding: 6px 8px; margin-bottom: 4px; border-radius: 6px; border-left: 3px solid var(--ht-line-strong); background: var(--ht-soft); }
+.ht-ev > i { color: var(--ht-mute); padding-top: 3px; }
+.ht-ev > div { min-width: 0; }
+.ht-ev em, .ht-party summary em { font-style: normal; font-size: 0.78em; padding: 0 6px; border-radius: 999px; border: 1px solid var(--ht-line-strong); color: var(--ht-mute); white-space: nowrap; }
+.ht-ev-active { border-left-color: var(--ht-fire); background: color-mix(in srgb, var(--ht-fire) 10%, transparent); }
+.ht-ev-active > i, .ht-ev-active em { color: var(--ht-fire); border-color: var(--ht-fire); }
+.ht-ev-done > i { color: var(--ht-acc); }
+.ht-ev-skipped, .ht-ev-faded, .ht-ev-declined, .ht-ev-missed { opacity: 0.6; }
+.ht-ev-note { margin: 3px 0 0; color: var(--ht-mute); font-size: 0.92em; }
+
+/* Мероприятие — своя раскрывающаяся карточка своего цвета */
+.ht-party { margin-bottom: 6px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--ht-party) 55%, transparent); background: color-mix(in srgb, var(--ht-party) 9%, transparent); overflow: hidden; }
+.ht-party summary { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer; list-style: none; }
+.ht-party summary::-webkit-details-marker { display: none; }
+.ht-party summary > i { color: var(--ht-party); }
+.ht-party summary > span { flex: 1; min-width: 0; }
+.ht-party summary em { border-color: var(--ht-party); color: var(--ht-party); }
+.ht-party[open] summary { border-bottom: 1px solid color-mix(in srgb, var(--ht-party) 30%, transparent); }
+.ht-moments { padding: 6px 10px 2px; }
+.ht-moments > span { font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ht-mute); }
+.ht-moments ul { margin: 3px 0 4px; padding-left: 18px; }
+.ht-moments li::marker { color: var(--ht-party); }
+.ht-party .ht-ev-note { padding: 0 10px 8px; }
+.ht-ev-declined.ht-party, .ht-ev-missed.ht-party, .ht-ev-faded.ht-party { opacity: 0.6; }
+
+/* Воспоминания */
+.ht-fb { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; border-bottom: 1px solid var(--ht-line); }
+.ht-fb:last-child { border-bottom: 0; }
+.ht-fb > div { flex: 1; min-width: 0; }
+.ht-fb p { margin: 2px 0 0; line-height: 1.4; }
+.ht-ib .ht-recall { display: inline-flex; align-items: center; gap: 5px; flex: none; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--ht-line-strong); font-size: 0.8em; color: var(--ht-mute); }
+.ht-ib .ht-recall:hover { color: var(--ht-fg); }
+.ht-ib .ht-recall.ht-on { border-color: var(--ht-acc); color: var(--ht-acc); }
