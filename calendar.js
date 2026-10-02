@@ -35,6 +35,14 @@ export function isBanned(state, name) {
     return keys.some(k => banned.some(b => b === k || (k.length >= 5 && b.length >= 5 && (k.includes(b) || b.includes(k)))));
 }
 
+/** Один и тот же праздник под чуть другим названием (опечатка, скобки) — или уже другой */
+export function namesMatch(a, b) {
+    const A = banKeys(a), B = banKeys(b);
+    if (!A.length || !B.length) return false;
+    if (A[0].length >= 6 && B[0].length >= 6 && A[0].slice(0, 6) === B[0].slice(0, 6)) return true;
+    return A.some(k => B.some(x => x === k || (k.length >= 5 && x.length >= 5 && (k.includes(x) || x.includes(k)))));
+}
+
 export function holidayId(h) {
     if (h.birthday) return `bday-${h.who}-${h.start}`;
     return `${String(h.name).toLowerCase().replace(/\s+/g, '-').slice(0, 40)}@${h.start}`;

@@ -2,6 +2,7 @@
 // Разбор скрытых тегов из ответа ИИ.
 //   Каждый ответ:   <!-- HT date=1151-02-05 | time=09:30 | when=5 февраля, утро | place=деревня -->
 //   По запросу:     <!-- HT-CAL … -->   <!-- HT-PREP … -->   <!-- HT-DAY … -->   <!-- HT-RECAP … -->
+//   Повод из истории: <!-- HT-NEW … -->
 
 import { parseDate, parseMonthDay, parseClock } from './dates.js';
 
@@ -49,6 +50,7 @@ export function parseSmall(text) {
             return ['done', 'skipped', 'joined', 'declined'].find(x => v.startsWith(x.slice(0, 4))) || null;
         })(),
         evNote: clean(f.ev_note, 300),
+        mean: clean(f.mean, 240),                                   // смысл праздника, который игрок переименовал
         giftDone: /^(true|yes|1|да)$/i.test(String(f.gift_done || '').trim()),
     };
 }
@@ -85,6 +87,31 @@ const TYPES = ['religious', 'folk', 'seasonal', 'state', 'personal', 'family', '
 function normType(v) {
     const x = String(v || '').toLowerCase();
     return TYPES.find(t => x.startsWith(t.slice(0, 4))) || 'folk';
+}
+
+/**
+ * Новый повод из истории — предложение, которое игрок принимает или отклоняет:
+ *   <!-- HT-NEW ЧТО_СЛУЧИЛОСЬ | YYYY-MM-DD | ДНЕЙ | НАЗВАНИЕ | СМЫСЛ | ТИП | PREP -->
+ */
+export function parseOffers(text) {
+    const inner = findBlock(text, 'HT-NEW');
+    if (inner == null) return [];
+    const out = [];
+    for (const raw of inner.split(/\n+/)) {
+        const cols = raw.split('|').map(x => x.trim());
+        if (/^H$/i.test(cols[0] || '')) cols.shift();               // вдруг пришло в формате строки H
+        const start = parseDate(cols[1]);
+        const name = clean(cols[3], 80);
+        if (start == null || !name) continue;
+        const prep = parseInt(cols[6]);
+        out.push({
+            cause: clean(cols[0], 120), start, name,
+            days: Math.max(1, Math.min(14, parseInt(cols[2]) || 1)),
+            meaning: clean(cols[4], 240), type: normType(cols[5]),
+            prep: isNaN(prep) ? null : Math.max(0, Math.min(45, prep)),
+        });
+    }
+    return out.slice(0, 2);
 }
 
 /** Подготовка: people / mood / char */
@@ -190,8 +217,8 @@ export function parseRecap(text) {
 export function stripBlocks(text) {
     let t = String(text ?? '');
     t = t.replace(/```[a-z]*\s*(?:<!--\s*)?HT(?:-[A-Z]+)?\b[\s\S]*?```/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV)\b[\s\S]*?-->/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV)\b(?![\s\S]*-->)[\s\S]*$/i, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW)\b[\s\S]*?-->/gi, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW)\b(?![\s\S]*-->)[\s\S]*$/i, '');
     t = t.replace(/^\s*HT(?:-[A-Z]+)?\b[\s:]+[^\n]*$/gim, '');
     return t.replace(/\s+$/, '');
 }

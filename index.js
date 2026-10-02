@@ -10,8 +10,8 @@ import {
 import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural, parseDate, fromDayNum, isoOf } from './dates.js';
-import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, stripBlocks } from './tag.js';
-import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, hasGifts, openEvent, OPEN_STATUSES } from './calendar.js';
+import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, stripBlocks } from './tag.js';
+import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, hasGifts, openEvent, OPEN_STATUSES } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt } from './prompts.js';
 import { strings } from './i18n.js';
 
@@ -89,6 +89,8 @@ function defaultState() {
         banned: [],             // ключи названий праздников, которые игрок удалил
         bannedNames: [],        // сами названия — для промпта
         birthdayOff: {},        // удалённые дни рождения { user: true }
+        offers: [],             // поводы из истории, ждут решения игрока: { id, cause, name, start, days, meaning, type, prep, turn }
+        offerNo: [],            // названия отклонённых поводов — больше не предлагаем
         missed: 0,
         turn: 0,
         lastMention: -99,
@@ -106,6 +108,18 @@ function loadState() {
     if (!state.flashbacks.length && state.recaps?.length) {
         state.flashbacks = state.recaps.map((r, i) => ({ id: `fb-old-${i}`, title: r.name, text: r.text, when: null, kind: 'holiday' }));
     }
+    // место, сохранённое вместе с английским словом-типом («settlement Деревня Березовка»)
+    if (state.place) state.place = tidyPlace(state.place);
+    if (state.setting?.place) state.setting.place = tidyPlace(state.setting.place);
+}
+
+// ИИ иногда пишет тип места словом из промпта на другом языке: «settlement Деревня Березовка» → «Деревня Березовка»
+function tidyPlace(v) {
+    const s = String(v ?? '').trim();
+    const m = langMode() === 'en'
+        ? s.match(/^[а-яё][а-яё' -]*?\s+(?=[a-z])/i)
+        : s.match(/^[a-z][a-z' -]*?\s+(?=[а-яё])/i);
+    return m ? s.slice(m[0].length) : s;
 }
 
 function saveState() {
@@ -135,6 +149,10 @@ function ctxFor(request = null) {
         fixPlace: !!placeName && !langOk(placeName),
         fixSetting: !!state.setting && (!langOk(state.setting.era) || !langOk(state.setting.faith)),
         banned: state.bannedNames || [],
+        // игрок переименовал праздник в другой — ИИ дописывает новый смысл
+        meaningFor: (state.holidays || []).find(h => h.needMeaning && !isBanned(state, h.name))?.name || null,
+        // чтобы ИИ не предлагал одно и то же: ждущие решения и недавно отклонённые
+        offerNames: [...(state.offers || []).map(o => o.name), ...(state.offerNo || []).slice(-2)].slice(0, 4),
         peopleSeen: peopleSeen(),
         eraMode: eraMode(),
         lang: L().promptLang,
@@ -150,7 +168,7 @@ function takeSnapshot(beforeMsg) {
     if (state.snapshots.length > 20) state.snapshots = state.snapshots.slice(-20);
 }
 // Решения игрока (удалённые праздники) переживают откаты
-const USER_FIELDS = ['banned', 'bannedNames', 'birthdayOff', 'calIgnore'];
+const USER_FIELDS = ['banned', 'bannedNames', 'birthdayOff', 'calIgnore', 'offerNo'];
 
 function restoreSnapshot(snap) {
     const keep = state.snapshots;
@@ -160,6 +178,8 @@ function restoreSnapshot(snap) {
     state.snapshots = keep;
     // удалённые игроком праздники не возвращаются вместе со старым снимком
     state.holidays = (state.holidays || []).filter(h => !isBanned(state, h.name));
+    // и решённые поводы тоже: отклонённые и уже принятые
+    state.offers = (state.offers || []).filter(o => !offerKnown(o));
 }
 
 // «Подобрать заново» — тоже решение игрока: применяем и к сохранённым снимкам,
@@ -296,6 +316,12 @@ function processReply(N) {
     const recap = parseRecap(source);
     const people = parsePeople(source);
     const evs = parseEvents(source);
+    const offersIn = parseOffers(source);
+    // Строки H, пришедшие без запроса календаря, — тоже повод из истории: решает игрок
+    if (cal && asked !== 'cal' && !cal.setting && cal.holidays.length) {
+        offersIn.push(...cal.holidays.map(h => ({ ...h, cause: null })));
+        cal.holidays = [];
+    }
 
     // Чистим текст сообщения от крупных блоков и «неправильных» форм тега
     const cleaned = stripBlocks(text);
@@ -324,7 +350,7 @@ function processReply(N) {
         if (small.clock != null) state.clock = small.clock;
         slip = slip || !langOk(small.when) || !langOk(small.place);
         if (small.when && langOk(small.when)) state.when = small.when;
-        if (small.place && langOk(small.place)) state.place = small.place;
+        if (small.place && langOk(small.place)) state.place = tidyPlace(small.place);
     } else {
         state.missed = (state.missed || 0) + 1;
     }
@@ -337,13 +363,21 @@ function processReply(N) {
         if (cal.setting) {
             for (const k of ['era', 'faith', 'place']) if (cal.setting[k] && !langOk(cal.setting[k])) { cal.setting[k] = null; slip = true; }
             state.setting = { ...(state.setting || {}), ...Object.fromEntries(Object.entries(cal.setting).filter(([, v]) => v)) };
-            if (cal.setting.place) state.place = cal.setting.place;
+            if (cal.setting.place) state.place = state.setting.place = tidyPlace(cal.setting.place);
         }
         mergeHolidays(cal.holidays);
         for (const [who, md] of Object.entries(cal.birthdays)) state.birthdays[who] = md;
         state.forceCal = false;
     }
     pruneHolidays();
+    // ── Новый смысл переименованного праздника ──
+    if (small?.mean) {
+        const target = state.holidays.find(h => h.needMeaning && !isBanned(state, h.name));
+        if (target && langOk(small.mean)) { target.meaning = small.mean; delete target.needMeaning; }
+        else if (target) slip = true;
+    }
+    // ── Поводы из истории — ждут решения игрока ──
+    if (takeOffers(offersIn)) slip = true;
 
     // ── Подготовка, день праздника, итог — привязываем к текущей фазе ──
     let phase = phaseOf(state);
@@ -441,7 +475,7 @@ function processReply(N) {
     }
 
     phase = phaseOf(state);
-    if (small || cal || prep || people || day || recap) state.langSlip = slip;
+    if (small || cal || prep || people || day || recap || offersIn.length) state.langSlip = slip;
     // Праздник сменился или был скип на несколько дней — люди и мысли прошлого праздника больше не актуальны
     const curHid = phase.h && (phase.kind === 'prep' || phase.kind === 'today') ? phase.h.id : null;
     const jumped = prevToday != null && state.today != null && state.today - prevToday > 1;
@@ -473,6 +507,91 @@ function processReply(N) {
     scheduleRenderAll();
 }
 
+// ─── Поводы из истории: ИИ предлагает, игрок решает ───
+/** Повод уже не нужен: отклонён, удалён или такой праздник уже в календаре */
+function offerKnown(o) {
+    if (isBanned(state, o.name) || (state.offerNo || []).some(n => namesMatch(n, o.name))) return true;
+    return (state.holidays || []).some(h => namesMatch(h.name, o.name) && Math.abs(h.start - o.start) <= 30);
+}
+
+/** Принять новые поводы из ответа; вернуть true, если что-то пришло не на том языке */
+function takeOffers(list) {
+    let slip = false;
+    state.offers = state.offers || [];
+    for (const o of list || []) {
+        if (![o.name, o.meaning, o.cause].every(langOk)) { slip = true; continue; }
+        if (state.today != null && (o.start < state.today || o.start - state.today > 180)) continue;
+        if (birthdayOwner(o.name) || offerKnown(o)) continue;
+        if (state.offers.some(x => namesMatch(x.name, o.name))) continue;
+        state.offers.push({ ...o, id: `of-${state.turn}-${Date.now().toString(36)}-${state.offers.length}`, turn: state.turn });
+    }
+    // устаревшие: дата прошла, игрок давно не решает
+    state.offers = state.offers
+        .filter(o => !offerKnown(o) && (state.today == null || o.start >= state.today) && state.turn - o.turn <= 20)
+        .slice(-3);
+    return slip;
+}
+
+const dropOfferIn = (st, oid) => { st.offers = (st.offers || []).filter(o => o.id !== oid); };
+
+/** Игрок принял повод (возможно, поправив его) — праздник в календаре, переживает свайпы и «подобрать заново» */
+function acceptOffer(oid, edit = null) {
+    const o = (state.offers || []).find(x => x.id === oid);
+    if (!o) return false;
+    let start = o.start;
+    if (edit) {
+        start = parseDate(edit.date);
+        if (start == null) { window.toastr?.warning?.(L().badDate, 'Hearthtide'); return false; }
+    }
+    const toBday = String(edit?.type || '').startsWith('bday_') ? edit.type.slice(5) : null;
+    if (toBday) {
+        const md = fromDayNum(start);
+        const apply = (st) => {
+            st.birthdays = { ...(st.birthdays || {}), [toBday]: { ...(st.birthdays?.[toBday] || {}), m: md.m, d: md.d } };
+            if (st.birthdayOff) delete st.birthdayOff[toBday];
+            dropOfferIn(st, oid);
+        };
+        apply(state);
+        applyToSnapshots(apply);
+    } else {
+        const name = String(edit?.name || '').trim() || o.name;
+        const meanIn = edit ? String(edit.meaning ?? '').trim() : null;
+        const h = { start, days: o.days, name, type: edit?.type || o.type, prep: o.prep, edited: true, story: true };
+        if (meanIn && meanIn !== (o.meaning || '')) h.meaning = meanIn;              // игрок сам написал смысл
+        else if (namesMatch(name, o.name)) h.meaning = o.meaning;
+        else { h.meaning = null; h.needMeaning = true; }                             // переименовал в другое — смысл допишет ИИ
+        // игрок явно хочет этот праздник — снимаем с него старый запрет
+        const keys = banKeys(name);
+        state.banned = state.banned.filter(b => !keys.includes(b));
+        state.bannedNames = state.bannedNames.filter(n => !namesMatch(n, name));
+        const id = holidayId(h);
+        const apply = (st) => {
+            st.holidays = st.holidays || [];
+            if (!st.holidays.some(x => holidayId(x) === id)) st.holidays.push(clone(h));
+            st.holidays.sort((a, b) => a.start - b.start);
+            dropOfferIn(st, oid);
+        };
+        apply(state);
+        applyToSnapshots(apply);
+    }
+    saveState();
+    injectPrompts();
+    window.toastr?.success?.(L().offerAdded, 'Hearthtide');
+    return true;
+}
+
+/** Игрок отклонил повод — больше его не предлагаем */
+function declineOffer(oid) {
+    const o = (state.offers || []).find(x => x.id === oid);
+    if (!o) return;
+    state.offerNo = [...(state.offerNo || []).filter(n => !namesMatch(n, o.name)), o.name].slice(-30);
+    dropOfferIn(state, oid);
+    applyToSnapshots(st => dropOfferIn(st, oid));
+    saveState();
+    injectPrompts();
+    window.toastr?.info?.(L().offerDropped, 'Hearthtide');
+}
+
 // «День рождения Нины» строкой праздника — это дубль дня рождения из B-строк
 function birthdayOwner(name) {
     if (!/(день\s*рожд|днюх|именинн|birthday)/i.test(String(name))) return null;
@@ -495,7 +614,7 @@ function mergeHolidays(list) {
             continue;
         }
         // праздник, который игрок поправил руками, календарь ИИ не перезаписывает
-        if (state.holidays.some(x => x.edited && (x.name.toLowerCase() === h.name.toLowerCase() || holidayId(x) === holidayId(h)))) continue;
+        if (state.holidays.some(x => x.edited && (holidayId(x) === holidayId(h) || (namesMatch(x.name, h.name) && Math.abs(x.start - h.start) <= 30)))) continue;
         const id = holidayId(h);
         const i = state.holidays.findIndex(x => holidayId(x) === id
             || (x.name.toLowerCase() === h.name.toLowerCase() && Math.abs(x.start - h.start) <= 3));
@@ -528,10 +647,10 @@ function rebuildCalendar() {
     if (!state) loadState();
     const drop = (st) => {
         if (st.today != null) {
-            // идущий сегодня праздник оставляем, остальные будущие — убираем
-            st.holidays = (st.holidays || []).filter(h => h.start <= st.today && h.start + h.days - 1 >= st.today);
+            // идущий сегодня праздник и принятые игроком поводы из истории оставляем, остальные будущие — убираем
+            st.holidays = (st.holidays || []).filter(h => h.story || (h.start <= st.today && h.start + h.days - 1 >= st.today));
         } else {
-            st.holidays = [];
+            st.holidays = (st.holidays || []).filter(h => h.story);
         }
         st.prep = null;
         st.forceCal = true;
@@ -575,7 +694,18 @@ function renameHidIn(st, oldId, newId) {
     if (st.activeHid === oldId) st.activeHid = newId;
 }
 
-function saveHolidayEdit(hid, name, dateStr, type) {
+// Праздник подменили другим: подготовку, распорядок и шаги персонажа ИИ соберёт заново
+function forgetHolidayIn(st, id) {
+    if (st.prep?.hid === id) st.prep = null;
+    for (const map of ['days', 'planPart']) {
+        for (const k of Object.keys(st[map] || {})) if (k.startsWith(`${id}#`)) delete st[map][k];
+    }
+    for (const map of ['charLog', 'care', 'gifts']) if (st[map]) delete st[map][id];
+    if (st.charNow?.hid === id) st.charNow = null;
+    if (st.charGift?.hid === id) st.charGift = null;
+}
+
+function saveHolidayEdit(hid, name, dateStr, type, meaning = null) {
     const h = allHolidays(state).find(x => x.id === hid);
     if (!h) return false;
     const start = parseDate(dateStr);
@@ -601,11 +731,17 @@ function saveHolidayEdit(hid, name, dateStr, type) {
     } else {
         const newName = String(name || '').trim() || h.name;
         const fixed = { start, name: newName, type: type || h.type, edited: true };
+        // Другой праздник, а не поправленное название: старый смысл и подготовка к нему больше не подходят
+        const other = !namesMatch(h.name, newName);
+        const meanIn = meaning == null ? null : String(meaning).trim();
+        if (meanIn && meanIn !== (h.meaning || '')) { fixed.meaning = meanIn; fixed.needMeaning = false; }
+        else if (other) { fixed.meaning = null; fixed.needMeaning = true; }
         const newId = holidayId({ ...h, ...fixed });
         const apply = (st) => {
             const x = (st.holidays || []).find(y => holidayId(y) === hid);
-            if (x) Object.assign(x, fixed);
+            if (x) { Object.assign(x, fixed); if (!x.needMeaning) delete x.needMeaning; }
             renameHidIn(st, hid, newId);
+            if (other) forgetHolidayIn(st, newId);
             st.holidays?.sort((a, b) => a.start - b.start);
         };
         apply(state);
@@ -696,7 +832,7 @@ function viewSnapshot(phase) {
         prep: phase.kind === 'prep' && state.prep?.hid === phase.h?.id ? state.prep : null,
         ended: phase.ended ? { name: displayName(phase.ended), recap: state.recaps.find(r => r.hid === phase.ended.id)?.text || null } : null,
         upcoming: (phase.upcoming || []).filter(x => !phase.h || x.id !== phase.h.id).slice(0, 4)
-            .map(x => ({ id: x.id, name: displayName(x), raw: x.name, iso: isoOf(x.start), type: x.type, daysTo: x.start - state.today, birthday: !!x.birthday, who: x.who })),
+            .map(x => ({ id: x.id, name: displayName(x), raw: x.name, iso: isoOf(x.start), type: x.type, meaning: x.meaning, daysTo: x.start - state.today, birthday: !!x.birthday, who: x.who })),
         recaps: state.recaps.slice(-3).reverse(),
         flashbacks: clone(state.flashbacks.slice(-10).reverse()),
         recall: state.recall,
@@ -769,7 +905,7 @@ function onAfterCombinePrompts(data) {
 // ═══════════════════════════════════════════════════════════════
 // ИНФОБЛОК
 // ═══════════════════════════════════════════════════════════════
-const ui = { open: new Map(), confirmDel: null, editing: null };
+const ui = { open: new Map(), confirmDel: null, editing: null, offerSeen: new Set() };
 
 const TYPE_ICON = {
     religious: 'fa-church', folk: 'fa-wheat-awn', seasonal: 'fa-leaf', state: 'fa-flag',
@@ -845,7 +981,7 @@ function renderBlock(id) {
     block.dataset.mesid = String(id);
     const open = ui.open.get(id) || false;
     block.classList.toggle('ht-open', open);
-    block.innerHTML = headHtml(view, open) + (open ? bodyHtml(view, live) : '');
+    block.innerHTML = headHtml(view, open) + (live ? offerHtml() : '') + (open ? bodyHtml(view, live) : '');
 }
 
 // ─── Кольцо: сколько дней осталось (из 30), в день праздника — полное ───
@@ -934,6 +1070,48 @@ function section(key, icon, title, html, extra = '') {
     </section>`;
 }
 
+// Форма правки праздника (и повода перед принятием): название, дата, тип, смысл
+function editFormHtml(x, act = 'edit-save', label = L().save) {
+    const typeOpts = Object.entries(L().types).map(([k, v]) => `<option value="${k}" ${!x.birthday && x.type === k ? 'selected' : ''}>${v}</option>`).join('')
+        + ['user', 'char'].map(w => `<option value="bday_${w}" ${x.birthday && x.who === w ? 'selected' : ''}>${esc(L().bdayOf(w === 'user' ? getUserName() : getCharName()))}</option>`).join('');
+    return `<div class="ht-edit" data-hid="${esc(x.id)}">
+        ${x.birthday ? '' : `<label>${L().fName}<input class="text_pole" data-ed="name" value="${esc(x.raw || x.name)}"></label>`}
+        <label>${L().fDate}<input class="text_pole" data-ed="date" value="${esc(x.iso || '')}" inputmode="numeric"></label>
+        ${x.birthday ? '' : `<label>${L().fType}<select class="text_pole" data-ed="type">${typeOpts}</select></label>`}
+        ${x.birthday ? '' : `<label>${L().fMeaning}<textarea class="text_pole" data-ed="meaning" rows="2">${esc(x.meaning || '')}</textarea></label>`}
+        <div class="ht-edit-actions">
+            <button class="ht-btn" data-act="edit-cancel">${L().cancel}</button>
+            <button class="ht-btn ht-btn-main" data-act="${act}" data-hid="${esc(x.id)}"><i class="fa-solid fa-check"></i>${label}</button>
+        </div>
+    </div>`;
+}
+
+// ─── Повод из истории: под шапкой последнего инфоблока, видно и в свёрнутом ───
+function offerHtml() {
+    const list = state?.offers || [];
+    const o = list[0];
+    if (!o) return '';
+    if (ui.editing === o.id) {
+        return `<div class="ht-offer">${editFormHtml({ id: o.id, raw: o.name, iso: isoOf(o.start), type: o.type, meaning: o.meaning }, 'offer-save', L().accept)}</div>`;
+    }
+    const d = state.today != null ? o.start - state.today : null;
+    const when = d == null ? isoOf(o.start) : d <= 0 ? L().offerToday : d === 1 ? L().tomorrow : L().inDays(daysWord(d));
+    const fresh = !ui.offerSeen.has(o.id);
+    ui.offerSeen.add(o.id);
+    return `<div class="ht-offer${fresh ? ' ht-offer-new' : ''}" data-oid="${esc(o.id)}">
+        ${o.cause ? `<div class="ht-offer-cause"><i class="fa-solid fa-feather-pointed"></i><span>${L().offerCause}:</span> <b>${esc(o.cause)}</b></div>` : ''}
+        <div class="ht-offer-hol"><i class="fa-solid ${TYPE_ICON[o.type] || 'fa-star'}"></i>
+            <span>${L().offerHol}: <b>${esc(o.name)}</b> · ${esc(when)}</span>
+            ${list.length > 1 ? `<em>${esc(L().offerMore(list.length - 1))}</em>` : ''}</div>
+        ${o.meaning ? `<p class="ht-offer-mean">${esc(o.meaning)}</p>` : ''}
+        <div class="ht-offer-actions">
+            <button class="ht-btn ht-btn-main" data-act="offer-yes" data-oid="${esc(o.id)}"><i class="fa-solid fa-check"></i>${L().accept}</button>
+            <button class="ht-btn" data-act="offer-edit" data-oid="${esc(o.id)}"><i class="fa-solid fa-pen"></i>${L().edit}</button>
+            <button class="ht-btn ht-btn-quiet" data-act="offer-no" data-oid="${esc(o.id)}"><i class="fa-solid fa-xmark"></i>${L().decline}</button>
+        </div>
+    </div>`;
+}
+
 function bodyHtml(view, live) {
     const delBtn = (hid) => {
         if (!live || !hid) return '';
@@ -942,20 +1120,7 @@ function bodyHtml(view, live) {
             <i class="fa-solid ${confirm ? 'fa-check' : 'fa-trash-can'}"></i>${confirm ? `<span>${L().removeQ}</span>` : ''}</button>`;
     };
     const editBtn = (hid) => (live && hid ? `<button class="ht-del ht-edit-btn" data-act="edit" data-hid="${esc(hid)}" title="${L().edit}" aria-label="${L().edit}"><i class="fa-solid fa-pen"></i></button>` : '');
-    // Форма правки праздника: название, дата, тип (включая «день рождения» персонажей)
-    const editForm = (x) => {
-        const typeOpts = Object.entries(L().types).map(([k, v]) => `<option value="${k}" ${!x.birthday && x.type === k ? 'selected' : ''}>${v}</option>`).join('')
-            + ['user', 'char'].map(w => `<option value="bday_${w}" ${x.birthday && x.who === w ? 'selected' : ''}>${esc(L().bdayOf(w === 'user' ? getUserName() : getCharName()))}</option>`).join('');
-        return `<div class="ht-edit" data-hid="${esc(x.id)}">
-            ${x.birthday ? '' : `<label>${L().fName}<input class="text_pole" data-ed="name" value="${esc(x.raw || x.name)}"></label>`}
-            <label>${L().fDate}<input class="text_pole" data-ed="date" value="${esc(x.iso || '')}" inputmode="numeric"></label>
-            ${x.birthday ? '' : `<label>${L().fType}<select class="text_pole" data-ed="type">${typeOpts}</select></label>`}
-            <div class="ht-edit-actions">
-                <button class="ht-btn" data-act="edit-cancel">${L().cancel}</button>
-                <button class="ht-btn ht-btn-main" data-act="edit-save" data-hid="${esc(x.id)}"><i class="fa-solid fa-check"></i>${L().save}</button>
-            </div>
-        </div>`;
-    };
+    const editForm = (x) => editFormHtml(x);
     const s = view.setting || {};
     const kv = (icon, label, value) => `<div class="ht-kv"><i class="fa-solid ${icon}"></i><div><span>${label}</span><b>${esc(value)}</b></div></div>`;
     const world = [
@@ -1086,9 +1251,25 @@ function bindBlock(block) {
         } else if (t.dataset.act === 'edit-save') {
             const f = t.closest('.ht-edit');
             const val = (k) => f?.querySelector(`[data-ed="${k}"]`)?.value ?? '';
-            if (saveHolidayEdit(t.dataset.hid, val('name'), val('date'), val('type'))) {
+            if (saveHolidayEdit(t.dataset.hid, val('name'), val('date'), val('type'), f?.querySelector('[data-ed="meaning"]') ? val('meaning') : null)) {
                 ui.editing = null;
                 window.toastr?.success?.(L().saved, 'Hearthtide');
+                renderAll();
+            }
+        } else if (t.dataset.act === 'offer-yes') {
+            if (acceptOffer(t.dataset.oid)) renderAll();
+        } else if (t.dataset.act === 'offer-no') {
+            declineOffer(t.dataset.oid);
+            renderAll();
+        } else if (t.dataset.act === 'offer-edit') {
+            ui.editing = t.dataset.oid;
+            ui.confirmDel = null;
+            renderBlock(id);
+        } else if (t.dataset.act === 'offer-save') {
+            const f = t.closest('.ht-edit');
+            const val = (k) => f?.querySelector(`[data-ed="${k}"]`)?.value ?? '';
+            if (acceptOffer(t.dataset.hid, { name: val('name'), date: val('date'), type: val('type'), meaning: val('meaning') })) {
+                ui.editing = null;
                 renderAll();
             }
         } else if (t.dataset.act === 'place-save') {

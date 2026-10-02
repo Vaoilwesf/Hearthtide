@@ -55,6 +55,14 @@ const RU = {
     remove: 'Убрать праздник', removeQ: 'Удалить?', removeSure: 'Точно удалить?',
     birthday: (who) => `День рождения · ${who}`,
     rebuildToast: 'Праздники подберутся заново в следующем ответе',
+    fMeaning: 'Смысл и обычаи',
+    offerCause: 'Новое событие',
+    offerHol: 'Намечается',
+    offerToday: 'сегодня',
+    offerMore: (n) => `ещё ${n}`,
+    accept: 'Принять', decline: 'Отклонить',
+    offerAdded: 'Праздник добавлен',
+    offerDropped: 'Больше не предложу',
     promptLang: 'Russian',
 };
 
@@ -112,6 +120,14 @@ const EN = {
     remove: 'Remove holiday', removeQ: 'Remove?', removeSure: 'Remove for sure?',
     birthday: (who) => `Birthday · ${who}`,
     rebuildToast: 'Holidays will be picked again in the next reply',
+    fMeaning: 'Meaning and customs',
+    offerCause: 'New in the story',
+    offerHol: 'Coming up',
+    offerToday: 'today',
+    offerMore: (n) => `+${n} more`,
+    accept: 'Accept', decline: 'Decline',
+    offerAdded: 'Holiday added',
+    offerDropped: "Won't suggest it again",
     promptLang: 'English',
 };
 

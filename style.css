@@ -310,3 +310,32 @@
 .ht-edit .text_pole, .ht-kv-edit .text_pole { margin: 0; font-size: 1.1em; color: var(--ht-fg); }
 .ht-edit-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
 .ht-ib .ht-btn-main { border-color: var(--ht-acc); color: var(--ht-acc); }
+
+/* ─── Повод из истории: предложение нового праздника ─── */
+.ht-offer {
+    margin: 0 10px 8px; padding: 8px 10px; border-radius: 8px;
+    border: 1px dashed color-mix(in srgb, var(--ht-acc) 60%, transparent);
+    background: color-mix(in srgb, var(--ht-acc) 8%, transparent);
+    display: flex; flex-direction: column; gap: 4px;
+}
+.ht-offer > .ht-edit { margin: 0; border: 0; padding: 0; background: none; }
+.ht-offer-cause { color: var(--ht-mute); font-size: 0.92em; }
+.ht-offer-cause > i, .ht-offer-hol > i { color: var(--ht-acc); margin-right: 4px; }
+.ht-offer-cause b { color: var(--ht-fg); font-weight: 600; }
+.ht-offer-hol { display: flex; align-items: baseline; gap: 2px; }
+.ht-offer-hol > span { flex: 1; min-width: 0; }
+.ht-offer-hol b { font-weight: 700; }
+.ht-offer-hol em { font-style: normal; font-size: 0.8em; color: var(--ht-mute); white-space: nowrap; }
+.ht-offer-mean { margin: 0; color: var(--ht-mute); font-size: 0.9em; line-height: 1.4; }
+.ht-offer-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.ht-ib .ht-btn-quiet { border-color: var(--ht-line); color: var(--ht-mute); }
+.ht-ib .ht-btn-quiet:hover { color: var(--ht-fg); }
+.ht-edit textarea.text_pole { resize: vertical; min-height: 2.6em; font-family: inherit; }
+
+/* Появляется один раз — лёгкий сдвиг, только transform */
+.ht-offer-new { animation: ht-offer-in 0.35s ease-out; }
+.ht-offer-new .ht-offer-cause > i { display: inline-block; animation: ht-offer-nod 0.9s ease-in-out 0.35s 2; }
+@keyframes ht-offer-in { from { transform: translateY(-6px) scale(0.985); } to { transform: none; } }
+@keyframes ht-offer-nod { 50% { transform: rotate(-14deg); } }
+@media (prefers-reduced-motion: reduce) { .ht-offer-new, .ht-offer-new .ht-offer-cause > i { animation: none; } }
+@media (max-width: 600px) { .ht-offer { margin: 0 8px 8px; } }
