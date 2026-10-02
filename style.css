@@ -295,3 +295,18 @@
 .ht-ib .ht-recall { display: inline-flex; align-items: center; gap: 5px; flex: none; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--ht-line-strong); font-size: 0.8em; color: var(--ht-mute); }
 .ht-ib .ht-recall:hover { color: var(--ht-fg); }
 .ht-ib .ht-recall.ht-on { border-color: var(--ht-acc); color: var(--ht-acc); }
+
+/* ─── Правка ─── */
+.ht-ib .ht-edit-btn { margin-left: 2px; }
+.ht-kv { position: relative; }
+.ht-kv > .ht-edit-btn { align-self: flex-start; margin-left: auto; }
+.ht-edit {
+    display: flex; flex-direction: column; gap: 6px;
+    margin: 6px 0; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--ht-acc) 45%, transparent);
+    background: color-mix(in srgb, var(--ht-acc) 6%, transparent);
+}
+.ht-edit label, .ht-kv-edit > div { display: flex; flex-direction: column; gap: 2px; font-size: 0.85em; color: var(--ht-mute); }
+.ht-edit .text_pole, .ht-kv-edit .text_pole { margin: 0; font-size: 1.1em; color: var(--ht-fg); }
+.ht-edit-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
+.ht-ib .ht-btn-main { border-color: var(--ht-acc); color: var(--ht-acc); }

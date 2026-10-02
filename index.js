@@ -9,7 +9,7 @@ import {
 } from '../../../../script.js';
 import { eventSource, event_types } from '../../../../scripts/events.js';
 
-import { dayPart, plural } from './dates.js';
+import { dayPart, plural, parseDate, fromDayNum, isoOf } from './dates.js';
 import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, stripBlocks } from './tag.js';
 import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, hasGifts, openEvent, OPEN_STATUSES } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt } from './prompts.js';
@@ -494,6 +494,8 @@ function mergeHolidays(list) {
             }
             continue;
         }
+        // праздник, который игрок поправил руками, календарь ИИ не перезаписывает
+        if (state.holidays.some(x => x.edited && (x.name.toLowerCase() === h.name.toLowerCase() || holidayId(x) === holidayId(h)))) continue;
         const id = holidayId(h);
         const i = state.holidays.findIndex(x => holidayId(x) === id
             || (x.name.toLowerCase() === h.name.toLowerCase() && Math.abs(x.start - h.start) <= 3));
@@ -553,6 +555,83 @@ function rebuildCalendar() {
     window.toastr?.info?.(L().rebuildToast, 'Hearthtide');
 }
 
+// ─── Правка праздника игроком ───
+// Праздник опознаётся по «название@дата»: при правке переносим на новое имя всё, что к нему привязано
+function renameHidIn(st, oldId, newId) {
+    if (oldId === newId) return;
+    if (st.prep?.hid === oldId) st.prep.hid = newId;
+    for (const k of Object.keys(st.days || {})) {
+        if (k.startsWith(`${oldId}#`)) { st.days[k.replace(oldId, newId)] = st.days[k]; delete st.days[k]; }
+    }
+    for (const k of Object.keys(st.planPart || {})) {
+        if (k.startsWith(`${oldId}#`)) { st.planPart[k.replace(oldId, newId)] = st.planPart[k]; delete st.planPart[k]; }
+    }
+    for (const map of ['charLog', 'highlights', 'care', 'gifts', 'recapDone']) {
+        if (st[map] && oldId in st[map]) { st[map][newId] = st[map][oldId]; delete st[map][oldId]; }
+    }
+    if (st.charNow?.hid === oldId) st.charNow.hid = newId;
+    if (st.charGift?.hid === oldId) st.charGift.hid = newId;
+    for (const e of st.evts || []) if (e.hid === oldId) e.hid = newId;
+    if (st.activeHid === oldId) st.activeHid = newId;
+}
+
+function saveHolidayEdit(hid, name, dateStr, type) {
+    const h = allHolidays(state).find(x => x.id === hid);
+    if (!h) return false;
+    const start = parseDate(dateStr);
+    if (start == null) { window.toastr?.warning?.(L().badDate, 'Hearthtide'); return false; }
+    const md = fromDayNum(start);
+    const toBday = String(type || '').startsWith('bday_') ? type.slice(5) : null;
+
+    if (h.birthday || toBday) {
+        // день рождения: хранится как «месяц-день» в карточке персонажа
+        const who = toBday || h.who;
+        const apply = (st) => {
+            st.birthdays = { ...(st.birthdays || {}), [who]: { ...(st.birthdays?.[who] || {}), m: md.m, d: md.d } };
+            if (st.birthdayOff) delete st.birthdayOff[who];
+            if (!h.birthday) st.holidays = (st.holidays || []).filter(x => holidayId(x) !== hid);
+        };
+        apply(state);
+        applyToSnapshots(apply);
+        if (!h.birthday) {
+            // бывший праздник больше не предлагать
+            for (const k of banKeys(h.name)) if (!state.banned.includes(k)) state.banned.push(k);
+            if (!state.bannedNames.includes(h.name)) state.bannedNames.push(h.name);
+        }
+    } else {
+        const newName = String(name || '').trim() || h.name;
+        const fixed = { start, name: newName, type: type || h.type, edited: true };
+        const newId = holidayId({ ...h, ...fixed });
+        const apply = (st) => {
+            const x = (st.holidays || []).find(y => holidayId(y) === hid);
+            if (x) Object.assign(x, fixed);
+            renameHidIn(st, hid, newId);
+            st.holidays?.sort((a, b) => a.start - b.start);
+        };
+        apply(state);
+        applyToSnapshots(apply);
+        // переименовали — старое название ИИ больше не предлагает
+        if (newName.toLowerCase() !== h.name.toLowerCase()) {
+            for (const k of banKeys(h.name)) if (!state.banned.includes(k) && !banKeys(newName).includes(k)) state.banned.push(k);
+            if (!state.bannedNames.includes(h.name)) state.bannedNames.push(h.name);
+        }
+    }
+    saveState();
+    injectPrompts();
+    return true;
+}
+
+function savePlaceEdit(value) {
+    const v = String(value || '').trim();
+    if (!v) return false;
+    state.place = v;
+    if (state.setting) state.setting.place = v;
+    applyToSnapshots(st => { st.place = v; if (st.setting) st.setting.place = v; });
+    saveState();
+    injectPrompts();
+    return true;
+}
+
 // ─── Удаление праздника игроком: больше не предлагается и нигде не показывается ───
 function deleteHoliday(hid) {
     const h = allHolidays(state).find(x => x.id === hid);
@@ -610,14 +689,14 @@ function viewSnapshot(phase) {
         v: 1,
         setting: state.setting, place: state.place, when: state.when, part: dayPart(state.clock),
         kind: phase.kind,
-        h: phase.h ? { id: phase.h.id, name: displayName(phase.h), meaning: phase.h.meaning, type: phase.h.type, days: phase.h.days, birthday: !!phase.h.birthday, who: phase.h.who } : null,
+        h: phase.h ? { id: phase.h.id, name: displayName(phase.h), raw: phase.h.name, iso: isoOf(phase.h.start), meaning: phase.h.meaning, type: phase.h.type, days: phase.h.days, birthday: !!phase.h.birthday, who: phase.h.who } : null,
         daysTo: phase.daysTo ?? null,
         dayIndex: phase.dayIndex ?? null,
         plan: phase.kind === 'today' ? planFor(phase.h, phase.dayIndex) : null,
         prep: phase.kind === 'prep' && state.prep?.hid === phase.h?.id ? state.prep : null,
         ended: phase.ended ? { name: displayName(phase.ended), recap: state.recaps.find(r => r.hid === phase.ended.id)?.text || null } : null,
         upcoming: (phase.upcoming || []).filter(x => !phase.h || x.id !== phase.h.id).slice(0, 4)
-            .map(x => ({ id: x.id, name: displayName(x), type: x.type, daysTo: x.start - state.today, birthday: !!x.birthday, who: x.who })),
+            .map(x => ({ id: x.id, name: displayName(x), raw: x.name, iso: isoOf(x.start), type: x.type, daysTo: x.start - state.today, birthday: !!x.birthday, who: x.who })),
         recaps: state.recaps.slice(-3).reverse(),
         flashbacks: clone(state.flashbacks.slice(-10).reverse()),
         recall: state.recall,
@@ -690,7 +769,7 @@ function onAfterCombinePrompts(data) {
 // ═══════════════════════════════════════════════════════════════
 // ИНФОБЛОК
 // ═══════════════════════════════════════════════════════════════
-const ui = { open: new Map(), confirmDel: null };
+const ui = { open: new Map(), confirmDel: null, editing: null };
 
 const TYPE_ICON = {
     religious: 'fa-church', folk: 'fa-wheat-awn', seasonal: 'fa-leaf', state: 'fa-flag',
@@ -862,12 +941,31 @@ function bodyHtml(view, live) {
         return `<button class="ht-del${confirm ? ' ht-del-confirm' : ''}" data-act="del" data-hid="${esc(hid)}" title="${confirm ? L().removeSure : L().remove}" aria-label="${L().remove}">
             <i class="fa-solid ${confirm ? 'fa-check' : 'fa-trash-can'}"></i>${confirm ? `<span>${L().removeQ}</span>` : ''}</button>`;
     };
+    const editBtn = (hid) => (live && hid ? `<button class="ht-del ht-edit-btn" data-act="edit" data-hid="${esc(hid)}" title="${L().edit}" aria-label="${L().edit}"><i class="fa-solid fa-pen"></i></button>` : '');
+    // Форма правки праздника: название, дата, тип (включая «день рождения» персонажей)
+    const editForm = (x) => {
+        const typeOpts = Object.entries(L().types).map(([k, v]) => `<option value="${k}" ${!x.birthday && x.type === k ? 'selected' : ''}>${v}</option>`).join('')
+            + ['user', 'char'].map(w => `<option value="bday_${w}" ${x.birthday && x.who === w ? 'selected' : ''}>${esc(L().bdayOf(w === 'user' ? getUserName() : getCharName()))}</option>`).join('');
+        return `<div class="ht-edit" data-hid="${esc(x.id)}">
+            ${x.birthday ? '' : `<label>${L().fName}<input class="text_pole" data-ed="name" value="${esc(x.raw || x.name)}"></label>`}
+            <label>${L().fDate}<input class="text_pole" data-ed="date" value="${esc(x.iso || '')}" inputmode="numeric"></label>
+            ${x.birthday ? '' : `<label>${L().fType}<select class="text_pole" data-ed="type">${typeOpts}</select></label>`}
+            <div class="ht-edit-actions">
+                <button class="ht-btn" data-act="edit-cancel">${L().cancel}</button>
+                <button class="ht-btn ht-btn-main" data-act="edit-save" data-hid="${esc(x.id)}"><i class="fa-solid fa-check"></i>${L().save}</button>
+            </div>
+        </div>`;
+    };
     const s = view.setting || {};
     const kv = (icon, label, value) => `<div class="ht-kv"><i class="fa-solid ${icon}"></i><div><span>${label}</span><b>${esc(value)}</b></div></div>`;
     const world = [
         s.era && kv('fa-hourglass-half', L().era, s.era),
         s.faith && kv('fa-hands-praying', L().faith, s.faith),
-        (view.place || s.place) && kv('fa-location-dot', L().place, view.place || s.place),
+        (view.place || s.place) && (ui.editing === 'place' && live
+            ? `<div class="ht-kv ht-kv-edit"><i class="fa-solid fa-location-dot"></i><div><span>${L().fPlace}</span>
+                <input class="text_pole" data-ed="place" value="${esc(view.place || s.place)}">
+                <div class="ht-edit-actions"><button class="ht-btn" data-act="edit-cancel">${L().cancel}</button><button class="ht-btn ht-btn-main" data-act="place-save"><i class="fa-solid fa-check"></i>${L().save}</button></div></div></div>`
+            : kv('fa-location-dot', L().place, view.place || s.place).replace('</b></div></div>', `</b></div>${live ? `<button class="ht-del ht-edit-btn" data-act="place-edit" title="${L().edit}" aria-label="${L().edit}"><i class="fa-solid fa-pen"></i></button>` : ''}</div>`)),
         view.when && kv('fa-calendar-day', L().date, view.when),
     ].filter(Boolean).join('');
 
@@ -881,25 +979,26 @@ function bodyHtml(view, live) {
                     <i class="fa-solid ${PART_ICON[p]}"></i>
                     <div><b>${L().part[p]}${p === view.part ? L().now : ''}</b><span>${esc(plan[p])}</span></div>
                 </div>`).join('');
-            main = section('main', 'fa-fire', plan.title ? esc(plan.title) : L().festiveDay, `<div class="ht-parts">${rows}</div>`, delBtn(h.id));
+            main = section('main', 'fa-fire', plan.title ? esc(plan.title) : L().festiveDay, `<div class="ht-parts">${rows}</div>`, editBtn(h.id) + delBtn(h.id));
         } else {
-            main = section('main', 'fa-fire', L().festiveDay, `<p class="ht-text">${esc(h.meaning || '')}</p><p class="ht-mute">${L().planSoon}</p>`, delBtn(h.id));
+            main = section('main', 'fa-fire', L().festiveDay, `<p class="ht-text">${esc(h.meaning || '')}</p><p class="ht-mute">${L().planSoon}</p>`, editBtn(h.id) + delBtn(h.id));
         }
     } else if (view.kind === 'prep' && h) {
         const p = view.prep;
         main = section('main', 'fa-wand-magic-sparkles', L().prep, p ? `
             ${p.people ? `<p class="ht-text">${esc(p.people)}</p>` : ''}
             ${p.mood ? `<p class="ht-mood"><i class="fa-solid fa-feather-pointed"></i>${esc(p.mood)}</p>` : ''}`
-            : `<p class="ht-text">${esc(h.meaning || '')}</p><p class="ht-mute">${L().prepSoon}</p>`, delBtn(h.id));
+            : `<p class="ht-text">${esc(h.meaning || '')}</p><p class="ht-mute">${L().prepSoon}</p>`, editBtn(h.id) + delBtn(h.id));
     } else if (view.kind === 'after' && view.ended) {
         main = section('main', 'fa-moon', esc(L().ended(view.ended.name)), `<p class="ht-text">${esc(view.ended.recap || L().afterDefault)}</p>`);
     } else if (h) {
-        main = section('main', TYPE_ICON[h.type] || 'fa-star', esc(h.name), `<p class="ht-text">${esc(h.meaning || '')}</p>`, delBtn(h.id));
+        main = section('main', TYPE_ICON[h.type] || 'fa-star', esc(h.name), `<p class="ht-text">${esc(h.meaning || '')}</p>`, editBtn(h.id) + delBtn(h.id));
     }
 
-    const upcoming = (view.upcoming || []).map(u => `
+    if (h && ui.editing === h.id && live && main) main = main.replace('<div class="ht-sec-body">', `<div class="ht-sec-body">${editForm(h)}`);
+    const upcoming = (view.upcoming || []).map(u => ui.editing === u.id && live ? editForm(u) : `
         <div class="ht-up"><i class="fa-solid ${TYPE_ICON[u.birthday ? 'personal' : u.type] || 'fa-star'}"></i>
-        <span>${esc(u.name)}</span><b>${u.daysTo === 1 ? L().tomorrow : L().inDays(daysWord(u.daysTo))}</b>${delBtn(u.id)}</div>`).join('');
+        <span>${esc(u.name)}</span><b>${u.daysTo === 1 ? L().tomorrow : L().inDays(daysWord(u.daysTo))}</b>${editBtn(u.id)}${delBtn(u.id)}</div>`).join('');
 
     // Персонаж — всегда сверху, своя карточка: важность, текущий шаг, что было до, подарок
     let charCard = '';
@@ -973,6 +1072,32 @@ function bindBlock(block) {
             if (opening) for (const k of SESSION_SECTIONS) delete secSession[k];
             ui.open.set(id, opening);
             renderBlock(id);
+        } else if (t.dataset.act === 'edit') {
+            ui.editing = t.dataset.hid;
+            ui.confirmDel = null;
+            if (t.closest('.ht-sec')?.classList.contains('ht-sec-closed')) toggleSec(t.closest('.ht-sec').querySelector('h5')?.dataset.key);
+            renderBlock(id);
+        } else if (t.dataset.act === 'place-edit') {
+            ui.editing = 'place';
+            renderBlock(id);
+        } else if (t.dataset.act === 'edit-cancel') {
+            ui.editing = null;
+            renderBlock(id);
+        } else if (t.dataset.act === 'edit-save') {
+            const f = t.closest('.ht-edit');
+            const val = (k) => f?.querySelector(`[data-ed="${k}"]`)?.value ?? '';
+            if (saveHolidayEdit(t.dataset.hid, val('name'), val('date'), val('type'))) {
+                ui.editing = null;
+                window.toastr?.success?.(L().saved, 'Hearthtide');
+                renderAll();
+            }
+        } else if (t.dataset.act === 'place-save') {
+            const v = block.querySelector('[data-ed="place"]')?.value;
+            if (savePlaceEdit(v)) {
+                ui.editing = null;
+                window.toastr?.success?.(L().saved, 'Hearthtide');
+                renderAll();
+            }
         } else if (t.dataset.act === 'recall') {
             const fbId = t.dataset.fb;
             state.recall = state.recall === fbId ? null : fbId;   // повторное нажатие отменяет
