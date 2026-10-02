@@ -9,9 +9,9 @@ import {
 } from '../../../../script.js';
 import { eventSource, event_types } from '../../../../scripts/events.js';
 
-import { dayPart, plural, parseDate, fromDayNum, isoOf } from './dates.js';
+import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
 import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, stripBlocks } from './tag.js';
-import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, hasGifts, openEvent, OPEN_STATUSES } from './calendar.js';
+import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, OPEN_STATUSES } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt } from './prompts.js';
 import { strings } from './i18n.js';
 
@@ -91,6 +91,9 @@ function defaultState() {
         birthdayOff: {},        // удалённые дни рождения { user: true }
         offers: [],             // поводы из истории, ждут решения игрока: { id, cause, name, start, days, meaning, type, prep, turn }
         offerNo: [],            // названия отклонённых поводов — больше не предлагаем
+        yearLog: null,          // текущий год: { y, from, items: [{ id, name, birthday, who, type, start, days, kept }] }
+        lived: {},              // hid → true: история застала этот праздник (не перепрыгнула скипом)
+        skipFrom: null,         // день, с которого время прыгнуло далеко вперёд — спросить, какие праздники проскочили
         missed: 0,
         turn: 0,
         lastMention: -99,
@@ -152,6 +155,10 @@ function ctxFor(request = null) {
         // игрок переименовал праздник в другой — ИИ дописывает новый смысл
         meaningFor: (state.holidays || []).find(h => h.needMeaning && !isBanned(state, h.name))?.name || null,
         // чтобы ИИ не предлагал одно и то же: ждущие решения и недавно отклонённые
+        // скип: какие праздники проскочили; и что в этом году уже было — только для запроса календаря
+        skipGap: state.skipFrom != null && state.today != null
+            ? { from: isoOf(Math.max(state.skipFrom, state.yearLog?.y === fromDayNum(state.today).y ? state.yearLog.from : dayNum(fromDayNum(state.today).y, 1, 1))), to: isoOf(state.today - 1) } : null,
+        passed: (state.yearLog?.items || []).filter(i => !i.birthday && i.name && !isBanned(state, i.name)).slice(-10).map(i => i.name),
         offerNames: [...(state.offers || []).map(o => o.name), ...(state.offerNo || []).slice(-2)].slice(0, 4),
         peopleSeen: peopleSeen(),
         eraMode: eraMode(),
@@ -345,6 +352,11 @@ function processReply(N) {
                 const end = h.start + h.days - 1;
                 if (end >= state.today && end < small.date) state.recapDone[h.id] = true;
             }
+            // Большой скип: календарь знает только ближайшие праздники — спросим, какие ещё проскочили
+            if (small.date - state.today > 14) {
+                if (state.skipFrom == null) state.skipFrom = state.today + 1;
+                state.forceCal = true;
+            }
         }
         if (small.date != null) state.today = small.date;
         if (small.clock != null) state.clock = small.clock;
@@ -368,7 +380,12 @@ function processReply(N) {
         mergeHolidays(cal.holidays);
         for (const [who, md] of Object.entries(cal.birthdays)) state.birthdays[who] = md;
         state.forceCal = false;
+        if (cal.passed.some(x => !langOk(x.name))) slip = true;
+        logSkipped(cal.passed.filter(x => langOk(x.name)));
+        state.skipFrom = null;
     }
+    // Прошедшие праздники — в «Текущий год» (до того, как старые уйдут из календаря)
+    logPast();
     pruneHolidays();
     // ── Новый смысл переименованного праздника ──
     if (small?.mean) {
@@ -475,6 +492,8 @@ function processReply(N) {
     }
 
     phase = phaseOf(state);
+    // история застала праздник — в «Текущем году» он будет отмеченным, а не прошедшим мимо
+    if (phase.kind === 'today' && phase.h) state.lived[phase.h.id] = true;
     if (small || cal || prep || people || day || recap || offersIn.length) state.langSlip = slip;
     // Праздник сменился или был скип на несколько дней — люди и мысли прошлого праздника больше не актуальны
     const curHid = phase.h && (phase.kind === 'prep' || phase.kind === 'today') ? phase.h.id : null;
@@ -507,9 +526,63 @@ function processReply(N) {
     scheduleRenderAll();
 }
 
+// ─── Текущий год: все прошедшие праздники, отмеченные и прошедшие мимо ───
+// Хранится только в состоянии; в инджект не идёт. Новый год — чистый лист.
+function ensureYear() {
+    if (state.today == null) return null;
+    const y = fromDayNum(state.today).y;
+    if (state.yearLog?.y !== y) {
+        const prev = state.yearLog;
+        // год сменился по ходу истории — с 1 января; первый год истории — с её первого дня
+        state.yearLog = { y, from: prev && prev.y < y ? dayNum(y, 1, 1) : state.today, items: [] };
+        state.lived = {};
+    }
+    return state.yearLog;
+}
+
+function logItem(log, it) {
+    if (fromDayNum(it.start).y !== log.y || it.start < log.from) return;
+    const same = log.items.find(i => i.id === it.id
+        || (!i.birthday && !it.birthday && namesMatch(i.name, it.name) && Math.abs(i.start - it.start) <= 3)
+        || (i.birthday && it.birthday && i.who === it.who));
+    if (same) { same.kept = same.kept || it.kept; return; }
+    log.items.push(it);
+    log.items.sort((a, b) => a.start - b.start);
+    if (log.items.length > 40) log.items = log.items.slice(-40);
+}
+
+function logPast() {
+    const log = ensureYear();
+    if (!log) return;
+    const list = allHolidays(state);
+    // дни рождения этого года, которые скип мог перепрыгнуть (в календаре их уже нет)
+    for (const who of ['user', 'char']) {
+        const md = state.birthdays?.[who];
+        if (!md || state.birthdayOff?.[who]) continue;
+        const h = { start: dayNum(log.y, md.m, md.d), days: 1, name: null, who, birthday: true, type: 'personal' };
+        h.id = holidayId(h);
+        if (!list.some(x => x.id === h.id)) list.push(h);
+    }
+    for (const h of list) {
+        if (h.start + h.days - 1 >= state.today) continue;
+        logItem(log, { id: h.id, name: h.name, birthday: !!h.birthday, who: h.who, type: h.type, start: h.start, days: h.days, kept: !!state.lived?.[h.id] });
+    }
+}
+
+/** Праздники, которые проскочил скип, — со слов ИИ (строки X календаря) */
+function logSkipped(list) {
+    const log = ensureYear();
+    if (!log) return;
+    for (const x of list || []) {
+        if (x.start >= state.today || isBanned(state, x.name) || birthdayOwner(x.name)) continue;
+        logItem(log, { id: holidayId({ name: x.name, start: x.start }), name: x.name, birthday: false, type: x.type, start: x.start, days: 1, kept: false });
+    }
+}
+
 // ─── Поводы из истории: ИИ предлагает, игрок решает ───
 /** Повод уже не нужен: отклонён, удалён или такой праздник уже в календаре */
 function offerKnown(o) {
+    if (passedThisYear(state, o.name, o.start)) return true;
     if (isBanned(state, o.name) || (state.offerNo || []).some(n => namesMatch(n, o.name))) return true;
     return (state.holidays || []).some(h => namesMatch(h.name, o.name) && Math.abs(h.start - o.start) <= 30);
 }
@@ -604,7 +677,7 @@ function birthdayOwner(name) {
 
 function mergeHolidays(list) {
     for (const h of list) {
-        if (isBanned(state, h.name)) continue;
+        if (isBanned(state, h.name) || passedThisYear(state, h.name, h.start)) continue;
         const owner = birthdayOwner(h.name);
         if (owner) {
             if (!state.birthdays[owner]) {
@@ -685,7 +758,7 @@ function renameHidIn(st, oldId, newId) {
     for (const k of Object.keys(st.planPart || {})) {
         if (k.startsWith(`${oldId}#`)) { st.planPart[k.replace(oldId, newId)] = st.planPart[k]; delete st.planPart[k]; }
     }
-    for (const map of ['charLog', 'highlights', 'care', 'gifts', 'recapDone']) {
+    for (const map of ['charLog', 'highlights', 'care', 'gifts', 'recapDone', 'lived']) {
         if (st[map] && oldId in st[map]) { st[map][newId] = st[map][oldId]; delete st[map][oldId]; }
     }
     if (st.charNow?.hid === oldId) st.charNow.hid = newId;
@@ -810,6 +883,7 @@ function sanitizeView(view) {
         v.people = []; v.charNow = null; v.charGift = null; v.care = null; v.gifts = false;
     }
     if (v.ended && isBanned(state, v.ended.name)) v.ended = null;
+    v.year = (v.year || []).filter(i => !i.raw || !isBanned(state, i.raw));
     return v;
 }
 
@@ -834,6 +908,11 @@ function viewSnapshot(phase) {
         upcoming: (phase.upcoming || []).filter(x => !phase.h || x.id !== phase.h.id).slice(0, 4)
             .map(x => ({ id: x.id, name: displayName(x), raw: x.name, iso: isoOf(x.start), type: x.type, meaning: x.meaning, daysTo: x.start - state.today, birthday: !!x.birthday, who: x.who })),
         recaps: state.recaps.slice(-3).reverse(),
+        year: (state.yearLog?.items || []).map(i => ({
+            id: i.id, name: i.birthday ? L().birthday(i.who === 'user' ? getUserName() : getCharName()) : i.name, raw: i.name,
+            type: i.birthday ? 'personal' : i.type, iso: isoOf(i.start), kept: i.kept,
+            recap: state.recaps.find(r => r.hid === i.id)?.text || null,
+        })),
         flashbacks: clone(state.flashbacks.slice(-10).reverse()),
         recall: state.recall,
         ...(() => {
@@ -1040,7 +1119,7 @@ function headHtml(view, open) {
 
 // Сворачиваемые разделы; что свёрнуто — помним между перезагрузками
 const SEC_KEY = 'hearthtide_sections';
-const SEC_DEFAULT_CLOSED = { upcoming: true, memories: true, people: true };
+const SEC_DEFAULT_CLOSED = { upcoming: true, memories: true, people: true, year: true };
 // «Дальше» не запоминаем: при каждом раскрытии инфоблока он свёрнут
 const SESSION_SECTIONS = new Set(['upcoming']);
 const secSession = {};
@@ -1206,6 +1285,15 @@ function bodyHtml(view, live) {
     }).join('');
     const eventsSec = section('events', 'fa-bolt', L().events, evRows);
 
+    // Текущий год: по порядку дат; отмеченные — с итогом, прошедшие мимо — приглушены
+    const yearRows = (view.year || []).map(i => {
+        const [, m, d] = i.iso.split('-');
+        return `<div class="ht-yr${i.kept ? '' : ' ht-yr-missed'}">
+            <time>${d}.${m}</time><i class="fa-solid ${TYPE_ICON[i.type] || 'fa-star'}"></i>
+            <div><b>${esc(i.name)}</b>${i.recap ? `<p>${esc(i.recap)}</p>` : ''}</div>
+            <em>${i.kept ? L().yearKept : L().yearMissed}</em></div>`;
+    }).join('');
+
     // Воспоминания: в контекст только по кнопке «вспомнить»
     const memories = (view.flashbacks || []).map(f => {
         const queued = view.recall === f.id;
@@ -1221,6 +1309,7 @@ function bodyHtml(view, live) {
         ${eventsSec}
         ${peopleSec}
         ${section('upcoming', 'fa-calendar-days', L().upcoming, upcoming)}
+        ${section('year', 'fa-calendar-check', L().year, yearRows, view.year?.length ? `<em class="ht-count">${view.year.length}</em>` : '')}
         ${section('memories', 'fa-clock-rotate-left', L().flashbacks, memories)}
         ${live ? `<div class="ht-actions"><button class="ht-btn" data-act="rebuild" title="${L().rebuildTip}"><i class="fa-solid fa-arrows-rotate"></i>${L().rebuild}</button></div>` : ''}
     </div>`;

@@ -1,7 +1,7 @@
 // Hearthtide — calendar.js
 // Фазы праздника и что попросить у ИИ в следующем ответе.
 
-import { nextOccurrence, dayPart } from './dates.js';
+import { nextOccurrence, dayPart, fromDayNum } from './dates.js';
 
 // За сколько дней начинается подготовка: ИИ указывает сам для каждого праздника,
 // это — запасные значения, если не указал
@@ -91,6 +91,14 @@ export function phaseOf(state) {
     if (ended) return { kind: 'after', ...base };
     if (!next) return { kind: 'none', ...base };
     return { kind: daysTo <= window ? 'prep' : 'far', ...base };
+}
+
+/** Этот праздник в текущем году уже прошёл — повторно не предлагаем; в следующем году — снова можно */
+export function passedThisYear(state, name, start) {
+    const log = state.yearLog;
+    if (!log || !name) return false;
+    const { y } = fromDayNum(start);
+    return y === log.y && (log.items || []).some(i => !i.birthday && i.name && namesMatch(i.name, name));
 }
 
 /** Нужен ли календарь: нет эпохи, нет даты или впереди меньше двух праздников */

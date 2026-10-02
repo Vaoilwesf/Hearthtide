@@ -55,11 +55,11 @@ export function parseSmall(text) {
     };
 }
 
-/** Календарь: S | эпоха | вера | место  ·  H | дата | дней | название | смысл | тип  ·  B | user/char | ММ-ДД */
+/** Календарь: S | эпоха | вера | место  ·  H | дата | дней | название | смысл | тип  ·  B | user/char | ММ-ДД  ·  X | дата | название | тип (прошёл во время скипа) */
 export function parseCalendar(text) {
     const inner = findBlock(text, 'HT-CAL');
     if (inner == null) return null;
-    const res = { setting: null, holidays: [], birthdays: {} };
+    const res = { setting: null, holidays: [], birthdays: {}, passed: [] };
     for (const raw of inner.split(/\n+/)) {
         const cols = raw.split('|').map(x => x.trim());
         const kind = (cols[0] || '').toUpperCase();
@@ -73,6 +73,11 @@ export function parseCalendar(text) {
             const prep = parseInt(cols[6]);
             res.holidays.push({ start, days, name, meaning: clean(cols[4], 240), type: normType(cols[5]),
                 prep: isNaN(prep) ? null : Math.max(0, Math.min(45, prep)) });
+        } else if (kind === 'X') {
+            // праздник, который время перепрыгнуло (скип): X | дата | название | тип
+            const start = parseDate(cols[1]);
+            const name = clean(cols[2], 80);
+            if (start != null && name) res.passed.push({ start, name, type: normType(cols[3]) });
         } else if (kind === 'B') {
             const who = /char|bot|{{char}}/i.test(cols[1] || '') ? 'char' : 'user';
             const md = parseMonthDay(cols[2]);

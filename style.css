@@ -339,3 +339,17 @@
 @keyframes ht-offer-nod { 50% { transform: rotate(-14deg); } }
 @media (prefers-reduced-motion: reduce) { .ht-offer-new, .ht-offer-new .ht-offer-cause > i { animation: none; } }
 @media (max-width: 600px) { .ht-offer { margin: 0 8px 8px; } }
+
+/* ─── Текущий год ─── */
+.ht-count { font-style: normal; font-size: 0.78em; font-weight: 400; color: var(--ht-mute); padding: 0 7px; border-radius: 999px; border: 1px solid var(--ht-line); }
+.ht-yr { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--ht-line); }
+.ht-yr:last-child { border-bottom: 0; }
+.ht-yr > time { flex: none; width: 3.2em; color: var(--ht-mute); font-size: 0.88em; }
+.ht-yr > i { color: var(--ht-acc); }
+.ht-yr > div { flex: 1; min-width: 0; }
+.ht-yr b { font-weight: 600; }
+.ht-yr p { margin: 2px 0 0; color: var(--ht-mute); font-size: 0.9em; line-height: 1.4; }
+.ht-yr > em { flex: none; font-style: normal; font-size: 0.78em; padding: 0 7px; border-radius: 999px; border: 1px solid var(--ht-acc); color: var(--ht-acc); white-space: nowrap; }
+.ht-yr-missed { opacity: 0.62; }
+.ht-yr-missed > i { color: var(--ht-mute); }
+.ht-yr-missed > em { border-color: var(--ht-line-strong); color: var(--ht-mute); }
