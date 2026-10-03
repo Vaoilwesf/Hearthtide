@@ -642,6 +642,17 @@ function logItem(log, it) {
 function logPast() {
     const log = ensureYear();
     if (!log) return;
+    // Отмеченные раньше (до появления вкладки или до начала учёта) — по итогам этого года
+    for (const r of state.recaps || []) {
+        const m = String(r.hid || '').match(/(?:@|-)(-?\d+)$/);   // «название@день» или «bday-user-день»
+        const start = m ? Number(m[1]) : NaN;
+        if (!Number.isFinite(start) || start >= state.today || fromDayNum(start).y !== log.y) continue;
+        if (log.items.some(i => i.id === r.hid)) continue;
+        const h = (state.holidays || []).find(x => holidayId(x) === r.hid);
+        const bday = String(r.hid).match(/^bday-(user|char)-/);
+        log.items.push({ id: r.hid, name: bday ? null : r.name, birthday: !!bday, who: bday?.[1], type: h?.type || 'folk', start, days: h?.days || 1, kept: true });
+        log.items.sort((a, b) => a.start - b.start);
+    }
     const list = allHolidays(state);
     // дни рождения этого года, которые скип мог перепрыгнуть (в календаре их уже нет)
     for (const who of ['user', 'char']) {
@@ -1498,7 +1509,7 @@ function bodyHtml(view, live) {
         ${eventsSec}
         ${peopleSec}
         ${section('upcoming', 'fa-calendar-days', L().upcoming, upcoming)}
-        ${section('year', 'fa-calendar-check', L().year, yearRows, view.year?.length ? `<em class="ht-count">${view.year.length}</em>` : '')}
+        ${section('year', 'fa-calendar-check', L().year, yearRows || `<p class="ht-mute">${L().yearEmpty}</p>`, view.year?.length ? `<em class="ht-count">${view.year.length}</em>` : '')}
         ${section('memories', 'fa-clock-rotate-left', L().flashbacks, memories)}
         ${live ? `<div class="ht-actions"><button class="ht-btn" data-act="rebuild" title="${L().rebuildTip}"><i class="fa-solid fa-arrows-rotate"></i>${L().rebuild}</button></div>` : ''}
     </div>`;
