@@ -402,3 +402,20 @@
 }
 .ht-settings .menu_button_icon { margin: 0; }
 .ht-pinging i { animation: ht-spin 1s linear infinite; }
+
+/* ─── Праздничный день компактнее ─── */
+/* подзаголовок шапки — до двух строк, а не многоточие */
+.ht-sub { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ht-world-mini { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--ht-mute); font-size: 0.88em; }
+.ht-world-mini > i { color: var(--ht-acc); }
+/* части дня: сейчас — целиком, остальные — одной строкой */
+.ht-part:not(.ht-now) span { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+/* мысль персонажа — в кавычках, чуть курсивом */
+.ht-char-now { font-style: italic; }
+.ht-char-now > span { font-style: normal; }
+/* желания людей */
+.ht-person span > i { color: var(--ht-mute); margin-right: 5px; font-size: 0.85em; }
+/* карточка ивента */
+.ht-evcard { border-style: solid; }
+.ht-evcard-party { border-color: color-mix(in srgb, var(--ht-party, var(--ht-acc)) 70%, transparent); }
+.ht-offer-actions.ht-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }

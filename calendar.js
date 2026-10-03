@@ -134,12 +134,12 @@ function requestForRaw(state, phase, skip = null) {
         const p = state.prep;
         if (!p || p.hid !== phase.h.id || p.day !== state.today || (state.turn || 0) - (p.turn ?? -99) >= 5) { if (ok('prep')) return 'prep'; }
     }
-    // Ивенты праздничного дня: новый — когда сейчас ничего не идёт; на мероприятии — новые моменты
-    if (phase.kind === 'today' && phase.h && state.days?.[`${phase.h.id}#${phase.dayIndex}`]) {
+    // Ивенты: выпал шанс — предложить случайное событие; на мероприятии — новые моменты
+    if (phase.kind === 'today' && phase.h) {
         const ev = openEvent(state, phase.h.id);
         if (ev?.kind === 'party' && ev.status === 'joined' && (state.turn || 0) - (ev.lastMoment ?? ev.turn) >= 3) { if (ok('moment')) return 'moment'; }
-        if (!ev && (state.turn || 0) - (state.lastEventEnd ?? -99) >= 4) { if (ok('event')) return 'event'; }
     }
+    if (state.evRoll && phase.h) { if (ok('event')) return 'event'; }
     // Люди праздника: текущее состояние каждого обновляется по ходу ролплея
     if ((phase.kind === 'prep' || phase.kind === 'today') && phase.h) {
         const every = (state.people || []).length ? (phase.kind === 'today' ? 2 : 4) : 5;
@@ -171,8 +171,11 @@ export function sideNeeds(state, phase) {
         const part = dayPart(state.clock);
         if (!state.days?.[key]) n.add('day');
         else if (part && state.planPart?.[key] && state.planPart[key] !== part) n.add('replan');
-        n.add('people').add('events');
+        n.add('people');
+        const ev = openEvent(state, h.id);
+        if (ev?.kind === 'party' && ev.status === 'joined') n.add('moments');
     }
+    if (state.evRoll && h) n.add('evoffer');   // выпал шанс на случайный ивент
     if (active && !h.birthday && !state.giftTo?.[h.id] && state.gifts?.[h.id]) n.add('giftto');
     if (active || (phase.kind === 'far' && h && phase.daysTo <= 14)) n.add('beat');
     if ((state.holidays || []).some(x => x.needMeaning && !isBanned(state, x.name))) n.add('mean');
@@ -186,7 +189,7 @@ export const SIDE_EVERY = { prep: 3, today: 2, far: 5 };
 /** Отправлять ли отдельный запрос после этого ответа */
 export function sideDue(state, phase, needs) {
     // то, без чего инфоблок пустой или неверный, — сразу
-    if (['recap', 'cal', 'mean', 'day', 'replan'].some(k => needs.has(k))) return true;
+    if (['recap', 'cal', 'mean', 'day', 'replan', 'evoffer'].some(k => needs.has(k))) return true;
     const since = (state.turn || 0) - (state.lastSideTurn ?? -99);
     if (phase.kind === 'prep') return needs.has('prep') || since >= SIDE_EVERY.prep;   // новый день — тоже
     if (phase.kind === 'today') return since >= SIDE_EVERY.today;
@@ -226,3 +229,10 @@ export const OPEN_STATUSES = ['active', 'invited', 'joined'];
 export function openEvent(state, hid) {
     return (state.evts || []).find(e => e.hid === hid && OPEN_STATUSES.includes(e.status)) || null;
 }
+/** Ивент, предложенный игроку и ждущий решения (кнопки «Принять» / «Отклонить») */
+export function offeredEvent(state) {
+    return (state.evts || []).find(e => e.status === 'offered') || null;
+}
+/** Шанс случайного ивента после ответа, в процентах: в праздник чаще, в подготовке реже */
+export const EVENT_CHANCE = { today: 35, prep: 15 };
+export const EVENT_COOLDOWN = 3;

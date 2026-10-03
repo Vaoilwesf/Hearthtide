@@ -207,7 +207,7 @@ export function parseEvents(text) {
         const title = clean(f.title, 160);
         if (!title) continue;
         const k = String(f.kind || '').toLowerCase();
-        out.push({ kind: k.startsWith('part') ? 'party' : k.startsWith('mom') ? 'moment' : 'event', title, who: clean(f.who, 80) });
+        out.push({ kind: k.startsWith('part') ? 'party' : k.startsWith('mom') ? 'moment' : 'event', title, who: clean(f.who, 80), hook: clean(f.hook, 240) });
     }
     return out;
 }

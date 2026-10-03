@@ -11,7 +11,7 @@ import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
 import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, stripBlocks } from './tag.js';
-import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, OPEN_STATUSES, sideNeeds, sideDue } from './calendar.js';
+import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt, buildSideMessages, giftTarget } from './prompts.js';
 import { listProfiles, gatherSources, sendSide, reasonOf } from './side.js';
 import { strings } from './i18n.js';
@@ -108,6 +108,8 @@ function defaultState() {
         backoff: {},            // тип запроса → ход, до которого его не повторяем (ИИ проигнорировал)
         evts: [],               // ивенты и мероприятия: { id, hid, kind, title, who, status, turn, lastUpdate, note, moments }
         lastEventEnd: -99,
+        evRoll: false,          // выпал шанс: в следующем ответе (или запросе помощника) предложить случайный ивент
+        evDecisions: {},        // решения игрока по ивентам (по названию): accepted | declined — переживают свайпы
         flashbacks: [],         // воспоминания: { id, title, text, when, kind } — в контекст только по кнопке
         recall: null,           // id воспоминания, которое уйдёт в следующий ответ
         planPart: {},           // `${hid}#${день}` → часть дня, к которой распорядок уже подстроен
@@ -220,7 +222,7 @@ function takeSnapshot(beforeMsg) {
     if (state.snapshots.length > 20) state.snapshots = state.snapshots.slice(-20);
 }
 // Решения игрока (удалённые праздники) переживают откаты
-const USER_FIELDS = ['banned', 'bannedNames', 'birthdayOff', 'calIgnore', 'offerNo'];
+const USER_FIELDS = ['banned', 'bannedNames', 'birthdayOff', 'calIgnore', 'offerNo', 'evDecisions'];
 
 function restoreSnapshot(snap) {
     const keep = state.snapshots;
@@ -281,15 +283,15 @@ function addFlashback(title, text, kind) {
 
 // ─── Ивенты: появились, идут, закончились ───
 function processEvents(phase, small, evs) {
-    const today = phase.kind === 'today' && phase.h ? phase.h.id : null;
-    // ивенты прошлого праздника, которые так и не закрылись, — забылись
+    // ивенты привязаны к ближайшему празднику — и в подготовке, и в сам день
+    const cur = (phase.kind === 'today' || phase.kind === 'prep') && phase.h ? phase.h.id : null;
     for (const e of state.evts) {
-        if (OPEN_STATUSES.includes(e.status) && e.hid !== today) e.status = 'faded';
+        if ((OPEN_STATUSES.includes(e.status) || e.status === 'offered') && e.hid !== cur) e.status = e.status === 'offered' ? 'missed' : 'faded';
     }
-    if (!today) return;
-    let ev = openEvent(state, today);
+    if (!cur) return;
+    let ev = openEvent(state, cur);
 
-    // Статус от ИИ
+    // Статус от ИИ: чем кончилось
     if (ev && small?.ev) {
         const note = small.evNote && langOk(small.evNote) ? small.evNote : null;
         if (ev.status === 'invited' && (small.ev === 'joined' || small.ev === 'declined')) {
@@ -302,11 +304,11 @@ function processEvents(phase, small, evs) {
             state.lastEventEnd = state.turn;
             if (small.ev === 'done' && note) addFlashback(ev.title, note, ev.kind);
         }
-        ev = openEvent(state, today);
+        ev = openEvent(state, cur);
     }
-    // Новые ивенты и моменты
+    // Новые: случайный ивент только предлагается — в историю он войдёт, если игрок примет
     for (const e of evs || []) {
-        if (!langOk(e.title)) continue;
+        if (!langOk(e.title) || (e.hook && !langOk(e.hook))) continue;
         if (e.kind === 'moment') {
             if (ev?.kind === 'party' && ev.status === 'joined') {
                 ev.moments = ev.moments || [];
@@ -317,23 +319,63 @@ function processEvents(phase, small, evs) {
             }
             continue;
         }
-        if (ev) continue;   // одновременно — только одно событие
-        ev = {
-            id: `ev-${state.turn}`, hid: today, kind: e.kind, title: e.title, who: e.who,
-            status: e.kind === 'party' ? 'invited' : 'active', turn: state.turn, lastUpdate: state.turn, note: null, moments: [],
+        if (ev || offeredEvent(state)) continue;   // одновременно — только одно
+        const item = {
+            id: `ev-${state.turn}`, hid: cur, kind: e.kind, title: e.title, who: e.who, hook: e.hook || null,
+            status: 'offered', turn: state.turn, lastUpdate: state.turn, note: null, moments: [],
         };
-        state.evts.push(ev);
+        // игрок уже решал по этому ивенту (свайп, пересборка) — его решение в силе
+        const d = state.evDecisions?.[evKey(item)];
+        if (d) applyEventDecision(item, d);
+        state.evts.push(item);
+        state.evRoll = false;
     }
-    // Забытые: ИИ долго не закрывает — тихо закрываем
+    // Забытые: долго без решения или без конца — тихо закрываем
     for (const e of state.evts) {
-        if (!OPEN_STATUSES.includes(e.status)) continue;
         const idle = state.turn - (e.lastUpdate ?? e.turn);
+        if (e.status === 'offered' && idle > 4) { e.status = 'missed'; state.lastEventEnd = state.turn; continue; }
+        if (!OPEN_STATUSES.includes(e.status)) continue;
         if ((e.status === 'invited' && idle > 6) || (e.status === 'active' && idle > 8) || (e.status === 'joined' && idle > 25)) {
             e.status = e.status === 'invited' ? 'missed' : 'faded';
             state.lastEventEnd = state.turn;
         }
     }
     if (state.evts.length > 30) state.evts = state.evts.slice(-30);
+}
+
+// ─── Решение игрока по ивенту: принять / отклонить ───
+const evKey = (e) => `${e.hid}|${String(e.title || '').toLowerCase()}`;
+function applyEventDecision(e, d) {
+    if (d === 'accepted') e.status = e.kind === 'party' ? 'joined' : 'active';
+    else e.status = 'declined';
+    e.lastUpdate = state?.turn ?? e.lastUpdate;
+}
+function decideEvent(id, d) {
+    const e = (state.evts || []).find(x => x.id === id);
+    if (!e || e.status !== 'offered') return;
+    state.evDecisions = { ...(state.evDecisions || {}), [evKey(e)]: d };
+    const apply = (st) => {
+        const x = (st.evts || []).find(y => y.id === id && y.status === 'offered');
+        if (!x) return;
+        if (d === 'accepted') x.status = x.kind === 'party' ? 'joined' : 'active';
+        else x.status = 'declined';
+        x.turn = st.turn ?? x.turn;              // «только что принят» — основная модель введёт его сразу
+        x.lastUpdate = st.turn ?? x.lastUpdate;
+        if (d === 'declined') st.lastEventEnd = st.turn;
+    };
+    apply(state);
+    applyToSnapshots(apply);
+    saveState();
+    injectPrompts();
+    renderAll();
+}
+
+// Детерминированный бросок по тексту ответа: пересборка того же ответа даёт тот же результат, свайп — новый
+function rollFor(text, turn) {
+    let x = 2166136261 ^ turn;
+    const t = String(text || '');
+    for (let i = 0; i < t.length; i++) { x ^= t.charCodeAt(i); x = Math.imul(x, 16777619); }
+    return (x >>> 0) % 100;
 }
 
 // Значение на нужном языке? Для русского — есть кириллица (или вовсе нет букв), для английского — латиница
@@ -566,7 +608,6 @@ function processReply(N) {
         state.calMiss = cal ? 0 : (state.calMiss || 0) + 1;
         if (!cal && state.calMiss < 3) delete state.backoff.cal;
     }
-    if (asked === 'event' && !evs.some(e => e.kind !== 'moment')) state.lastEventEnd = state.turn - 1;
     if (asked === 'moment' && !evs.some(e => e.kind === 'moment') && phase.h) {
         const ev = openEvent(state, phase.h.id);
         if (ev) ev.lastMoment = state.turn - 1;
@@ -599,6 +640,14 @@ function processReply(N) {
     // Праздник прошёл — люди и мысли персонажа к нему больше не относятся
     if (!phase.h || (phase.kind !== 'prep' && phase.kind !== 'today')) {
         if (state.charNow && state.charNow.hid !== phase.h?.id) state.charNow = null;
+    }
+
+    // ── Случайный ивент: бросок после ответа (в праздник чаще, в подготовке реже) ──
+    state.evRoll = false;
+    if ((phase.kind === 'today' || phase.kind === 'prep') && phase.h && !openEvent(state, phase.h.id) && !offeredEvent(state)
+        && state.turn - (state.lastEventEnd ?? -99) >= EVENT_COOLDOWN
+        && state.turn - Math.max(-99, ...(state.evts || []).filter(e => e.hid === phase.h.id).map(e => e.turn)) >= EVENT_COOLDOWN) {
+        state.evRoll = rollFor(text, state.turn) < EVENT_CHANCE[phase.kind];
     }
 
     // ── Упоминать ли подготовку в следующем ответе (чем ближе, тем чаще) ──
@@ -1061,7 +1110,7 @@ function viewSnapshot(phase) {
                 charNow: state.charNow?.hid === hid ? state.charNow.text : null,
                 charSteps: (state.charLog?.[hid] || []).slice(-4, -1).map(x => x.text),
                 highlights: clone(state.highlights?.[hid] || []),
-                evts: phase.kind === 'today' ? clone(state.evts.filter(e => e.hid === hid)) : [],
+                evts: clone(state.evts.filter(e => e.hid === hid)),
                 charGift: state.charGift?.hid === hid ? { text: state.charGift.text, done: state.charGift.done } : null,
                 giftTo: giftTarget(state, phase.h, getUserName(), getCharName()),
                 gifts: hasGifts(state, phase.h) && giftTarget(state, phase.h, getUserName(), getCharName()).toLowerCase() !== getCharName().toLowerCase(),
@@ -1286,7 +1335,7 @@ function renderBlock(id) {
     // пока помощник читает историю — заставка: кольцо крутится, по шапке бежит блик, содержимое приглушено
     const loading = live && sideLoading();
     block.classList.toggle('ht-loading', loading);
-    block.innerHTML = headHtml(view, open, live ? sideMarkHtml() : '', loading) + (live ? offerHtml() : '') + (open ? bodyHtml(view, live, ui.tab.get(id) || 'now') : '');
+    block.innerHTML = headHtml(view, open, live ? sideMarkHtml() : '', loading) + (live ? eventCardHtml() + offerHtml() : '') + (open ? bodyHtml(view, live, ui.tab.get(id) || 'now') : '');
 }
 
 // ─── Кольцо: сколько дней осталось (из 30), в день праздника — полное ───
@@ -1396,6 +1445,24 @@ function editFormHtml(x, act = 'edit-save', label = L().save) {
     </div>`;
 }
 
+// ─── Случайный ивент: карточка под шапкой последнего инфоблока, видна и в свёрнутом ───
+function eventCardHtml() {
+    const e = state && offeredEvent(state);
+    if (!e) return '';
+    const fresh = !ui.offerSeen.has(e.id);
+    ui.offerSeen.add(e.id);
+    const party = e.kind === 'party';
+    return `<div class="ht-offer ht-evcard${party ? ' ht-evcard-party' : ''}${fresh ? ' ht-offer-new' : ''}">
+        <div class="ht-offer-cause"><i class="fa-solid ${party ? 'fa-champagne-glasses' : 'fa-dice'}"></i><span>${party ? L().evParty : L().evNew}${e.who ? ` · ${esc(e.who)}` : ''}</span></div>
+        <div class="ht-offer-hol"><span><b>${esc(e.title)}</b></span></div>
+        ${e.hook ? `<p class="ht-offer-mean">${esc(e.hook)}</p>` : ''}
+        <div class="ht-offer-actions ht-two">
+            <button class="ht-btn ht-btn-main" data-act="ev-yes" data-eid="${esc(e.id)}" title="${esc(party ? L().evGo : L().accept)}"><i class="fa-solid fa-check"></i><span>${party ? L().evGo : L().accept}</span></button>
+            <button class="ht-btn ht-btn-quiet" data-act="ev-no" data-eid="${esc(e.id)}" title="${esc(L().decline)}"><i class="fa-solid fa-xmark"></i><span>${L().decline}</span></button>
+        </div>
+    </div>`;
+}
+
 // ─── Повод из истории: под шапкой последнего инфоблока, видно и в свёрнутом ───
 function offerHtml() {
     const list = state?.offers || [];
@@ -1443,6 +1510,8 @@ function bodyHtml(view, live, tab = 'now') {
             : kv('fa-location-dot', L().place, view.place || s.place).replace('</b></div></div>', `</b></div>${live ? `<button class="ht-del ht-edit-btn" data-act="place-edit" title="${L().edit}" aria-label="${L().edit}"><i class="fa-solid fa-pen"></i></button>` : ''}</div>`)),
         view.when && kv('fa-calendar-day', L().date, view.when),
     ].filter(Boolean).join('');
+    // в сам праздник место и дата — одной короткой строкой, эпоха и вера не занимают место
+    const worldMini = [view.place || s.place, view.when].filter(Boolean).map(esc).join(' · ');
 
     let main = '';
     const h = view.h;
@@ -1489,7 +1558,7 @@ function bodyHtml(view, live, tab = 'now') {
         // прошлые шаги в инфоблок не выводим — они нужны только модели, чтобы цепочка шла дальше
         charCard = `<div class="ht-char${live && view.care === 'high' ? ' ht-glow' : ''}">
             <div class="ht-char-head"><i class="fa-solid fa-user"></i><b>${esc(getCharName())}</b><span class="ht-care ht-care-${view.care}">${esc(L().care[view.care])}</span></div>
-            ${view.care !== 'low' ? `<div class="ht-char-now"><span>${L().nowLabel}</span>${esc(view.charNow || L().charIdle)}</div>` : ''}
+            ${view.care !== 'low' ? `<div class="ht-char-now"><span>${L().thinks}</span>${view.charNow ? `«${esc(view.charNow.replace(/^[«"“]+|[»"”]+$/g, ''))}»` : esc(L().charIdle)}</div>` : ''}
             ${gift}
         </div>`;
     }
@@ -1499,13 +1568,13 @@ function bodyHtml(view, live, tab = 'now') {
         const list = (view.people || []).filter(p => p.group === gk);
         if (!list.length) return '';
         return `<div class="ht-group"><div class="ht-group-title">${L().groups[gk]}</div>${list.map(p => `
-            <div class="ht-person"><b>${esc(p.name)}</b><span>${esc(p.now || '')}</span>${p.gift ? `<em class="ht-chip"><i class="fa-solid fa-gift"></i>${esc(p.gift)}</em>` : ''}</div>`).join('')}</div>`;
+            <div class="ht-person"><b>${esc(p.name)}</b>${p.now ? `<span><i class="fa-solid fa-comment-dots"></i>${esc(p.now)}</span>` : ''}${p.gift ? `<em class="ht-chip"><i class="fa-solid fa-gift"></i>${esc(p.gift)}</em>` : ''}</div>`).join('')}</div>`;
     }).join('');
     const standout = (view.highlights || []).length ? `<div class="ht-group ht-standout"><div class="ht-group-title"><i class="fa-solid fa-star"></i>${L().standout}</div>${view.highlights.map(x => `
             <div class="ht-person"><b>${esc(x.name)}</b><span>${esc(x.text)}</span></div>`).join('')}</div>` : '';
     const peopleSec = section('people', 'fa-users', L().people, groups + standout);
     // События дня: идущее сверху, мероприятие — своей раскрывающейся карточкой
-    const evRows = (view.evts || []).slice().reverse().map(e => {
+    const evRows = (view.evts || []).filter(e => e.status !== 'offered' && e.status !== 'missed').slice().reverse().map(e => {
         const st = L().evStatus[e.status] || e.status;
         const open = ['active', 'invited', 'joined'].includes(e.status);
         if (e.kind === 'party') {
@@ -1519,7 +1588,7 @@ function bodyHtml(view, live, tab = 'now') {
         return `<div class="ht-ev ht-ev-${e.status}"><i class="fa-solid ${open ? 'fa-bolt' : e.status === 'done' ? 'fa-circle-check' : 'fa-circle-minus'}"></i>
             <div><span><b>${esc(e.title)}</b>${e.who ? ` · ${esc(e.who)}` : ''} <em>${esc(st)}</em></span>${e.note ? `<p class="ht-ev-note">${esc(e.note)}</p>` : ''}</div></div>`;
     }).join('');
-    const eventsSec = section('events', 'fa-bolt', L().events, evRows);
+    const eventsSec = section('events', 'fa-dice', L().events, evRows);
 
     // Текущий год: по порядку дат; отмеченные — с итогом, прошедшие мимо — приглушены
     const yearRows = (view.year || []).map(i => {
@@ -1545,18 +1614,18 @@ function bodyHtml(view, live, tab = 'now') {
         <button role="tab" class="ht-tab${tab === 'year' ? ' ht-on' : ''}" data-act="tab" data-tab="year" aria-selected="${tab === 'year'}"><i class="fa-solid fa-calendar-check"></i><span>${L().year}</span>${n ? `<em class="ht-count">${n}</em>` : ''}</button>
     </div>`;
     if (tab === 'year') {
-        return `<div class="ht-body">${tabs}<div class="ht-year">${yearRows || `<p class="ht-mute">${L().yearEmpty}</p>`}</div></div>`;
+        return `<div class="ht-body">${tabs}<div class="ht-year">${yearRows || `<p class="ht-mute">${L().yearEmpty}</p>`}</div>
+            ${section('memories', 'fa-clock-rotate-left', L().flashbacks, memories)}</div>`;
     }
 
     return `<div class="ht-body">
         ${tabs}
-        ${world ? `<div class="ht-world">${world}</div>` : ''}
+        ${view.kind === 'today' ? (worldMini ? `<div class="ht-world-mini"><i class="fa-solid fa-location-dot"></i>${worldMini}</div>` : '') : (world ? `<div class="ht-world">${world}</div>` : '')}
         ${charCard}
-        ${main}
         ${eventsSec}
+        ${main}
         ${peopleSec}
         ${section('upcoming', 'fa-calendar-days', L().upcoming, upcoming)}
-        ${section('memories', 'fa-clock-rotate-left', L().flashbacks, memories)}
         ${live ? `<div class="ht-actions"><button class="ht-btn" data-act="rebuild" title="${L().rebuildTip}"><i class="fa-solid fa-arrows-rotate"></i>${L().rebuild}</button></div>` : ''}
     </div>`;
 }
@@ -1591,6 +1660,8 @@ function bindBlock(block) {
                 window.toastr?.success?.(L().saved, 'Hearthtide');
                 renderAll();
             }
+        } else if (t.dataset.act === 'ev-yes' || t.dataset.act === 'ev-no') {
+            decideEvent(t.dataset.eid, t.dataset.act === 'ev-yes' ? 'accepted' : 'declined');
         } else if (t.dataset.act === 'tab') {
             ui.tab.set(id, t.dataset.tab);
             renderBlock(id);

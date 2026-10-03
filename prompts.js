@@ -76,9 +76,9 @@ export function buildStatePrompt(ctx) {
     if (active) {
         // Персонаж: насколько праздник для него важен
         const care = state.care?.[h.id];
-        const steps = (state.charLog?.[h.id] || []).slice(-4).map(x => x.text);
-        const trail = steps.length ? ` Steps so far: ${steps.join(' → ')}.` : '';
-        if (care === 'high') lines.push(`${charName} cares about this a lot.${trail} ${charName} acts on it in small steps across replies when the scene allows; each step follows from the previous ones — no reversal without a reason shown in the story.`);
+        const steps = (state.charLog?.[h.id] || []).slice(-3).map(x => x.text);
+        const trail = steps.length ? ` On ${charName}'s mind lately: ${steps.join(' / ')}.` : '';
+        if (care === 'high') lines.push(`${charName} cares about this a lot.${trail} ${charName} acts on it in small steps across replies when the scene allows.`);
         else if (care === 'normal') lines.push(`For ${charName} it matters moderately.${trail}`);
         else if (care === 'low') lines.push(`For ${charName} it means little — a passing remark at most.`);
         // Подарок персонажа
@@ -93,7 +93,7 @@ export function buildStatePrompt(ctx) {
         // Люди: по одной строке на человека
         const people = (ctx.peopleSeen || state.people || []).filter(p => p.now).slice(0, 4);
         if (people.length) {
-            lines.push(`People: ${people.map(p => `${p.name} (${p.group}) — ${p.now}${p.gift ? `; gift: ${p.gift}` : ''}`).join(' · ')}. They live their own lives in the background; one may cross paths with the scene.`);
+            lines.push(`People: ${people.map(p => `${p.name} (${p.group}) — wants: ${p.now}${p.gift ? `; gift: ${p.gift}` : ''}`).join(' · ')}. They live their own lives and act on what they want; one may cross paths with the scene.`);
         }
     }
 
@@ -101,17 +101,18 @@ export function buildStatePrompt(ctx) {
     const fb = state.recall && (state.flashbacks || []).find(f => f.id === state.recall);
     if (fb) lines.push(`${charName} suddenly remembers: ${fb.title} — ${fb.text} Let it surface naturally in this reply.`);
     // Что сейчас в игре: ивент, приглашение или мероприятие
-    const ev = h && phase.kind === 'today' ? openEvent(state, h.id) : null;
+    const ev = h && (phase.kind === 'today' || phase.kind === 'prep') ? openEvent(state, h.id) : null;
     if (ev) {
         const who = ev.who ? ` (${ev.who})` : '';
         if (ev.status === 'invited') lines.push(`Invitation pending: ${ev.title}${who}. ${userName} decides whether to go.`);
+        else if (ev.kind === 'party' && !ev.moments?.length) lines.push(`${userName} accepted the invitation: ${ev.title}${who}${ev.hook ? ` — ${ev.hook}` : ''}. Lead there when the scene allows; it unfolds around the scene.`);
         else if (ev.kind === 'party') lines.push(`At the gathering: ${ev.title}${who}${ev.moments?.length ? `; so far: ${ev.moments.slice(-2).map(m => m.title).join('; ')}` : ''}. It unfolds around the scene.`);
-        else lines.push(`In play: ${ev.title}${who}. Let it unfold over the next replies; ${userName} chooses whether to take part.`);
+        else lines.push(`${userName} chose to step into: ${ev.title}${who}${ev.hook ? ` — ${ev.hook}` : ''}. ${ev.turn >= state.turn - 1 ? 'Bring it in now' : 'Let it unfold'} over the next replies; ${userName} still makes every own choice.`);
     }
     // Кто может зайти в этот ответ — по очереди из людей праздника (дёшево, без отдельного запроса)
     if (!state.beat && state.nudge) {
         lines.push(state.nudge.name
-            ? `If the scene allows, ${state.nudge.name} (${state.nudge.now}) can come into this reply — in person or by word; one person, never a crowd.`
+            ? `If the scene allows, ${state.nudge.name} can come into this reply, acting on what they want (${state.nudge.now}) — in person or by word; one person, never a crowd.`
             : `If the scene allows, someone the occasion involves — kin or those its custom calls for — can come into this reply; one person, never a crowd.`);
     }
     // Что праздник может принести в этот ответ — придумал отдельный запрос по истории
@@ -151,11 +152,20 @@ function holidayGuide(ctx) {
 // Список людей — общий текст для подготовки и обновлений
 function peopleRules(ctx) {
     const { userName, charName } = ctx;
-    return `HT-PEOPLE replaces the previous list. P lines: up to 6 people already in the story (not ${charName}, not ${userName}) taking part in this holiday right now. GROUP: relative | friend | acquaintance (to ${userName}). NOW: what they do for THIS holiday — preparing, celebrating, a gift; nothing else. GIFT: their gift while still pending, else empty. Only what the story has shown — no secret plans, no one who has left. D lines: people whose part is done (gave their gift, did their bit) — what they did; they leave the P list. Skip the block if nobody qualifies.`;
+    return `HT-PEOPLE replaces the previous list. P lines: up to 6 people taking part in this holiday (not ${charName}, not ${userName}) — those in the story, and for a family occasion the kin and those its custom calls for. GROUP: relative | friend | acquaintance (to ${userName}). WANT: what this person wants, hopes, plans or worries about around the holiday, a few words — something that could draw them into the story; never what they are doing in the current scene, and each person different. GIFT: their gift while still pending, else empty. No surprise meant for ${userName} spoiled, no one who has left. D lines: people whose part is done (gave their gift, did their bit) — what they did; they leave the P list. Skip the block if nobody qualifies.`;
 }
-const PEOPLE_BLOCK = '<!-- HT-PEOPLE\nP | NAME | GROUP | NOW | GIFT\nD | NAME | WHAT_THEY_DID\n-->';
+const PEOPLE_BLOCK = '<!-- HT-PEOPLE\nP | NAME | GROUP | WANT | GIFT\nD | NAME | WHAT_THEY_DID\n-->';
 
 // ═══ Правила крупных блоков — общие для инджекта и отдельного запроса ═══
+
+// Случайный ивент: предлагается игроку кнопками, в историю входит, только если он принял
+function eventOfferRule(ctx) {
+    const { state, phase, userName } = ctx;
+    const h = phase.h;
+    const past = (state.evts || []).filter(e => e.hid === h.id && e.kind !== 'moment').map(e => e.title).slice(-4);
+    return `<!-- HT-EV kind=event|party | title=… | who=… | hook=… -->
+One chance happening around ${hName(h, ctx)} that ${userName} may choose to step into — outside the holiday's own rites and schedule: brought by a person, by chance or by the world around, true to the era, the place and what is happening now. kind=party if someone hosts or invites to a gathering. title: a few words; who: who brings it; hook: one sentence on how it would begin. In ${langOf(ctx)}.${past.length ? ` Different in kind from: ${past.join(' / ')}.` : ''} It is only offered — ${userName} decides first.`;
+}
 function calRule(ctx, lite = false) {
     const { state, userName, charName } = ctx;
     const lang = langOf(ctx);
@@ -234,12 +244,12 @@ All text values in these comments: ${lang} only.`];
     if (ctx.fixSetting) out.push(`ALSO add after the HT line: <!-- HT-CAL\nS | ERA_AND_YEAR | FAITH | PLACE\n--> — the current setting rewritten in ${lang}.`);
     if (state.missed > 0) out.push(`Your previous reply had no HT line — include it now.`);
     if (charDue(state, phase)) {
-        out.push(`Add char=… to the HT line: what ${charName} is doing for the holiday now — a plain action in the present, under 8 words — no reason or purpose clause, and don't echo the wording of earlier steps; it moves on from them and never reverses them without a reason shown in the story.`);
+        out.push(`Add char=… to the HT line: a short thought of ${charName}'s about the holiday right now, in ${charName}'s own voice, under 12 words — about the feast, the people in it or what is coming, never a description of what ${charName} is doing; a new thought each time, not echoing earlier ones.`);
     }
     if (charGiftActive(ctx)) {
         out.push(`Add gift=… to the HT line: ${charName}'s current step with a gift for ${giftTarget(state, h, userName, charName)}, under 8 words, no reason clause; it moves as the story does (idea → finding or making → ready and hidden → given). Add gift_done=true once it is given. Leave gift out until there is a real step — never write that it isn't decided.`);
     }
-    const evOpen = h && phase.kind === 'today' ? openEvent(state, h.id) : null;
+    const evOpen = h && (phase.kind === 'today' || phase.kind === 'prep') ? openEvent(state, h.id) : null;
     if (evOpen?.status === 'invited') out.push(`Add ev=joined to the HT line if ${userName} accepts the invitation, ev=declined if not.`);
     else if (evOpen) out.push(`When "${evOpen.title}" ends, add ev=done | ev_note=its outcome in one sentence to the HT line${evOpen.kind === 'party' ? '' : `; ev=skipped if ${userName} turned away`}.`);
     // С отдельным запросом основная модель ведёт только время, шаг персонажа, подарок и ивент — остальное он
@@ -266,10 +276,7 @@ All text values in these comments: ${lang} only.`];
     if (request === 'prep' && h) out.push(`ALSO add after the HT line:\n${prepRule(ctx)}`);
     if (request === 'day' && h) out.push(`ALSO add after the HT line: ${dayRule(ctx)}`);
     if (request === 'replan' && h) out.push(`ALSO add after the HT line: ${replanRule(ctx)}`);
-    if (request === 'event' && h) {
-        const past = (state.evts || []).filter(e => e.hid === h.id && e.kind !== 'moment').map(e => e.title).slice(-3);
-        out.push(`ALSO, this reply: let something that fits ${hName(h, ctx)} and this place come up in the scene and draw ${charName} and ${userName} in — someone involves them, by chance or on purpose; ${userName} still chooses. It must actually appear in your narration. About one time in three make it a gathering someone hosts or invites them to (kind=party — it starts as an invitation). Then add after the HT line: <!-- HT-EV kind=event|party | title=… | who=… -->, title in ${lang}.${past.length ? ` Something different from: ${past.join(' / ')}.` : ''}`);
-    }
+    if (request === 'event' && h) out.push(`ALSO add after the HT line, NOT written into this reply's story:\n${eventOfferRule(ctx)}`);
     if (request === 'moment' && h) {
         const ev = openEvent(state, h.id);
         out.push(`ALSO, this reply: something new happens at "${ev?.title || 'the gathering'}" that involves ${charName} or ${userName}, shown in your narration. Then add after the HT line: <!-- HT-EV kind=moment | title=… -->, a few words in ${lang}.`);
@@ -314,21 +321,22 @@ export function buildSideMessages(ctx, needs, src) {
 
     // Короткие поля одной строкой
     const sf = [];
-    if (needs.has('char') && h) sf.push(`char=what ${charName} is doing for the holiday now — a plain action in the present, under 8 words — no reason or purpose clause, and don't echo the wording of earlier steps; it moves on from them and never reverses them without a reason shown in the story`);
+    if (needs.has('char') && h) sf.push(`char=a short thought of ${charName}'s about the holiday right now, in ${charName}'s own voice, under 12 words — never a description of what ${charName} is doing; not echoing earlier ones`);
     if (needs.has('char') && h && charGiftActive(ctx)) sf.push(`gift=${charName}'s current step with a gift for ${giftTarget(state, h, userName, charName)}, under 8 words, no reason clause (idea → finding or making → ready and hidden → given); gift_done=true once the story shows it given. Leave gift out until there is a real step — never write that it isn't decided`);
     // кому дарят — если подготовка не успела сказать
     if (needs.has('giftto') && h) sf.push(`gift_to=to whom gifts go by custom on this occasion — the one being honoured, as the story names them`);
-    const evOpen = h && phase.kind === 'today' ? openEvent(state, h.id) : null;
+    const evOpen = h && (phase.kind === 'today' || phase.kind === 'prep') ? openEvent(state, h.id) : null;
     if (evOpen?.status === 'invited') sf.push(`ev=joined if ${userName} accepted the invitation "${evOpen.title}", ev=declined if refused; leave out if not decided yet`);
     else if (evOpen) sf.push(`ev=done with ev_note=its outcome in one sentence once "${evOpen.title}" is over in the story${evOpen.kind === 'party' ? '' : `; ev=skipped if ${userName} turned away`}`);
     if (needs.has('mean') && ctx.meaningFor) sf.push(`mean=what "${ctx.meaningFor}" is and how it is kept in this era and place, one sentence`);
     if (sf.length) task.push(`<!-- HT-S ${sf.map(x => x.split('=')[0] + '=…').join(' | ')} -->\n${sf.map(x => `- ${x}`).join('\n')}`);
 
-    if (needs.has('events') && h) {
-        const past = (state.evts || []).filter(e => e.hid === h.id && e.kind !== 'moment').map(e => e.title).slice(-3);
-        task.push(`<!-- HT-EV kind=event|party|moment | title=… | who=… -->
-Only if the latest messages show something of ${hName(h, ctx)} drawing ${charName} or ${userName} in: someone involves them (kind=event), or someone hosts or invites them to a gathering (kind=party). At a gathering they have joined, something new there is kind=moment. Title a few words. Leave the block out if nothing like that happened.${past.length ? ` Already recorded: ${past.join(' / ')}.` : ''}`);
+    if (needs.has('moments') && h) {
+        const ev = openEvent(state, h.id);
+        task.push(`<!-- HT-EV kind=moment | title=… -->
+Only if the latest messages show something new at "${ev?.title || 'the gathering'}" that ${userName} joined — a few words. Leave it out otherwise.${ev?.moments?.length ? ` Already: ${ev.moments.slice(-3).map(m => m.title).join(' / ')}.` : ''}`);
     }
+    if (needs.has('evoffer') && h) task.push(eventOfferRule(ctx));
     if (needs.has('new')) {
         const known = [...(state.holidays || []).map(x => x.name), ...(ctx.offerNames || []), ...(ctx.passed || [])].filter(Boolean).slice(0, 14);
         task.push(`<!-- HT-NEW CAUSE | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP -->
