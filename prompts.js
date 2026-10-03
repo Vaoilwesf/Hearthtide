@@ -284,6 +284,8 @@ export function buildSideMessages(ctx, needs, src) {
     const notes = buildStatePrompt({ ...ctx, state: { ...state, beat: null, mentionNow: false, recall: null } })
         .split('\n').filter(l => !/^(This reply|If .+ is away from people)/.test(l)).join('\n');
     sys.push(`[Calendar notes so far]\n${notes}`);
+    // точная дата обязательна: от неё считаются все даты в блоках
+    if (state.today != null) sys.push(`[Today in the story] ${isoOf(state.today)}${state.when ? ` (${state.when})` : ''}${ctx.part ? `, ${ctx.part}` : ''}. Count every date from it.`);
     sys.push(`[Story — latest messages, the last one is the newest]\n${src.story || '(empty)'}`);
 
     const task = [`Reply with these blocks, each at most once, nothing else. Values meant for the player in ${lang}; BEAT in English.`];
@@ -312,7 +314,7 @@ Only if the LAST message shows something of ${hName(h, ctx)} drawing ${charName}
     if (needs.has('new')) {
         const known = [...(state.holidays || []).map(x => x.name), ...(ctx.offerNames || []), ...(ctx.passed || [])].filter(Boolean).slice(0, 14);
         task.push(`<!-- HT-NEW CAUSE | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP -->
-Only if the story has set up a coming occasion not yet in the calendar — someone's life event that custom marks with a celebration or rite, an announced celebration, an invitation to one. CAUSE: what happened, a few words. Date it as custom and the story suggest. TYPE: family | personal | religious | folk | memorial. One per line, at most two. Leave the block out if there is none.${known.length ? ` Already known: ${known.join(', ')}.` : ''}`);
+Only if the story has set up a coming occasion not yet in the calendar — someone's life event that custom marks with a celebration or rite, an announced celebration, an invitation to one. CAUSE: what happened, a few words. Date: if the story names the day or how soon (tomorrow, in a week, on some feast), count exactly that from today; otherwise as custom suggests. TYPE: family | personal | religious | folk | memorial. One per line, at most two. Leave the block out if there is none.${known.length ? ` Already known: ${known.join(', ')}.` : ''}`);
     }
     if (needs.has('beat') && h) {
         const what = phase.kind === 'today' ? `the festive day (${hName(h, ctx)})`

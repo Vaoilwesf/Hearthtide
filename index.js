@@ -1082,6 +1082,12 @@ async function runSide(N, needs) {
     scheduleRenderAll();
     const t0 = Date.now();
     try {
+        // Тот же профиль, что у основной модели: дадим API передохнуть после ответа, чтобы не упереться в лимит
+        const mainProfile = globalThis.SillyTavern?.getContext?.()?.extensionSettings?.connectionManager?.selectedProfile;
+        if (apiProfile() === mainProfile) {
+            await new Promise(r => setTimeout(r, 2500));
+            if (side !== me) return;
+        }
         const ctx = ctxFor(null);
         const src = await gatherSources(N, sideDepth());
         const messages = buildSideMessages(ctx, needs, src);
@@ -1599,7 +1605,7 @@ function injectSettingsPanel() {
                     </select>
                 </label>
                 <label class="ht-settings-row">Профиль
-                    <select id="ht-set-api" class="text_pole"><option value="auto">как в таверне</option></select>
+                    <select id="ht-set-api" class="text_pole"><option value="auto">текущий профиль</option></select>
                 </label>
                 <label class="ht-settings-row">Помнит сообщений
                     <select id="ht-set-depth" class="text_pole">
@@ -1641,8 +1647,7 @@ function injectSettingsPanel() {
         document.getElementById('ht-set-api')?.addEventListener('change', e => {
             localStorage.setItem(LS.api, e.target.value);
             cancelSide();
-            injectPrompts();
-            if (state && e.target.value) maybeSide(lastProcessedMsg(), true);
+            injectPrompts();          // запрос уйдёт сам — после следующего ответа бота
         });
         document.getElementById('ht-set-depth')?.addEventListener('change', e => {
             localStorage.setItem(LS.depth, e.target.value);
@@ -1677,9 +1682,9 @@ async function fillProfiles() {
     if (!sel) return;
     const list = await listProfiles();
     const cur = apiChoice();
-    sel.innerHTML = `<option value="auto">как в таверне</option>`
+    sel.innerHTML = `<option value="auto">текущий профиль</option>`
         + list.map(p => `<option value="${esc(p.id)}" ${p.id === cur ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
-    // выбранный профиль удалили в таверне — возвращаемся к «как в таверне»
+    // выбранный профиль удалили в таверне — возвращаемся к текущему профилю
     if (cur !== 'auto' && !list.some(p => p.id === cur)) localStorage.setItem(LS.api, 'auto');
 }
 
