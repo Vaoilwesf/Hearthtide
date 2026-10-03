@@ -52,6 +52,7 @@ export function parseSmall(text, name = 'HT') {
         evNote: clean(f.ev_note, 300),
         mean: clean(f.mean, 240),                                   // смысл праздника, который игрок переименовал
         giftDone: /^(true|yes|1|да)$/i.test(String(f.gift_done || '').trim()),
+        giftTo: clean(f.gift_to, 60),
     };
 }
 

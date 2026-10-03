@@ -505,6 +505,7 @@ function processReply(N) {
     }
     // Мысль/действие персонажа и его подарок — из маленького тега
     if (sm && phase.h && (phase.kind === 'prep' || phase.kind === 'today')) {
+        if (sm.giftTo && langOk(sm.giftTo) && !phase.h.birthday) state.giftTo[phase.h.id] = sm.giftTo;
         if (sm.char) {
             if (langOk(sm.char)) {
                 state.charNow = { hid: phase.h.id, text: sm.char, turn: state.turn };

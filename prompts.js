@@ -234,7 +234,7 @@ All text values in these comments: ${lang} only.`];
         out.push(`Add char=… to the HT line: ${charName}'s current step about the holiday, a few words — it follows logically from the steps so far, never repeats or reverses them without a reason shown in the story.`);
     }
     if (charGiftActive(ctx)) {
-        out.push(`Add gift=… to the HT line: ${charName}'s current step with a gift for ${giftTarget(state, h, userName, charName)}, a few words; it moves as the story does (idea → finding or making → ready and hidden → given). Add gift_done=true once it is given.`);
+        out.push(`Add gift=… to the HT line: ${charName}'s current step with a gift for ${giftTarget(state, h, userName, charName)}, a few words; it moves as the story does (idea → finding or making → ready and hidden → given). Add gift_done=true once it is given. Leave gift out until there is a real step — never write that it isn't decided.`);
     }
     const evOpen = h && phase.kind === 'today' ? openEvent(state, h.id) : null;
     if (evOpen?.status === 'invited') out.push(`Add ev=joined to the HT line if ${userName} accepts the invitation, ev=declined if not.`);
@@ -307,7 +307,9 @@ export function buildSideMessages(ctx, needs, src) {
     // Короткие поля одной строкой
     const sf = [];
     if (needs.has('char') && h) sf.push(`char=${charName}'s current step about the holiday, a few words — what ${charName} is doing or about to do for it, following from the steps so far, never repeating or reversing them without a reason shown in the story; how much depends on how much it matters to ${charName}`);
-    if (needs.has('char') && h && charGiftActive(ctx)) sf.push(`gift=${charName}'s current step with a gift for ${giftTarget(state, h, userName, charName)}, a few words (idea → finding or making → ready and hidden → given); gift_done=true once the story shows it given`);
+    if (needs.has('char') && h && charGiftActive(ctx)) sf.push(`gift=${charName}'s current step with a gift for ${giftTarget(state, h, userName, charName)}, a few words (idea → finding or making → ready and hidden → given); gift_done=true once the story shows it given. Leave gift out until there is a real step — never write that it isn't decided`);
+    // кому дарят — если подготовка не успела сказать
+    if (needs.has('char') && h && !h.birthday && !state.giftTo?.[h.id] && hasGifts(state, h)) sf.push(`gift_to=to whom gifts go by custom on this occasion — the one being honoured, as the story names them`);
     const evOpen = h && phase.kind === 'today' ? openEvent(state, h.id) : null;
     if (evOpen?.status === 'invited') sf.push(`ev=joined if ${userName} accepted the invitation "${evOpen.title}", ev=declined if refused; leave out if not decided yet`);
     else if (evOpen) sf.push(`ev=done with ev_note=its outcome in one sentence once "${evOpen.title}" is over in the story${evOpen.kind === 'party' ? '' : `; ev=skipped if ${userName} turned away`}`);
