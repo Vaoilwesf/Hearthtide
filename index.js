@@ -91,8 +91,9 @@ function defaultState() {
         birthdayOff: {},        // удалённые дни рождения { user: true }
         offers: [],             // поводы из истории, ждут решения игрока: { id, cause, name, start, days, meaning, type, prep, turn }
         offerNo: [],            // названия отклонённых поводов — больше не предлагаем
-        bdayAsked: false,
-        diag: null,             // почему нет календаря: notag | nocal | lang       // дни рождения {{user}} и {{char}} уже спрашивали: нет в карточке — не выдумываем
+        bdayAsked: false,       // дни рождения {{user}} и {{char}} уже спрашивали: нет в карточке — не выдумываем
+        diag: null,             // почему нет календаря: notag | nocal | lang
+        diagNames: [],          // что пришло не на том языке — показать игроку
         yearLog: null,          // текущий год: { y, from, items: [{ id, name, birthday, who, type, start, days, kept }] }
         lived: {},              // hid → true: история застала этот праздник (не перепрыгнула скипом)
         skipFrom: null,         // день, с которого время прыгнуло далеко вперёд — спросить, какие праздники проскочили
@@ -376,8 +377,12 @@ function processReply(N) {
     // ── Календарь ──
     if (cal) {
         const before = cal.holidays.length;
+        const wrong = cal.holidays.filter(h => !langOk(h.name)).map(h => h.name);
         cal.holidays = cal.holidays.filter(h => langOk(h.name));
-        if (before && !cal.holidays.length) state.diag = 'lang';     // календарь пришёл, но весь не на том языке
+        if (before && !cal.holidays.length) {                        // календарь пришёл, но весь не на том языке
+            state.diag = 'lang';
+            state.diagNames = wrong.slice(0, 4);
+        }
         if (cal.holidays.length < before) slip = true;
         if (cal.setting) {
             for (const k of ['era', 'faith', 'place']) if (cal.setting[k] && !langOk(cal.setting[k])) { cal.setting[k] = null; slip = true; }
@@ -918,6 +923,7 @@ function viewSnapshot(phase) {
         setting: state.setting, place: state.place, when: state.when, part: dayPart(state.clock),
         kind: phase.kind,
         diag: phase.h ? null : state.diag || null,
+        diagNames: phase.h || state.diag !== 'lang' ? [] : state.diagNames || [],
         h: phase.h ? { id: phase.h.id, name: displayName(phase.h), raw: phase.h.name, iso: isoOf(phase.h.start), meaning: phase.h.meaning, type: phase.h.type, days: phase.h.days, birthday: !!phase.h.birthday, who: phase.h.who } : null,
         daysTo: phase.daysTo ?? null,
         dayIndex: phase.dayIndex ?? null,
@@ -1123,14 +1129,15 @@ function headHtml(view, open) {
         if (view.kind === 'prep') sub += L().preparing;
     } else {
         title = L().nearest;
-        sub = view.diag ? L().diag[view.diag] : L().soon;
+        // причина, почему праздников нет, — целиком, с переносом строк, и что именно пришло
+        sub = view.diag ? L().diag[view.diag] + (view.diagNames?.length ? `. ${L().diagGot}: ${view.diagNames.join(', ')}` : '') : L().soon;
     }
     const icon = h ? TYPE_ICON[h.birthday ? 'personal' : h.type] || 'fa-star' : 'fa-calendar-days';
     return `<div class="ht-head" role="button" tabindex="0" data-act="toggle" aria-expanded="${open}">
         ${ring(view)}
         <span class="ht-head-text">
             <span class="ht-title"><i class="fa-solid ${icon}"></i>${esc(title)}</span>
-            ${sub ? `<span class="ht-sub">${esc(sub)}</span>` : ''}
+            ${sub ? `<span class="ht-sub${view.diag && !h ? ' ht-sub-wrap' : ''}">${esc(sub)}</span>` : ''}
         </span>
         <i class="fa-solid fa-chevron-down ht-chev"></i>
     </div>`;
@@ -1256,6 +1263,9 @@ function bodyHtml(view, live) {
         main = section('main', 'fa-moon', esc(L().ended(view.ended.name)), `<p class="ht-text">${esc(view.ended.recap || L().afterDefault)}</p>`);
     } else if (h) {
         main = section('main', TYPE_ICON[h.type] || 'fa-star', esc(h.name), `<p class="ht-text">${esc(h.meaning || '')}</p>`, editBtn(h.id) + delBtn(h.id));
+    } else if (view.diag) {
+        // праздников нет — объясняем почему (и что именно пришло, если не тот язык)
+        main = `<p class="ht-mute"><i class="fa-solid fa-circle-info"></i> ${esc(L().diag[view.diag])}${view.diagNames?.length ? `. ${esc(L().diagGot)}: ${view.diagNames.map(esc).join(', ')}` : ''}</p>`;
     }
 
     if (h && ui.editing === h.id && live && main) main = main.replace('<div class="ht-sec-body">', `<div class="ht-sec-body">${editForm(h)}`);

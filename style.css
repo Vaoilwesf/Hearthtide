@@ -353,3 +353,6 @@
 .ht-yr-missed { opacity: 0.62; }
 .ht-yr-missed > i { color: var(--ht-mute); }
 .ht-yr-missed > em { border-color: var(--ht-line-strong); color: var(--ht-mute); }
+
+/* Подсказка «почему нет праздников» — не обрезаем многоточием, переносим */
+.ht-sub.ht-sub-wrap { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; line-height: 1.3; }
