@@ -1353,9 +1353,9 @@ function offerHtml() {
             ${list.length > 1 ? `<em>${esc(L().offerMore(list.length - 1))}</em>` : ''}</div>
         ${o.meaning ? `<p class="ht-offer-mean">${esc(o.meaning)}</p>` : ''}
         <div class="ht-offer-actions">
-            <button class="ht-btn ht-btn-main" data-act="offer-yes" data-oid="${esc(o.id)}"><i class="fa-solid fa-check"></i>${L().accept}</button>
-            <button class="ht-btn" data-act="offer-edit" data-oid="${esc(o.id)}"><i class="fa-solid fa-pen"></i>${L().edit}</button>
-            <button class="ht-btn ht-btn-quiet" data-act="offer-no" data-oid="${esc(o.id)}"><i class="fa-solid fa-xmark"></i>${L().decline}</button>
+            <button class="ht-btn ht-btn-main" data-act="offer-yes" data-oid="${esc(o.id)}" title="${esc(L().accept)}"><i class="fa-solid fa-check"></i><span>${L().accept}</span></button>
+            <button class="ht-btn" data-act="offer-edit" data-oid="${esc(o.id)}" title="${esc(L().edit)}"><i class="fa-solid fa-pen"></i><span>${L().edit}</span></button>
+            <button class="ht-btn ht-btn-quiet" data-act="offer-no" data-oid="${esc(o.id)}" title="${esc(L().decline)}"><i class="fa-solid fa-xmark"></i><span>${L().decline}</span></button>
         </div>
     </div>`;
 }

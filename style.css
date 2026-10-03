@@ -327,7 +327,16 @@
 .ht-offer-hol b { font-weight: 700; }
 .ht-offer-hol em { font-style: normal; font-size: 0.8em; color: var(--ht-mute); white-space: nowrap; }
 .ht-offer-mean { margin: 0; color: var(--ht-mute); font-size: 0.9em; line-height: 1.4; }
-.ht-offer-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+/* Три кнопки всегда в одну строку, поровну; на узком экране текст мельчает, на совсем узком остаются иконки */
+.ht-offer { container-type: inline-size; }
+.ht-offer-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 4px; }
+.ht-offer-actions .ht-btn { justify-content: center; min-width: 0; padding: 6px 8px; font-size: clamp(0.78em, 3.4cqi, 0.92em); }
+.ht-offer-actions .ht-btn > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ht-offer-actions .ht-btn > i { flex: none; }
+@container (max-width: 260px) {
+    .ht-offer-actions .ht-btn > span { display: none; }
+    .ht-offer-actions .ht-btn { padding: 7px 0; }
+}
 .ht-ib .ht-btn-quiet { border-color: var(--ht-line); color: var(--ht-mute); }
 .ht-ib .ht-btn-quiet:hover { color: var(--ht-fg); }
 .ht-edit textarea.text_pole { resize: vertical; min-height: 2.6em; font-family: inherit; }
