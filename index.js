@@ -1450,10 +1450,10 @@ function bodyHtml(view, live) {
         const g = view.charGift;
         const gift = view.gifts ? `<div class="ht-char-gift${g?.done ? ' ht-done' : ''}"><i class="fa-solid ${g?.done ? 'fa-circle-check' : 'fa-gift'}"></i>
             <div><span>${esc(L().giftForUser(view.giftTo || getUserName()))}</span><b>${esc(g?.done ? (g.text || L().giftGiven) : (g?.text || L().giftUndecided))}</b></div></div>` : '';
-        const trail = (view.charSteps || []).length ? `<div class="ht-trail"><span>${L().before}:</span> ${(view.charSteps).map(esc).join(' → ')}</div>` : '';
+        // прошлые шаги в инфоблок не выводим — они нужны только модели, чтобы цепочка шла дальше
         charCard = `<div class="ht-char${live && view.care === 'high' ? ' ht-glow' : ''}">
             <div class="ht-char-head"><i class="fa-solid fa-user"></i><b>${esc(getCharName())}</b><span class="ht-care ht-care-${view.care}">${esc(L().care[view.care])}</span></div>
-            ${view.care !== 'low' ? `<div class="ht-char-now"><span>${L().nowLabel}</span>${esc(view.charNow || L().charIdle)}</div>${trail}` : ''}
+            ${view.care !== 'low' ? `<div class="ht-char-now"><span>${L().nowLabel}</span>${esc(view.charNow || L().charIdle)}</div>` : ''}
             ${gift}
         </div>`;
     }
