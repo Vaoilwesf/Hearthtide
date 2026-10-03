@@ -12,7 +12,7 @@ import { eventSource, event_types } from '../../../../scripts/events.js';
 import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
 import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, stripBlocks } from './tag.js';
 import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, OPEN_STATUSES, sideNeeds, sideDue } from './calendar.js';
-import { buildStatePrompt, buildTagPrompt, buildSideMessages } from './prompts.js';
+import { buildStatePrompt, buildTagPrompt, buildSideMessages, giftTarget } from './prompts.js';
 import { listProfiles, gatherSources, sendSide, reasonOf } from './side.js';
 import { strings } from './i18n.js';
 
@@ -112,6 +112,7 @@ function defaultState() {
         lastPeopleTurn: -99,
         care: {},               // hid → high | normal | low — насколько праздник важен персонажу
         gifts: {},              // hid → true/false — предполагает ли праздник подарки
+        giftTo: {},             // hid → кому по обычаю дарят (виновник торжества)
         charNow: null,          // { hid, text, turn } — мысль или действие персонажа сейчас
         charLog: {},            // hid → [{ text, turn }] — цепочка шагов персонажа, чтобы действия были последовательны
         charGift: null,         // { hid, text, done } — подарок персонажа игроку
@@ -476,6 +477,7 @@ function processReply(N) {
             state.prep = { hid: phase.h.id, day: state.today, turn: state.turn, people: prep.people, mood: prep.mood };
         } else slip = true;
         if (prep.gifts != null) state.gifts[phase.h.id] = prep.gifts;
+        if (prep.giftTo && langOk(prep.giftTo)) state.giftTo[phase.h.id] = prep.giftTo;
         if (prep.care) state.care[phase.h.id] = prep.care;
     }
     // Люди: список заменяется целиком — один человек, одна строка
@@ -848,7 +850,7 @@ function renameHidIn(st, oldId, newId) {
     for (const k of Object.keys(st.planPart || {})) {
         if (k.startsWith(`${oldId}#`)) { st.planPart[k.replace(oldId, newId)] = st.planPart[k]; delete st.planPart[k]; }
     }
-    for (const map of ['charLog', 'highlights', 'care', 'gifts', 'recapDone', 'lived']) {
+    for (const map of ['charLog', 'highlights', 'care', 'gifts', 'giftTo', 'recapDone', 'lived']) {
         if (st[map] && oldId in st[map]) { st[map][newId] = st[map][oldId]; delete st[map][oldId]; }
     }
     if (st.charNow?.hid === oldId) st.charNow.hid = newId;
@@ -863,7 +865,7 @@ function forgetHolidayIn(st, id) {
     for (const map of ['days', 'planPart']) {
         for (const k of Object.keys(st[map] || {})) if (k.startsWith(`${id}#`)) delete st[map][k];
     }
-    for (const map of ['charLog', 'care', 'gifts']) if (st[map]) delete st[map][id];
+    for (const map of ['charLog', 'care', 'gifts', 'giftTo']) if (st[map]) delete st[map][id];
     if (st.charNow?.hid === id) st.charNow = null;
     if (st.charGift?.hid === id) st.charGift = null;
 }
@@ -1019,7 +1021,8 @@ function viewSnapshot(phase) {
                 highlights: clone(state.highlights?.[hid] || []),
                 evts: phase.kind === 'today' ? clone(state.evts.filter(e => e.hid === hid)) : [],
                 charGift: state.charGift?.hid === hid ? { text: state.charGift.text, done: state.charGift.done } : null,
-                gifts: hasGifts(state, phase.h) && !(phase.h.birthday && phase.h.who === 'char'),
+                giftTo: giftTarget(state, phase.h, getUserName(), getCharName()),
+                gifts: hasGifts(state, phase.h) && giftTarget(state, phase.h, getUserName(), getCharName()).toLowerCase() !== getCharName().toLowerCase(),
             };
         })(),
     };
@@ -1051,6 +1054,15 @@ function injectPrompts() {
 // ═══════════════════════════════════════════════════════════════
 let side = null;            // { N, hash, ctl } — запрос в пути
 let sideFailTurn = -99;
+let sideErr = null;         // { N, why } — последний запрос упал (для кнопки «повторить»)
+
+function sideMarkHtml() {
+    if (side && side.N === lastProcessedMsg()) return `<i class="fa-solid fa-feather-pointed ht-busy" title="${esc(L().sideBusy)}"></i>`;
+    if (sideErr && sideErr.N === lastProcessedMsg()) {
+        return `<i class="fa-solid fa-rotate-right ht-retry" role="button" tabindex="0" data-act="side-retry" title="${esc(`${L().sideFail}: ${sideErr.why}. ${L().sideRetry}`)}"></i>`;
+    }
+    return '';
+}
 
 function sideBusyFor(id) { return !!side && side.N === id; }
 
@@ -1079,6 +1091,7 @@ async function runSide(N, needs) {
     const hash = hashText(chat[N].mes);
     const me = { N, hash, ctl };
     side = me;
+    sideErr = null;
     scheduleRenderAll();
     const t0 = Date.now();
     try {
@@ -1110,6 +1123,7 @@ async function runSide(N, needs) {
         if (ctl.signal.aborted || side !== me) return;
         sideFailTurn = state?.turn ?? 0;
         const why = reasonOf(e);
+        sideErr = { N, why };
         console.error('[Hearthtide] отдельный запрос не прошёл:', why, e);
         window.toastr?.error?.(`${L().sideFail}: ${why}`, 'Hearthtide', { timeOut: 12000 });
     } finally {
@@ -1227,7 +1241,7 @@ function renderBlock(id) {
     block.dataset.mesid = String(id);
     const open = ui.open.get(id) || false;
     block.classList.toggle('ht-open', open);
-    block.innerHTML = headHtml(view, open, live && sideBusyFor(id)) + (live ? offerHtml() : '') + (open ? bodyHtml(view, live) : '');
+    block.innerHTML = headHtml(view, open, live ? sideMarkHtml() : '') + (live ? offerHtml() : '') + (open ? bodyHtml(view, live) : '');
 }
 
 // ─── Кольцо: сколько дней осталось (из 30), в день праздника — полное ───
@@ -1256,7 +1270,7 @@ function ring(view) {
 
 function daysWord(n) { return L().days(n, plural); }
 
-function headHtml(view, open, busy = false) {
+function headHtml(view, open, mark = '') {
     let title, sub = '';
     const h = view.h;
     if (view.kind === 'today' && h) {
@@ -1272,7 +1286,7 @@ function headHtml(view, open, busy = false) {
     } else {
         title = L().nearest;
         // причина, почему праздников нет, — целиком, с переносом строк, и что именно пришло
-        sub = view.diag ? L().diag[view.diag] + (view.diagNames?.length ? `. ${L().diagGot}: ${view.diagNames.join(', ')}` : '') : L().soon;
+        sub = view.diag ? L().diag[view.diag] + (view.diagNames?.length ? `. ${L().diagGot}: ${view.diagNames.join(', ')}` : '') : (apiOn() ? '' : L().soon);
     }
     const icon = h ? TYPE_ICON[h.birthday ? 'personal' : h.type] || 'fa-star' : 'fa-calendar-days';
     return `<div class="ht-head" role="button" tabindex="0" data-act="toggle" aria-expanded="${open}">
@@ -1281,7 +1295,7 @@ function headHtml(view, open, busy = false) {
             <span class="ht-title"><i class="fa-solid ${icon}"></i>${esc(title)}</span>
             ${sub ? `<span class="ht-sub${view.diag && !h ? ' ht-sub-wrap' : ''}">${esc(sub)}</span>` : ''}
         </span>
-        ${busy ? `<i class="fa-solid fa-feather-pointed ht-busy" title="${esc(L().sideBusy)}"></i>` : ''}
+        ${mark}
         <i class="fa-solid fa-chevron-down ht-chev"></i>
     </div>`;
 }
@@ -1384,6 +1398,8 @@ function bodyHtml(view, live) {
 
     let main = '';
     const h = view.h;
+    // перо — помощник читает историю; стрелка — запрос упал, нажать, чтобы повторить
+    const sideMark = live ? sideMarkHtml() : '';
     if (view.kind === 'today' && h) {
         const plan = view.plan;
         if (plan) {
@@ -1392,16 +1408,16 @@ function bodyHtml(view, live) {
                     <i class="fa-solid ${PART_ICON[p]}"></i>
                     <div><b>${L().part[p]}${p === view.part ? L().now : ''}</b><span>${esc(plan[p])}</span></div>
                 </div>`).join('');
-            main = section('main', 'fa-fire', plan.title ? esc(plan.title) : L().festiveDay, `<div class="ht-parts">${rows}</div>`, editBtn(h.id) + delBtn(h.id));
+            main = section('main', 'fa-fire', plan.title ? esc(plan.title) : L().festiveDay, `<div class="ht-parts">${rows}</div>`, sideMark + editBtn(h.id) + delBtn(h.id));
         } else {
-            main = section('main', 'fa-fire', L().festiveDay, `<p class="ht-text">${esc(h.meaning || '')}</p><p class="ht-mute">${L().planSoon}</p>`, editBtn(h.id) + delBtn(h.id));
+            main = section('main', 'fa-fire', L().festiveDay, `<p class="ht-text">${esc(h.meaning || '')}</p>${apiOn() ? '' : `<p class="ht-mute">${L().planSoon}</p>`}`, sideMark + editBtn(h.id) + delBtn(h.id));
         }
     } else if (view.kind === 'prep' && h) {
         const p = view.prep;
         main = section('main', 'fa-wand-magic-sparkles', L().prep, p ? `
             ${p.people ? `<p class="ht-text">${esc(p.people)}</p>` : ''}
             ${p.mood ? `<p class="ht-mood"><i class="fa-solid fa-feather-pointed"></i>${esc(p.mood)}</p>` : ''}`
-            : `<p class="ht-text">${esc(h.meaning || '')}</p><p class="ht-mute">${L().prepSoon}</p>`, editBtn(h.id) + delBtn(h.id));
+            : `<p class="ht-text">${esc(h.meaning || '')}</p>${apiOn() ? '' : `<p class="ht-mute">${L().prepSoon}</p>`}`, sideMark + editBtn(h.id) + delBtn(h.id));
     } else if (view.kind === 'after' && view.ended) {
         main = section('main', 'fa-moon', esc(L().ended(view.ended.name)), `<p class="ht-text">${esc(view.ended.recap || L().afterDefault)}</p>`);
     } else if (h) {
@@ -1421,7 +1437,7 @@ function bodyHtml(view, live) {
     if ((view.kind === 'prep' || view.kind === 'today') && view.care) {
         const g = view.charGift;
         const gift = view.gifts ? `<div class="ht-char-gift${g?.done ? ' ht-done' : ''}"><i class="fa-solid ${g?.done ? 'fa-circle-check' : 'fa-gift'}"></i>
-            <div><span>${esc(L().giftForUser(getUserName()))}</span><b>${esc(g?.done ? (g.text || L().giftGiven) : (g?.text || L().giftUndecided))}</b></div></div>` : '';
+            <div><span>${esc(L().giftForUser(view.giftTo || getUserName()))}</span><b>${esc(g?.done ? (g.text || L().giftGiven) : (g?.text || L().giftUndecided))}</b></div></div>` : '';
         const trail = (view.charSteps || []).length ? `<div class="ht-trail"><span>${L().before}:</span> ${(view.charSteps).map(esc).join(' → ')}</div>` : '';
         charCard = `<div class="ht-char${live && view.care === 'high' ? ' ht-glow' : ''}">
             <div class="ht-char-head"><i class="fa-solid fa-user"></i><b>${esc(getCharName())}</b><span class="ht-care ht-care-${view.care}">${esc(L().care[view.care])}</span></div>
@@ -1517,6 +1533,9 @@ function bindBlock(block) {
                 window.toastr?.success?.(L().saved, 'Hearthtide');
                 renderAll();
             }
+        } else if (t.dataset.act === 'side-retry') {
+            sideErr = null;
+            maybeSide(lastProcessedMsg(), true);
         } else if (t.dataset.act === 'offer-yes') {
             if (acceptOffer(t.dataset.oid)) renderAll();
         } else if (t.dataset.act === 'offer-no') {

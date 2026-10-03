@@ -1,6 +1,21 @@
 // Hearthtide — i18n.js
 // Язык инфоблока (подписи + то, что ИИ пишет для инфоблока). Инджект всегда на английском.
 
+// Родительный падеж имени для подписей («Подарок для Ольги»). Только простые случаи;
+// составные, иностранные и непонятные имена оставляем как есть
+function genitive(name) {
+    const n = String(name || '').trim();
+    if (!/^[А-ЯЁ][а-яё-]+$/.test(n)) return n;
+    if (n === 'Любовь') return 'Любови';
+    if (/ия$/.test(n)) return n.slice(0, -1) + 'и';                 // Мария → Марии
+    if (/[гкхжшщч]а$/.test(n)) return n.slice(0, -1) + 'и';         // Ольга → Ольги
+    if (/а$/.test(n)) return n.slice(0, -1) + 'ы';                  // Нина → Нины, Никита → Никиты
+    if (/я$/.test(n)) return n.slice(0, -1) + 'и';                  // Таисья → Таисьи
+    if (/[йь]$/.test(n)) return n.slice(0, -1) + 'я';               // Андрей → Андрея, Игорь → Игоря
+    if (/[бвгджзклмнпрстфхцчшщ]$/.test(n)) return n + 'а';          // Ярослав → Ярослава
+    return n;
+}
+
 const RU = {
     part: { morning: 'Утро', day: 'День', evening: 'Вечер', night: 'Ночь' },
     days: (n, plural) => `${n} ${plural(n, ['день', 'дня', 'дней'])}`,
@@ -22,7 +37,7 @@ const RU = {
     festiveDay: 'Праздничный день',
     nowLabel: 'Сейчас',
     before: 'Перед этим',
-    giftForUser: (u) => `Подарок для ${u}`,
+    giftForUser: (u) => `Подарок для ${genitive(u)}`,
     afterDefault: 'Усталость, остатки угощения, разговоры о том, как всё прошло.',
     happening: 'Что происходит',
     people: 'Близкие и знакомые',
@@ -58,6 +73,7 @@ const RU = {
     fMeaning: 'Смысл и обычаи',
     year: 'Текущий год',
     diagGot: 'пришло',
+    sideRetry: 'Нажмите, чтобы повторить',
     sideFail: 'Отдельный запрос не прошёл',
     sideBusy: 'Отдельный запрос читает историю…',
     scanToast: 'Читаю историю — инфоблок обновится, когда придёт ответ',
@@ -134,6 +150,7 @@ const EN = {
     fMeaning: 'Meaning and customs',
     year: 'This year',
     diagGot: 'received',
+    sideRetry: 'Tap to retry',
     sideFail: 'The side request failed',
     sideBusy: 'The side request is reading the story…',
     scanToast: 'Reading the story — the infoblock updates when the answer arrives',

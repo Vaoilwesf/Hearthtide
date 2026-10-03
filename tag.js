@@ -128,6 +128,7 @@ export function parsePrep(text) {
     const c = String(f.care || '').trim().toLowerCase();
     const r = {
         people: clean(f.people), mood: clean(f.mood),
+        giftTo: clean(f.gift_to, 60),                               // кому по обычаю дарят
         gifts: /^(yes|true|да|1)/.test(g) ? true : /^(no|false|нет|0)/.test(g) ? false : null,
         care: /^(high|важ|выс)/.test(c) ? 'high' : /^(low|низ|мал|прох)/.test(c) ? 'low' : /^(norm|mid|обыч|сред)/.test(c) ? 'normal' : null,
     };

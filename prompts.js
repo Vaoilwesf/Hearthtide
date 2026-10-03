@@ -13,12 +13,20 @@ function hName(h, ctx) {
 }
 const langOf = (ctx) => ctx.lang || "the roleplay's language";
 
-// Подарок персонажа игроку уместен, если праздник с подарками и это не день рождения самого персонажа
+// Кому по обычаю дарят на этом празднике: виновнику торжества (из подготовки), иначе {{user}}
+export function giftTarget(state, h, userName, charName) {
+    if (!h) return userName;
+    if (h.birthday) return h.who === 'user' ? userName : charName;
+    return state.giftTo?.[h.id] || userName;
+}
+const sameName = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+
+// Подарок персонажа уместен, если праздник с подарками и дарят не самому персонажу
 function charGiftActive(ctx) {
     const { state, phase } = ctx;
     const h = phase.h;
     if (!h || (phase.kind !== 'prep' && phase.kind !== 'today')) return false;
-    if (!hasGifts(state, h) || (h.birthday && h.who === 'char')) return false;
+    if (!hasGifts(state, h) || sameName(giftTarget(state, h, ctx.userName, ctx.charName), ctx.charName)) return false;
     if (state.care?.[h.id] === 'low' && !(h.birthday && h.who === 'user')) return false;
     return !(state.charGift?.hid === h.id && state.charGift.done);
 }
@@ -76,7 +84,7 @@ export function buildStatePrompt(ctx) {
         // Подарок персонажа
         if (charGiftActive(ctx)) {
             const g = state.charGift?.hid === h.id ? state.charGift.text : null;
-            lines.push(`${charName}'s gift for ${userName}: ${g || 'not decided yet'} — it moves forward in small steps when the scene allows, never all at once.`);
+            lines.push(`${charName}'s gift for ${giftTarget(state, h, userName, charName)}: ${g || 'not decided yet'} — it moves forward in small steps when the scene allows, never all at once.`);
         }
         // Кто уже отличился — помним до конца праздника
         const hl = (state.highlights?.[h.id] || []).slice(-5);
@@ -174,8 +182,8 @@ function prepRule(ctx) {
     const scope = isIntimate(h)
         ? `This is a personal or family occasion: only ${h.birthday && h.who === 'user' ? `the people close to ${userName}` : 'the household and close circle'} get ready — not the whole community.`
         : `This is a public holiday: the community around ${userName} gets ready.`;
-    return `<!-- HT-PREP people=… | mood=… | gifts=yes|no | care=high|normal|low -->
-How things get ready for ${hName(h, ctx)} (in ${phase.daysTo} day${phase.daysTo === 1 ? '' : 's'}) in ${ctx.placeName || `the place around ${userName}`}. ${scope} people: what is being done now, one or two sentences true to the customs of this era and place; mood: the feeling in the air.${prev?.people ? ` Before it was: "${prev.people}" — show what has moved on since, don't restate it.` : ''} Only what is visible or commonly known — no secret plans the story hasn't shown. gifts: does this holiday involve giving gifts by custom. care: how much it matters to ${charName} personally, judging by who ${charName} is.${h.birthday && h.who === 'user' ? ` A surprise for ${userName} stays unspoiled.` : ''}`;
+    return `<!-- HT-PREP people=… | mood=… | gifts=yes|no | gift_to=… | care=high|normal|low -->
+How things get ready for ${hName(h, ctx)} (in ${phase.daysTo} day${phase.daysTo === 1 ? '' : 's'}) in ${ctx.placeName || `the place around ${userName}`}. ${scope} people: what is being done now, one or two sentences true to the customs of this era and place; mood: the feeling in the air.${prev?.people ? ` Before it was: "${prev.people}" — show what has moved on since, don't restate it.` : ''} Only what is visible or commonly known — no secret plans the story hasn't shown. gifts: does this holiday involve giving gifts by custom; gift_to: to whom they go by custom here — the one being honoured, as the story names them. care: how much it matters to ${charName} personally, judging by who ${charName} is.${h.birthday && h.who === 'user' ? ` A surprise for ${userName} stays unspoiled.` : ''}`;
 }
 
 function dayRule(ctx) {
@@ -226,7 +234,7 @@ All text values in these comments: ${lang} only.`];
         out.push(`Add char=… to the HT line: ${charName}'s current step about the holiday, a few words — it follows logically from the steps so far, never repeats or reverses them without a reason shown in the story.`);
     }
     if (charGiftActive(ctx)) {
-        out.push(`Add gift=… to the HT line: ${charName}'s current step with a gift for ${userName}, a few words; it moves as the story does (idea → finding or making → ready and hidden → given). Add gift_done=true once it is given.`);
+        out.push(`Add gift=… to the HT line: ${charName}'s current step with a gift for ${giftTarget(state, h, userName, charName)}, a few words; it moves as the story does (idea → finding or making → ready and hidden → given). Add gift_done=true once it is given.`);
     }
     const evOpen = h && phase.kind === 'today' ? openEvent(state, h.id) : null;
     if (evOpen?.status === 'invited') out.push(`Add ev=joined to the HT line if ${userName} accepts the invitation, ev=declined if not.`);
@@ -299,7 +307,7 @@ export function buildSideMessages(ctx, needs, src) {
     // Короткие поля одной строкой
     const sf = [];
     if (needs.has('char') && h) sf.push(`char=${charName}'s current step about the holiday, a few words — what ${charName} is doing or about to do for it, following from the steps so far, never repeating or reversing them without a reason shown in the story; how much depends on how much it matters to ${charName}`);
-    if (needs.has('char') && h && charGiftActive(ctx)) sf.push(`gift=${charName}'s current step with a gift for ${userName}, a few words (idea → finding or making → ready and hidden → given); gift_done=true once the story shows it given`);
+    if (needs.has('char') && h && charGiftActive(ctx)) sf.push(`gift=${charName}'s current step with a gift for ${giftTarget(state, h, userName, charName)}, a few words (idea → finding or making → ready and hidden → given); gift_done=true once the story shows it given`);
     const evOpen = h && phase.kind === 'today' ? openEvent(state, h.id) : null;
     if (evOpen?.status === 'invited') sf.push(`ev=joined if ${userName} accepted the invitation "${evOpen.title}", ev=declined if refused; leave out if not decided yet`);
     else if (evOpen) sf.push(`ev=done with ev_note=its outcome in one sentence once "${evOpen.title}" is over in the story${evOpen.kind === 'party' ? '' : `; ev=skipped if ${userName} turned away`}`);

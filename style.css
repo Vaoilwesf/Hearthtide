@@ -370,3 +370,5 @@
 .ht-busy { color: var(--ht-mute); font-size: 0.85em; margin-right: 4px; animation: ht-busy 1.4s ease-in-out infinite; }
 @keyframes ht-busy { 50% { transform: translateY(-2px) rotate(-12deg); } }
 @media (prefers-reduced-motion: reduce) { .ht-busy { animation: none; } }
+.ht-retry { color: var(--ht-acc); font-size: 0.85em; margin-right: 4px; cursor: pointer; padding: 4px; }
+.ht-retry:hover { transform: rotate(60deg); transition: transform 0.25s ease; }
