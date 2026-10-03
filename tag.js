@@ -65,7 +65,9 @@ export function parseCalendar(text) {
         const cols = raw.split('|').map(x => x.trim());
         const kind = (cols[0] || '').toUpperCase();
         if (kind === 'S') {
-            res.setting = { era: clean(cols[1], 120), faith: clean(cols[2], 120), place: clean(cols[3], 60) };
+            const mode = String(cols[4] || '').toLowerCase();
+            res.setting = { era: clean(cols[1], 120), faith: clean(cols[2], 120), place: clean(cols[3], 60),
+                mode: /^pres|^modern|^совр|^наш/.test(mode) ? 'modern' : /^past|^anc|^hist|^fant|^прош|^древ/.test(mode) ? 'ancient' : null };
         } else if (kind === 'H') {
             const start = parseDate(cols[1]);
             const days = Math.max(1, Math.min(14, parseInt(cols[2]) || 1));

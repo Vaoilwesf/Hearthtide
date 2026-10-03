@@ -152,39 +152,45 @@ function requestForRaw(state, phase, skip = null) {
 // Основная модель пишет только дату и время; всё остальное собирает отдельный запрос
 // по истории. Здесь — что в нём спросить и когда его отправлять.
 
-/** Что спросить в отдельном запросе после этого ответа */
+/** Что спросить в отдельном запросе после этого ответа.
+ *  Шаг персонажа, подарок и статус ивента пишет основная модель в своём теге — это почти бесплатно. */
 export function sideNeeds(state, phase) {
     const n = new Set();
     const turn = state.turn || 0;
     if (phase.kind === 'after' && phase.ended && !state.recapDone?.[phase.ended.id]) n.add('recap');
     if (needsCalendar(state)) n.add('cal');
     const h = phase.h;
+    const active = (phase.kind === 'prep' || phase.kind === 'today') && h;
     if (phase.kind === 'prep' && h) {
         const p = state.prep;
-        if (!p || p.hid !== h.id || p.day !== state.today || turn - (p.turn ?? -99) >= 2) n.add('prep');
-        n.add('people').add('char');
+        if (!p || p.hid !== h.id || p.day !== state.today || turn - (p.turn ?? -99) >= SIDE_EVERY.prep) n.add('prep');
+        n.add('people');
     }
     if (phase.kind === 'today' && h) {
         const key = `${h.id}#${phase.dayIndex}`;
         const part = dayPart(state.clock);
         if (!state.days?.[key]) n.add('day');
         else if (part && state.planPart?.[key] && state.planPart[key] !== part) n.add('replan');
-        n.add('people').add('char').add('events');
+        n.add('people').add('events');
     }
-    // что принесёт следующий ответ: в праздник — всегда, в подготовке — по графику упоминаний, издали — изредка
-    if (h && (phase.kind === 'today' || (phase.kind === 'prep' && state.mentionNow)
-        || (phase.kind === 'far' && phase.daysTo <= 14 && turn % 4 === 0))) n.add('beat');
+    if (active && !h.birthday && !state.giftTo?.[h.id] && state.gifts?.[h.id]) n.add('giftto');
+    if (active || (phase.kind === 'far' && h && phase.daysTo <= 14)) n.add('beat');
     if ((state.holidays || []).some(x => x.needMeaning && !isBanned(state, x.name))) n.add('mean');
     n.add('new');   // поводы из истории ищем при каждом запросе — это почти ничего не стоит
     return n;
 }
 
+/** Как часто ходит отдельный запрос (в ответах бота): в праздник чаще, издали реже */
+export const SIDE_EVERY = { prep: 3, today: 2, far: 5 };
+
 /** Отправлять ли отдельный запрос после этого ответа */
-export const SIDE_SCAN_EVERY = 4;
 export function sideDue(state, phase, needs) {
-    if (phase.kind === 'prep' || phase.kind === 'today') return true;          // инфоблок живёт каждый ответ
-    if (needs.has('recap') || needs.has('cal') || needs.has('mean')) return true;
-    return (state.turn || 0) - (state.lastSideTurn ?? -99) >= SIDE_SCAN_EVERY;   // издали — изредка, искать поводы
+    // то, без чего инфоблок пустой или неверный, — сразу
+    if (['recap', 'cal', 'mean', 'day', 'replan'].some(k => needs.has(k))) return true;
+    const since = (state.turn || 0) - (state.lastSideTurn ?? -99);
+    if (phase.kind === 'prep') return needs.has('prep') || since >= SIDE_EVERY.prep;   // новый день — тоже
+    if (phase.kind === 'today') return since >= SIDE_EVERY.today;
+    return since >= SIDE_EVERY.far;
 }
 
 /** Как часто упоминать подготовку: чем ближе праздник, тем чаще (в ответах) */

@@ -62,9 +62,11 @@ function setCharSetting(field, value) {
     if (!key) { localStorage.setItem(field === 'era' ? LS.era : LS.faith, value); return; }
     const map = eraMap();
     map[key] = { ...(map[key] || {}), [field]: value };
+    if (value === 'auto') delete map[key][field];
     localStorage.setItem(LS.eraMap, JSON.stringify(map));
 }
-const eraMode = () => eraMap()[charKey()]?.era || lsGet(LS.era, 'ancient');
+// Эпоху нового персонажа определяет ИИ по карточке в первом календаре (auto), пока игрок не выберет сам
+const eraMode = () => eraMap()[charKey()]?.era || (charKey() ? 'auto' : lsGet(LS.era, 'ancient'));
 const faithMode = () => eraMap()[charKey()]?.faith || lsGet(LS.faith, 'faith');
 const langMode = () => lsGet(LS.lang, 'ru');
 const L = () => strings(langMode());
@@ -133,6 +135,8 @@ function defaultState() {
         beat: null,             // что праздник может принести в следующий ответ (от отдельного запроса)
         beatLog: [],            // последние такие подсказки — чтобы не повторялись
         lastSideTurn: -99,      // когда отдельный запрос последний раз дошёл
+        nudge: null,            // кто из людей праздника может зайти в следующий ответ
+        nudgeIdx: 0,
         missed: 0,
         turn: 0,
         lastMention: -99,
@@ -445,6 +449,8 @@ function processReply(N) {
             state.diagNames = wrong.slice(0, 4);
         }
         if (cal.holidays.length < before) slip = true;
+        // эпоха «по карточке»: ИИ сказал, наши это дни или нет — запоминаем для персонажа
+        if (cal.setting?.mode && eraMode() === 'auto') { setCharSetting('era', cal.setting.mode); syncCharSettings(); }
         if (cal.setting) {
             for (const k of ['era', 'faith', 'place']) if (cal.setting[k] && !langOk(cal.setting[k])) { cal.setting[k] = null; slip = true; }
             state.setting = { ...(state.setting || {}), ...Object.fromEntries(Object.entries(cal.setting).filter(([, v]) => v)) };
@@ -600,6 +606,17 @@ function processReply(N) {
     if (phase.kind === 'prep' && state.turn - state.lastMention >= mentionEvery(phase.daysTo)) {
         state.mentionNow = true;
         state.lastMention = state.turn;
+    }
+    // ── Кто из людей праздника может зайти в следующий ответ: по очереди, не толпой ──
+    state.nudge = null;
+    const nudgeNow = phase.kind === 'today' ? state.turn % 2 === 0 : state.mentionNow;
+    if (phase.h && nudgeNow) {
+        const ppl = (state.people || []).filter(p => p.now);   // список людей сбрасывается при смене праздника
+        if (ppl.length) {
+            const p = ppl[(state.nudgeIdx || 0) % ppl.length];
+            state.nudgeIdx = (state.nudgeIdx || 0) + 1;
+            state.nudge = { name: p.name, now: p.now };
+        } else state.nudge = { name: null };
     }
 
     // ── Снимок для инфоблока этого сообщения ──
@@ -1081,8 +1098,8 @@ let side = null;            // { N, hash, ctl } — запрос в пути
 let sideFailTurn = -99;
 let sideErr = null;         // { N, why } — последний запрос упал (для кнопки «повторить»)
 
+const sideLoading = () => !!side && side.N === lastProcessedMsg();
 function sideMarkHtml() {
-    if (side && side.N === lastProcessedMsg()) return `<i class="fa-solid fa-feather-pointed ht-busy" title="${esc(L().sideBusy)}"></i>`;
     if (sideErr && sideErr.N === lastProcessedMsg()) {
         return `<i class="fa-solid fa-rotate-right ht-retry" role="button" tabindex="0" data-act="side-retry" title="${esc(`${L().sideFail}: ${sideErr.why}. ${L().sideRetry}`)}"></i>`;
     }
@@ -1266,7 +1283,10 @@ function renderBlock(id) {
     block.dataset.mesid = String(id);
     const open = ui.open.get(id) || false;
     block.classList.toggle('ht-open', open);
-    block.innerHTML = headHtml(view, open, live ? sideMarkHtml() : '') + (live ? offerHtml() : '') + (open ? bodyHtml(view, live, ui.tab.get(id) || 'now') : '');
+    // пока помощник читает историю — заставка: кольцо крутится, по шапке бежит блик, содержимое приглушено
+    const loading = live && sideLoading();
+    block.classList.toggle('ht-loading', loading);
+    block.innerHTML = headHtml(view, open, live ? sideMarkHtml() : '', loading) + (live ? offerHtml() : '') + (open ? bodyHtml(view, live, ui.tab.get(id) || 'now') : '');
 }
 
 // ─── Кольцо: сколько дней осталось (из 30), в день праздника — полное ───
@@ -1295,12 +1315,14 @@ function ring(view) {
 
 function daysWord(n) { return L().days(n, plural); }
 
-function headHtml(view, open, mark = '') {
+function headHtml(view, open, mark = '', loading = false) {
     let title, sub = '';
     const h = view.h;
     if (view.kind === 'today' && h) {
         title = L().today(h.name);
-        sub = view.plan?.title || (h.days > 1 ? L().dayOf(view.dayIndex, h.days) : h.meaning || '');
+        // название дня, совпадающее с названием праздника, не повторяем
+        const pt = view.plan?.title && !namesMatch(view.plan.title, h.name) ? view.plan.title : '';
+        sub = pt || (h.days > 1 ? L().dayOf(view.dayIndex, h.days) : h.meaning || '');
     } else if (view.kind === 'after' && view.ended) {
         title = L().ended(view.ended.name);
         sub = h ? L().nextIn(h.name, daysWord(view.daysTo)) : '';
@@ -1314,8 +1336,9 @@ function headHtml(view, open, mark = '') {
         sub = view.diag ? L().diag[view.diag] + (view.diagNames?.length ? `. ${L().diagGot}: ${view.diagNames.join(', ')}` : '') : (apiOn() ? '' : L().soon);
     }
     const icon = h ? TYPE_ICON[h.birthday ? 'personal' : h.type] || 'fa-star' : 'fa-calendar-days';
+    if (loading) sub = L().sideBusy;
     return `<div class="ht-head" role="button" tabindex="0" data-act="toggle" aria-expanded="${open}">
-        ${ring(view)}
+        ${loading ? `<span class="ht-ring ht-ring-wait"><i class="fa-solid fa-feather-pointed"></i></span>` : ring(view)}
         <span class="ht-head-text">
             <span class="ht-title"><i class="fa-solid ${icon}"></i>${esc(title)}</span>
             ${sub ? `<span class="ht-sub${view.diag && !h ? ' ht-sub-wrap' : ''}">${esc(sub)}</span>` : ''}
@@ -1433,7 +1456,7 @@ function bodyHtml(view, live, tab = 'now') {
                     <i class="fa-solid ${PART_ICON[p]}"></i>
                     <div><b>${L().part[p]}${p === view.part ? L().now : ''}</b><span>${esc(plan[p])}</span></div>
                 </div>`).join('');
-            main = section('main', 'fa-fire', plan.title ? esc(plan.title) : L().festiveDay, `<div class="ht-parts">${rows}</div>`, sideMark + editBtn(h.id) + delBtn(h.id));
+            main = section('main', 'fa-fire', plan.title && !namesMatch(plan.title, h.name) ? esc(plan.title) : L().festiveDay, `<div class="ht-parts">${rows}</div>`, sideMark + editBtn(h.id) + delBtn(h.id));
         } else {
             main = section('main', 'fa-fire', L().festiveDay, `<p class="ht-text">${esc(h.meaning || '')}</p>${apiOn() ? '' : `<p class="ht-mute">${L().planSoon}</p>`}`, sideMark + editBtn(h.id) + delBtn(h.id));
         }
@@ -1661,9 +1684,12 @@ function injectSettingsPanel() {
                         <option value="en" ${langMode() === 'en' ? 'selected' : ''}>English</option>
                     </select>
                 </label>
-                <label class="ht-settings-row">Профиль
+                <div class="ht-settings-row">
+                    <label for="ht-set-api">Профиль</label>
                     <select id="ht-set-api" class="text_pole"><option value="auto">текущий профиль</option></select>
-                </label>
+                    <div class="menu_button menu_button_icon" id="ht-set-refresh" title="Обновить список профилей"><i class="fa-solid fa-arrows-rotate"></i></div>
+                    <div class="menu_button menu_button_icon" id="ht-set-ping" title="Проверить подключение"><i class="fa-solid fa-plug-circle-check"></i></div>
+                </div>
                 <label class="ht-settings-row">Помнит сообщений
                     <select id="ht-set-depth" class="text_pole">
                         ${[5, 10, 20, 30].map(n => `<option value="${n}" ${sideDepth() === n ? 'selected' : ''}>${n}</option>`).join('')}
@@ -1672,6 +1698,7 @@ function injectSettingsPanel() {
                 <div class="menu_button" id="ht-set-scan"><i class="fa-solid fa-magnifying-glass"></i> Проверить историю</div>
                 <label class="ht-settings-row"><span>Эпоха <small id="ht-era-who"></small></span>
                     <select id="ht-set-era" class="text_pole">
+                        <option value="auto" ${eraMode() === 'auto' ? 'selected' : ''}>по карточке</option>
                         <option value="ancient" ${eraMode() === 'ancient' ? 'selected' : ''}>прошлое и вымышленные миры</option>
                         <option value="modern" ${eraMode() === 'modern' ? 'selected' : ''}>наши дни</option>
                     </select>
@@ -1706,6 +1733,11 @@ function injectSettingsPanel() {
             cancelSide();
             injectPrompts();          // запрос уйдёт сам — после следующего ответа бота
         });
+        document.getElementById('ht-set-refresh')?.addEventListener('click', async () => {
+            await fillProfiles();
+            window.toastr?.info?.(L().profilesRefreshed, 'Hearthtide');
+        });
+        document.getElementById('ht-set-ping')?.addEventListener('click', pingProfile);
         document.getElementById('ht-set-depth')?.addEventListener('change', e => {
             localStorage.setItem(LS.depth, e.target.value);
         });
@@ -1745,6 +1777,29 @@ async function fillProfiles() {
     if (cur !== 'auto' && !list.some(p => p.id === cur)) localStorage.setItem(LS.api, 'auto');
 }
 
+// Проверка подключения: крошечный запрос к выбранному профилю
+let pinging = false;
+async function pingProfile() {
+    if (pinging) return;
+    const id = apiProfile();
+    if (!id) { window.toastr?.info?.(L().noProfile, 'Hearthtide'); return; }
+    const btn = document.getElementById('ht-set-ping');
+    pinging = true;
+    btn?.classList.add('ht-pinging');
+    const t0 = Date.now();
+    try {
+        await sendSide(id, [{ role: 'system', content: 'Reply with the single word OK.' }, { role: 'user', content: 'Ping' }], null, 300);
+        window.toastr?.success?.(L().pingOk(((Date.now() - t0) / 1000).toFixed(1)), 'Hearthtide');
+    } catch (e) {
+        const why = reasonOf(e);
+        console.error('[Hearthtide] проверка подключения:', why, e);
+        window.toastr?.error?.(`${L().pingFail}: ${why}`, 'Hearthtide', { timeOut: 12000 });
+    } finally {
+        pinging = false;
+        btn?.classList.remove('ht-pinging');
+    }
+}
+
 // Эпоха и вера в настройках — для текущего персонажа
 function syncCharSettings() {
     const era = document.getElementById('ht-set-era');
@@ -1757,15 +1812,8 @@ function syncCharSettings() {
     if (who) who.textContent = charKey() ? `· ${getCharName()}` : '';
 }
 
-// Новый персонаж: эпоха не наследуется от прошлого — ставим «прошлое» и говорим об этом
+// Новый персонаж: эпоха не наследуется от прошлого — её определит ИИ по карточке в первом календаре
 function noteCharSettings() {
-    const key = charKey();
-    if (key && !eraMap()[key]) {
-        const map = eraMap();
-        map[key] = { era: 'ancient', faith: 'faith' };
-        localStorage.setItem(LS.eraMap, JSON.stringify(map));
-        if (isEnabled()) window.toastr?.info?.(L().eraNew(getCharName()), 'Hearthtide', { timeOut: 8000 });
-    }
     syncCharSettings();
 }
 

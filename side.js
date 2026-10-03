@@ -68,10 +68,10 @@ export async function gatherSources(upTo, depth = 10) {
 }
 
 /** Один запрос. Ошибка — с понятной причиной (для уведомления и логов) */
-export async function sendSide(profileId, messages, signal) {
+export async function sendSide(profileId, messages, signal, maxTokens = 2000) {
     const svc = await service();
     if (!svc) throw new Error('Connection Manager недоступен (расширение выключено или таверна слишком старая)');
-    const res = await svc.sendRequest(profileId, messages, 2000, {
+    const res = await svc.sendRequest(profileId, messages, maxTokens, {
         stream: false, signal, extractData: true, includePreset: false, includeInstruct: true,
     });
     const text = typeof res === 'string' ? res : (res?.content ?? '');
