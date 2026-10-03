@@ -46,7 +46,7 @@ export function buildStatePrompt(ctx) {
         if (h.birthday && h.who === 'user') {
             lines.push(`People close to ${userName} are secretly preparing a surprise — keep it hidden from ${userName}; hints at most.`);
         }
-        lines.push(state.mentionNow
+        if (!state.beat) lines.push(state.mentionNow
             ? 'This reply: let the preparations show once, indirectly — as a consequence of them or a brief encounter with someone involved, never a restatement. Pick an angle not used before; never force it.'
             : 'This reply: keep the preparations in the background.');
     }
@@ -99,6 +99,8 @@ export function buildStatePrompt(ctx) {
         else if (ev.kind === 'party') lines.push(`At the gathering: ${ev.title}${who}${ev.moments?.length ? `; so far: ${ev.moments.slice(-2).map(m => m.title).join('; ')}` : ''}. It unfolds around the scene.`);
         else lines.push(`In play: ${ev.title}${who}. Let it unfold over the next replies; ${userName} chooses whether to take part.`);
     }
+    // Что праздник может принести в этот ответ — придумал отдельный запрос по истории
+    if (state.beat) lines.push(`This reply, if the scene allows (it comes first; skip it if it doesn't fit): ${state.beat}`);
     if (active) {
         lines.push(`If ${userName} is away from people (road, wilds, danger), the feast stays distant. The calendar never overrides the scene: an urgent or dramatic moment always comes first. Never write ${userName}'s thoughts, feelings, words or choices.`);
     }
@@ -138,6 +140,68 @@ function peopleRules(ctx) {
 }
 const PEOPLE_BLOCK = '<!-- HT-PEOPLE\nP | NAME | GROUP | NOW | GIFT\nD | NAME | WHAT_THEY_DID\n-->';
 
+// ═══ Правила крупных блоков — общие для инджекта и отдельного запроса ═══
+function calRule(ctx, lite = false) {
+    const { state, userName, charName } = ctx;
+    const lang = langOf(ctx);
+    if (lite) {
+        return `<!-- HT-CAL
+S | ERA_AND_YEAR | FAITH | PLACE
+H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP
+-->
+- S: the era by name and the year; the faith people live by; the place as the story names it.
+- H: the next 3 holidays the people around ${userName} actually keep in this era and place, in date order from the current date, none skipped; one holiday per line, under the name they use. TYPE: religious | folk | seasonal | state | family | fast | memorial. PREP: days of getting ready.${ctx.banned?.length ? ` Never: ${ctx.banned.join(', ')}.` : ''}
+- All in ${lang}, names translated.`;
+    }
+    const known = (state.holidays || []).filter(x => state.today == null || x.start + x.days - 1 >= state.today)
+        .map(x => `${x.name} (${isoOf(x.start)})`).slice(0, 5);
+    // дни рождения спрашиваем один раз: не указаны в карточке — значит, их нет, пока история не скажет
+    const needB = (!state.birthdays?.user || !state.birthdays?.char) && !state.bdayAsked;
+    const gap = ctx.skipGap;
+    return `<!-- HT-CAL
+S | ERA_AND_YEAR | FAITH | PLACE
+H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP
+${needB ? `B | user | MM-DD | PREP\nB | char | MM-DD | PREP\n` : ''}${gap ? `X | YYYY-MM-DD | NAME | TYPE\n` : ''}-->
+- S: the era by name and the year${ctx.eraMode === 'modern' ? '' : ', as people of that time would say it (our reckoning in brackets only if theirs differs)'} — not a bare date; FAITH — ${ctx.eraMode === 'modern' && ctx.faithMode === 'secular' ? 'secular' : 'the faith(s) people actually live by'}; PLACE — the kind of place and its proper name exactly as the story gives it (never invent a name the story doesn't use).
+- H: the next 4 holidays from the current date, in date order, decided briskly${known.length ? `, continuing after: ${known.join(', ')}` : ''}. Only days people there already keep — never something still to happen in the story (a disaster, a death, a battle). ${holidayGuide(ctx)} Compute movable feasts properly for that year and calendar.${easterHint(ctx)} Occasions the story itself has set up or announced come first. Also add personal and family occasions the story gives grounds for (birthdays and name days of the characters and people close to them, weddings, anniversaries, a newborn's naming, memorial days of relatives, a housewarming) — only dates the card, lore or story actually gives, never guessed. DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | family | supernatural | fast | memorial. PREP = how many days before it people actually start getting ready or feel it coming (0 for a minor day; a great feast may be weeks). Birthdays of ${userName} and ${charName} go only in B lines, never as H.${needB ? `\n- B: birthdays of ${userName} and ${charName} only if the card, persona or story states them; otherwise leave that line out — never guess.` : ''}${gap ? `\n- X: holidays the time skip jumped over, ${gap.from} to ${gap.to}, by the same rules.` : ''}${ctx.passed?.length ? `\n- Already passed this year, don't repeat: ${ctx.passed.join(', ')}.` : ''}${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}
+- All of it in ${lang}: translate holiday names even if the story's world speaks another language.`;
+}
+
+function prepRule(ctx) {
+    const { state, phase, userName, charName } = ctx;
+    const h = phase.h;
+    const prev = state.prep?.hid === h.id ? state.prep : null;
+    const scope = isIntimate(h)
+        ? `This is a personal or family occasion: only ${h.birthday && h.who === 'user' ? `the people close to ${userName}` : 'the household and close circle'} get ready — not the whole community.`
+        : `This is a public holiday: the community around ${userName} gets ready.`;
+    return `<!-- HT-PREP people=… | mood=… | gifts=yes|no | care=high|normal|low -->
+How things get ready for ${hName(h, ctx)} (in ${phase.daysTo} day${phase.daysTo === 1 ? '' : 's'}) in ${ctx.placeName || `the place around ${userName}`}. ${scope} people: what is being done now, one or two sentences true to the customs of this era and place; mood: the feeling in the air.${prev?.people ? ` Before it was: "${prev.people}" — show what has moved on since, don't restate it.` : ''} Only what is visible or commonly known — no secret plans the story hasn't shown. gifts: does this holiday involve giving gifts by custom. care: how much it matters to ${charName} personally, judging by who ${charName} is.${h.birthday && h.who === 'user' ? ` A surprise for ${userName} stays unspoiled.` : ''}`;
+}
+
+function dayRule(ctx) {
+    const h = ctx.phase.h;
+    return `<!-- HT-DAY title=… | morning=… | day=… | evening=… | night=… -->
+How ${hName(h, ctx)} is celebrated TODAY${h.days > 1 ? ` (day ${ctx.phase.dayIndex} of ${h.days} — each day may have its own meaning)` : ''} by the traditions of this era and place, from morning to night: rites, food, games, songs, what people do. title = this day's name or meaning. One or two sentences per part.`;
+}
+
+function replanRule(ctx) {
+    const { state, phase } = ctx;
+    const h = phase.h;
+    const plan = state.days?.[`${h.id}#${phase.dayIndex}`] || {};
+    const ahead = ['morning', 'day', 'evening', 'night'];
+    const from = Math.max(0, ahead.indexOf(ctx.part));
+    return `<!-- HT-DAY ${ahead.slice(from).map(p => `${p}=…`).join(' | ')} -->
+The day has moved on: rewrite the parts from now on so they follow from what has actually happened today — what is done is not repeated, changed plans are kept. One or two sentences each.${plan[ahead[from]] ? ` The plan was: ${ahead.slice(from).filter(p => plan[p]).map(p => `${p}: ${plan[p]}`).join('; ')}.` : ''}`;
+}
+
+function recapRule(ctx) {
+    const { state, phase, userName, charName } = ctx;
+    const e = phase.ended;
+    const hl = (state.highlights?.[e.id] || []).map(x => `${x.name} — ${x.text}`).join('; ');
+    const g = state.charGift?.hid === e.id && state.charGift.done ? state.charGift.text : null;
+    return `<!-- HT-RECAP 2–3 sentences in ${langOf(ctx)}: how ${hName(e, ctx)} went for ${userName} and ${charName}, the gifts given and who stood out -->${hl || g ? ` Facts: ${[g && `${charName}'s gift: ${g}`, hl].filter(Boolean).join('; ')}.` : ''}`;
+}
+
 // ─── 2. Правило тега (конец промпта) ───
 export function buildTagPrompt(ctx) {
     const { state, phase, request, userName, charName } = ctx;
@@ -153,6 +217,11 @@ All text values in these comments: ${lang} only.`];
     if (ctx.fixPlace) out.push(`Add place=… to the HT line THIS reply: the current place rewritten in ${lang}.`);
     if (ctx.fixSetting) out.push(`ALSO add after the HT line: <!-- HT-CAL\nS | ERA_AND_YEAR | FAITH | PLACE\n--> — the current setting rewritten in ${lang}.`);
     if (state.missed > 0) out.push(`Your previous reply had no HT line — include it now.`);
+    // С отдельным запросом основная модель только ведёт время; всё остальное собирает он
+    if (ctx.api) {
+        out.push('Never skip, mention or explain these comments.');
+        return out.join('\n');
+    }
     if (charDue(state, phase)) {
         out.push(`Add char=… to the HT line: ${charName}'s current step about the holiday, a few words — it follows logically from the steps so far, never repeats or reverses them without a reason shown in the story.`);
     }
@@ -172,53 +241,15 @@ All text values in these comments: ${lang} only.`];
     }
 
     if (request === 'cal') {
-        const known = (state.holidays || []).filter(x => state.today == null || x.start + x.days - 1 >= state.today)
-            .map(x => `${x.name} (${isoOf(x.start)})`).slice(0, 5);
-        // дни рождения спрашиваем один раз: не указаны в карточке — значит, их нет, пока история не скажет
-        const needB = (!state.birthdays?.user || !state.birthdays?.char) && !state.bdayAsked;
-        const gap = ctx.skipGap;
         // Модели без рассуждений теряют блок в конце длинного ответа: просим начать с него.
         // Пропустил — напоминаем; пропустил дважды — короткая версия без подробных правил.
         const miss = ctx.calMiss || 0;
         const lead = `${miss ? `REQUIRED — your last ${miss > 1 ? 'replies' : 'reply'} had no calendar block. ` : 'ALSO, this reply only — '}BEGIN your reply with the calendar block, then write the story as usual:`;
-        if (miss >= 2) {
-            out.push(`${lead}
-<!-- HT-CAL
-S | ERA_AND_YEAR | FAITH | PLACE
-H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP
--->
-- S: the era by name and the year; the faith people live by; the place as the story names it.
-- H: the next 3 holidays people there keep, by this era and faith, from the current date. TYPE: religious | folk | seasonal | state | family | fast | memorial. PREP: days of getting ready.${ctx.banned?.length ? ` Never: ${ctx.banned.join(', ')}.` : ''}
-- All in ${lang}, names translated.`);
-        } else out.push(`${lead}
-<!-- HT-CAL
-S | ERA_AND_YEAR | FAITH | PLACE
-H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP
-${needB ? `B | user | MM-DD | PREP\nB | char | MM-DD | PREP\n` : ''}${gap ? `X | YYYY-MM-DD | NAME | TYPE\n` : ''}-->
-- S: the era by name and the year${ctx.eraMode === 'modern' ? '' : ', as people of that time would say it (our reckoning in brackets only if theirs differs)'} — not a bare date; FAITH — ${ctx.eraMode === 'modern' && ctx.faithMode === 'secular' ? 'secular' : 'the faith(s) people actually live by'}; PLACE — the kind of place and its proper name exactly as the story gives it (never invent a name the story doesn't use).
-- H: the next 4 holidays from the current date, in date order, decided briskly${known.length ? `, continuing after: ${known.join(', ')}` : ''}. Only days people there already keep — never something still to happen in the story (a disaster, a death, a battle). ${holidayGuide(ctx)} Compute movable feasts properly for that year and calendar.${easterHint(ctx)} Occasions the story itself has set up or announced come first. Also add personal and family occasions the story gives grounds for (birthdays and name days of the characters and people close to them, weddings, anniversaries, a newborn's naming, memorial days of relatives, a housewarming) — only dates the card, lore or story actually gives, never guessed. DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | family | supernatural | fast | memorial. PREP = how many days before it people actually start getting ready or feel it coming (0 for a minor day; a great feast may be weeks). Birthdays of ${userName} and ${charName} go only in B lines, never as H.${needB ? `\n- B: birthdays of ${userName} and ${charName} only if the card, persona or story states them; otherwise leave that line out — never guess.` : ''}${gap ? `\n- X: holidays the time skip jumped over, ${gap.from} to ${gap.to}, by the same rules.` : ''}${ctx.passed?.length ? `\n- Already passed this year, don't repeat: ${ctx.passed.join(', ')}.` : ''}${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}
-- All of it in ${lang}: translate holiday names even if the story's world speaks another language.`);
+        out.push(`${lead}\n${calRule(ctx, miss >= 2)}`);
     }
-    if (request === 'prep' && h) {
-        const prev = state.prep?.hid === h.id ? state.prep : null;
-        const scope = isIntimate(h)
-            ? `This is a personal or family occasion: only ${h.birthday && h.who === 'user' ? `the people close to ${userName}` : 'the household and close circle'} get ready — not the whole community.`
-            : `This is a public holiday: the community around ${userName} gets ready.`;
-        out.push(`ALSO add after the HT line:
-<!-- HT-PREP people=… | mood=… | gifts=yes|no | care=high|normal|low -->
-How things get ready for ${hName(h, ctx)} (in ${phase.daysTo} day${phase.daysTo === 1 ? '' : 's'}) in ${ctx.placeName || `the place around ${userName}`}. ${scope} people: what is being done now, one or two sentences true to the customs of this era and place; mood: the feeling in the air.${prev?.people ? ` Before it was: "${prev.people}" — show what has moved on since, don't restate it.` : ''} Only what is visible or commonly known — no secret plans the story hasn't shown. gifts: does this holiday involve giving gifts by custom. care: how much it matters to ${charName} personally, judging by who ${charName} is.${h.birthday && h.who === 'user' ? ` A surprise for ${userName} stays unspoiled.` : ''}`);
-    }
-    if (request === 'day' && h) {
-        out.push(`ALSO add after the HT line: <!-- HT-DAY title=… | morning=… | day=… | evening=… | night=… -->
-How ${hName(h, ctx)} is celebrated TODAY${h.days > 1 ? ` (day ${phase.dayIndex} of ${h.days} — each day may have its own meaning)` : ''} by the traditions of this era and place, from morning to night: rites, food, games, songs, what people do. title = this day's name or meaning. One or two sentences per part.`);
-    }
-    if (request === 'replan' && h) {
-        const plan = state.days?.[`${h.id}#${phase.dayIndex}`] || {};
-        const ahead = ['morning', 'day', 'evening', 'night'];
-        const from = Math.max(0, ahead.indexOf(ctx.part));
-        out.push(`ALSO add after the HT line: <!-- HT-DAY ${ahead.slice(from).map(p => `${p}=…`).join(' | ')} -->
-The day has moved on: rewrite the parts from now on so they follow from what has actually happened today — what is done is not repeated, changed plans are kept. One or two sentences each.${plan[ahead[from]] ? ` The plan was: ${ahead.slice(from).filter(p => plan[p]).map(p => `${p}: ${plan[p]}`).join('; ')}.` : ''}`);
-    }
+    if (request === 'prep' && h) out.push(`ALSO add after the HT line:\n${prepRule(ctx)}`);
+    if (request === 'day' && h) out.push(`ALSO add after the HT line: ${dayRule(ctx)}`);
+    if (request === 'replan' && h) out.push(`ALSO add after the HT line: ${replanRule(ctx)}`);
     if (request === 'event' && h) {
         const past = (state.evts || []).filter(e => e.hid === h.id && e.kind !== 'moment').map(e => e.title).slice(-3);
         out.push(`ALSO, this reply: let something that fits ${hName(h, ctx)} and this place come up in the scene and draw ${charName} and ${userName} in — someone involves them, by chance or on purpose; ${userName} still chooses. It must actually appear in your narration. About one time in three make it a gathering someone hosts or invites them to (kind=party — it starts as an invitation). Then add after the HT line: <!-- HT-EV kind=event|party | title=… | who=… -->, title in ${lang}.${past.length ? ` Something different from: ${past.join(' / ')}.` : ''}`);
@@ -232,12 +263,67 @@ The day has moved on: rewrite the parts from now on so they follow from what has
 ${PEOPLE_BLOCK}
 ${peopleRules(ctx)}`);
     }
-    if (request === 'recap' && phase.ended) {
-        const e = phase.ended;
-        const hl = (state.highlights?.[e.id] || []).map(x => `${x.name} — ${x.text}`).join('; ');
-        const g = state.charGift?.hid === e.id && state.charGift.done ? state.charGift.text : null;
-        out.push(`ALSO add after the HT line: <!-- HT-RECAP 2–3 sentences in ${lang}: how ${hName(e, ctx)} went for ${userName} and ${charName}, the gifts given and who stood out -->${hl || g ? ` Facts: ${[g && `${charName}'s gift: ${g}`, hl].filter(Boolean).join('; ')}.` : ''}`);
-    }
+    if (request === 'recap' && phase.ended) out.push(`ALSO add after the HT line: ${recapRule(ctx)}`);
     out.push('Never skip, mention or explain these comments.');
     return out.join('\n');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 3. Отдельный запрос: модель читает историю и ведёт заметки о празднике.
+// Пресет не входит; входят карточка, персона, лорбук и последние сообщения.
+// ═══════════════════════════════════════════════════════════════
+export function buildSideMessages(ctx, needs, src) {
+    const { state, phase, userName, charName } = ctx;
+    const h = phase.h;
+    const lang = langOf(ctx);
+    const sys = [`You are Hearthtide, the keeper of the holiday calendar for an ongoing roleplay between ${userName} and ${charName}. You do not continue the story. You read it and reply ONLY with the hidden blocks asked for below — no other text. Notes about what happened hold only what the story has shown. Never decide ${userName}'s thoughts, feelings, words or choices.`];
+    if (src.card) sys.push(`[${charName}]\n${src.card}`);
+    if (src.persona) sys.push(`[${userName}]\n${src.persona}`);
+    if (src.lore) sys.push(`[World info]\n${src.lore}`);
+    // заметки без указаний основной модели — помощнику нужны только факты
+    const notes = buildStatePrompt({ ...ctx, state: { ...state, beat: null, mentionNow: false, recall: null } })
+        .split('\n').filter(l => !/^(This reply|If .+ is away from people)/.test(l)).join('\n');
+    sys.push(`[Calendar notes so far]\n${notes}`);
+    sys.push(`[Story — latest messages, the last one is the newest]\n${src.story || '(empty)'}`);
+
+    const task = [`Reply with these blocks, each at most once, nothing else. Values meant for the player in ${lang}; BEAT in English.`];
+    if (needs.has('cal')) task.push(calRule(ctx, false));
+    if (needs.has('prep') && h) task.push(prepRule(ctx));
+    if (needs.has('day') && h) task.push(dayRule(ctx));
+    if (needs.has('replan') && h) task.push(replanRule(ctx));
+    if (needs.has('people') && h) task.push(`${PEOPLE_BLOCK}\n${peopleRules(ctx)}`);
+    if (needs.has('recap') && phase.ended) task.push(recapRule(ctx));
+
+    // Короткие поля одной строкой
+    const sf = [];
+    if (needs.has('char') && h) sf.push(`char=${charName}'s current step about the holiday, a few words — what ${charName} is doing or about to do for it, following from the steps so far, never repeating or reversing them without a reason shown in the story; how much depends on how much it matters to ${charName}`);
+    if (needs.has('char') && h && charGiftActive(ctx)) sf.push(`gift=${charName}'s current step with a gift for ${userName}, a few words (idea → finding or making → ready and hidden → given); gift_done=true once the story shows it given`);
+    const evOpen = h && phase.kind === 'today' ? openEvent(state, h.id) : null;
+    if (evOpen?.status === 'invited') sf.push(`ev=joined if ${userName} accepted the invitation "${evOpen.title}", ev=declined if refused; leave out if not decided yet`);
+    else if (evOpen) sf.push(`ev=done with ev_note=its outcome in one sentence once "${evOpen.title}" is over in the story${evOpen.kind === 'party' ? '' : `; ev=skipped if ${userName} turned away`}`);
+    if (needs.has('mean') && ctx.meaningFor) sf.push(`mean=what "${ctx.meaningFor}" is and how it is kept in this era and place, one sentence`);
+    if (sf.length) task.push(`<!-- HT-S ${sf.map(x => x.split('=')[0] + '=…').join(' | ')} -->\n${sf.map(x => `- ${x}`).join('\n')}`);
+
+    if (needs.has('events') && h) {
+        const past = (state.evts || []).filter(e => e.hid === h.id && e.kind !== 'moment').map(e => e.title).slice(-3);
+        task.push(`<!-- HT-EV kind=event|party|moment | title=… | who=… -->
+Only if the LAST message shows something of ${hName(h, ctx)} drawing ${charName} or ${userName} in: someone involves them (kind=event), or someone hosts or invites them to a gathering (kind=party). At a gathering they have joined, something new there is kind=moment. Title a few words. Leave the block out if nothing like that happened.${past.length ? ` Already recorded: ${past.join(' / ')}.` : ''}`);
+    }
+    if (needs.has('new')) {
+        const known = [...(state.holidays || []).map(x => x.name), ...(ctx.offerNames || []), ...(ctx.passed || [])].filter(Boolean).slice(0, 14);
+        task.push(`<!-- HT-NEW CAUSE | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP -->
+Only if the story has set up a coming occasion not yet in the calendar — someone's life event that custom marks with a celebration or rite, an announced celebration, an invitation to one. CAUSE: what happened, a few words. Date it as custom and the story suggest. TYPE: family | personal | religious | folk | memorial. One per line, at most two. Leave the block out if there is none.${known.length ? ` Already known: ${known.join(', ')}.` : ''}`);
+    }
+    if (needs.has('beat') && h) {
+        const what = phase.kind === 'today' ? `the festive day (${hName(h, ctx)})`
+            : phase.kind === 'prep' ? `the coming ${hName(h, ctx)} and the preparations`
+            : `the coming ${hName(h, ctx)} (in ${phase.daysTo} days — a passing mention at most)`;
+        task.push(`<!-- HT-BEAT … -->
+One sentence in English for the story model: one concrete small thing ${what} could bring into the NEXT reply, grounded in the notes and what is happening now — through a person, a custom or a word; vary the kind and never repeat an earlier one${state.beatLog?.length ? ` (earlier: ${state.beatLog.join(' / ')})` : ''}. It must fit the current scene. Write none if the scene is urgent or tense, ${userName} is away from people, or nothing fits naturally. Never decide what ${userName} does.`);
+    }
+    task.push('Never write the story, comments outside the blocks, or explanations.');
+    return [
+        { role: 'system', content: sys.join('\n\n') },
+        { role: 'user', content: task.join('\n\n') },
+    ];
 }

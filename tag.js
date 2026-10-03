@@ -32,9 +32,9 @@ function findBlock(text, name, loose = true) {
     return open && open[1].trim() ? open[1] : null;
 }
 
-/** Маленький тег каждого ответа */
-export function parseSmall(text) {
-    const inner = findBlock(text, 'HT');
+/** Маленький тег каждого ответа (HT); у отдельного запроса — тот же набор полей в HT-S */
+export function parseSmall(text, name = 'HT') {
+    const inner = findBlock(text, name);
     if (inner == null) return null;
     const f = fields(inner);
     return {
@@ -208,6 +208,12 @@ export function parseEvents(text) {
     return out;
 }
 
+/** Подсказка основной модели на следующий ответ (от отдельного запроса); «none» — ничего */
+export function parseBeat(text) {
+    const inner = findBlock(text, 'HT-BEAT', false);
+    return inner == null ? null : clean(inner, 300);
+}
+
 /** Итог прошедшего праздника — одна строка */
 export function parseRecap(text) {
     const inner = findBlock(text, 'HT-RECAP');
@@ -222,8 +228,8 @@ export function parseRecap(text) {
 export function stripBlocks(text) {
     let t = String(text ?? '');
     t = t.replace(/```[a-z]*\s*(?:<!--\s*)?HT(?:-[A-Z]+)?\b[\s\S]*?```/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW)\b[\s\S]*?-->/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW)\b(?![\s\S]*-->)[\s\S]*$/i, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT)\b[\s\S]*?-->/gi, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT)\b(?![\s\S]*-->)[\s\S]*$/i, '');
     t = t.replace(/^\s*HT(?:-[A-Z]+)?\b[\s:]+[^\n]*$/gim, '');
     return t.replace(/\s+$/, '');
 }

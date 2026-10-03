@@ -356,3 +356,8 @@
 
 /* Подсказка «почему нет праздников» — не обрезаем многоточием, переносим */
 .ht-sub.ht-sub-wrap { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; line-height: 1.3; }
+
+/* ─── Отдельный запрос в пути: перо тихо покачивается (только transform) ─── */
+.ht-busy { color: var(--ht-mute); font-size: 0.85em; margin-right: 4px; animation: ht-busy 1.4s ease-in-out infinite; }
+@keyframes ht-busy { 50% { transform: translateY(-2px) rotate(-12deg); } }
+@media (prefers-reduced-motion: reduce) { .ht-busy { animation: none; } }

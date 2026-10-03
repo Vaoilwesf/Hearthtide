@@ -10,9 +10,10 @@ import {
 import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
-import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, stripBlocks } from './tag.js';
-import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, OPEN_STATUSES } from './calendar.js';
-import { buildStatePrompt, buildTagPrompt } from './prompts.js';
+import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, stripBlocks } from './tag.js';
+import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, OPEN_STATUSES, sideNeeds, sideDue } from './calendar.js';
+import { buildStatePrompt, buildTagPrompt, buildSideMessages } from './prompts.js';
+import { listProfiles, gatherSources, sendSide, reasonOf } from './side.js';
 import { strings } from './i18n.js';
 
 // ═══════════════════════════════════════════════════════════════
@@ -28,13 +29,43 @@ const LS = {
     era: 'hearthtide_era',             // ancient | modern — какие праздники подбирать
     faith: 'hearthtide_faith',         // faith | secular — только для современности
     lang: 'hearthtide_lang',           // ru | en — язык инфоблока
+    api: 'hearthtide_api',             // профиль подключения для отдельного запроса: auto — тот, что выбран в таверне
+    depth: 'hearthtide_depth',         // сколько последних сообщений читает отдельный запрос
+    eraMap: 'hearthtide_era_map',      // эпоха и вера — отдельно для каждого персонажа или группы
 };
 const lsGet = (k, d) => { const v = localStorage.getItem(k); return v === null ? d : v; };
 const isEnabled = () => lsGet(LS.enabled, 'true') !== 'false';
 const position = () => lsGet(LS.position, 'bottom');
 const showPrev = () => lsGet(LS.showPrev, 'true') !== 'false';
-const eraMode = () => lsGet(LS.era, 'ancient');
-const faithMode = () => lsGet(LS.faith, 'faith');
+// Профиль: по умолчанию тот, что сейчас выбран в таверне. Профилей нет вовсе — работаем по-старому, через инджект
+const apiChoice = () => lsGet(LS.api, 'auto');
+function apiProfile() {
+    const v = apiChoice();
+    if (v !== 'auto') return v;
+    return globalThis.SillyTavern?.getContext?.()?.extensionSettings?.connectionManager?.selectedProfile || '';
+}
+const apiOn = () => isEnabled() && !!apiProfile();
+const sideDepth = () => Number(lsGet(LS.depth, '10')) || 10;
+
+// ─── Эпоха и вера запоминаются для каждого персонажа (и группы) ───
+function charKey() {
+    const gid = globalThis.SillyTavern?.getContext?.()?.groupId;
+    if (gid) return `g:${gid}`;
+    const ch = this_chid !== undefined ? characters[this_chid] : null;
+    return ch?.avatar ? `c:${ch.avatar}` : null;
+}
+function eraMap() {
+    try { return JSON.parse(localStorage.getItem(LS.eraMap) || '{}') || {}; } catch (e) { return {}; }
+}
+function setCharSetting(field, value) {
+    const key = charKey();
+    if (!key) { localStorage.setItem(field === 'era' ? LS.era : LS.faith, value); return; }
+    const map = eraMap();
+    map[key] = { ...(map[key] || {}), [field]: value };
+    localStorage.setItem(LS.eraMap, JSON.stringify(map));
+}
+const eraMode = () => eraMap()[charKey()]?.era || lsGet(LS.era, 'ancient');
+const faithMode = () => eraMap()[charKey()]?.faith || lsGet(LS.faith, 'faith');
 const langMode = () => lsGet(LS.lang, 'ru');
 const L = () => strings(langMode());
 
@@ -98,6 +129,9 @@ function defaultState() {
         yearLog: null,          // текущий год: { y, from, items: [{ id, name, birthday, who, type, start, days, kept }] }
         lived: {},              // hid → true: история застала этот праздник (не перепрыгнула скипом)
         skipFrom: null,         // день, с которого время прыгнуло далеко вперёд — спросить, какие праздники проскочили
+        beat: null,             // что праздник может принести в следующий ответ (от отдельного запроса)
+        beatLog: [],            // последние такие подсказки — чтобы не повторялись
+        lastSideTurn: -99,      // когда отдельный запрос последний раз дошёл
         missed: 0,
         turn: 0,
         lastMention: -99,
@@ -167,6 +201,7 @@ function ctxFor(request = null) {
         offerNames: [...(state.offers || []).map(o => o.name), ...(state.offerNo || []).slice(-2)].slice(0, 4),
         peopleSeen: peopleSeen(),
         eraMode: eraMode(),
+        api: apiOn(),
         lang: L().promptLang,
         faithMode: faithMode(),
     };
@@ -312,8 +347,10 @@ function processReply(N) {
     if (snap) restoreSnapshot(snap);
     takeSnapshot(N);
     // какой запрос ИИ видел в промпте этого ответа — чтобы не повторять проигнорированный каждый ход
-    const asked = requestFor(state, phaseOf(state));
+    // (с отдельным запросом основную модель ни о чём не просим)
+    const asked = apiOn() ? null : requestFor(state, phaseOf(state));
     state.turn += 1;
+    state.beat = null;      // подсказка ушла в этот ответ
 
     // Крупные блоки после первого разбора вырезаются из текста и живут в extra —
     // при свайпе назад или повторной обработке берём их оттуда
@@ -325,19 +362,6 @@ function processReply(N) {
     const think = String(msg.extra?.reasoning || '');
     const fromThink = !/<!--\s*HT/i.test(source) && /<!--\s*HT/i.test(think);
     const src = fromThink ? think : source;
-    const small = parseSmall(src);
-    const cal = (state.calIgnore || []).includes(hashText(src)) ? null : parseCalendar(src);
-    const prep = parsePrep(src);
-    const day = parseDay(src);
-    const recap = parseRecap(src);
-    const people = parsePeople(src);
-    const evs = parseEvents(src);
-    const offersIn = parseOffers(src);
-    // Строки H, пришедшие без запроса календаря, — тоже повод из истории: решает игрок
-    if (cal && asked !== 'cal' && !cal.setting && cal.holidays.length) {
-        offersIn.push(...cal.holidays.map(h => ({ ...h, cause: null })));
-        cal.holidays = [];
-    }
 
     // Чистим текст сообщения от крупных блоков и «неправильных» форм тега
     const cleaned = stripBlocks(text);
@@ -349,6 +373,40 @@ function processReply(N) {
     }
     msg.extra = msg.extra || {};
     if (source !== text || !saved) msg.extra.ht_raw = { raw: source, hash: hashText(text) };
+
+    // Ответ отдельного запроса к этому тексту (если уже пришёл): те же блоки, читаем вместе с ответом
+    const sideRec = apiOn() ? msg.extra.ht_side?.[hashText(text)] || null : null;
+    const sideText = sideRec?.text || '';
+    const sideAsked = sideRec?.asked || [];
+    const askedCal = asked === 'cal' || sideAsked.includes('cal');
+    const both = (fn) => fn(src) ?? (sideText ? fn(sideText) : null);
+    const small = parseSmall(src);
+    const sideSmall = sideText ? parseSmall(sideText, 'HT-S') : null;
+    // поля о персонаже, подарке, ивенте и смысле — из ответа или из отдельного запроса
+    const sm = small || sideSmall ? {
+        ...(small || {}),
+        ...Object.fromEntries(Object.entries(sideSmall || {}).filter(([k, v]) => v != null && v !== false && !['inner', 'date', 'clock', 'when', 'place'].includes(k))),
+    } : null;
+    const calRaw = (state.calIgnore || []).includes(hashText(src)) ? null : parseCalendar(src);
+    const calSide = sideText && !(state.calIgnore || []).includes(hashText(sideText)) ? parseCalendar(sideText) : null;
+    const cal = calRaw || calSide;
+    const prep = both(parsePrep);
+    const day = both(parseDay);
+    const recap = both(parseRecap);
+    const people = both(parsePeople);
+    const evs = [...parseEvents(src), ...(sideText ? parseEvents(sideText) : [])];
+    const offersIn = [...parseOffers(src), ...(sideText ? parseOffers(sideText) : [])];
+    const beat = sideText ? parseBeat(sideText) : null;
+    // Строки H, пришедшие без запроса календаря, — тоже повод из истории: решает игрок
+    if (cal && !askedCal && !cal.setting && cal.holidays.length) {
+        offersIn.push(...cal.holidays.map(h => ({ ...h, cause: null })));
+        cal.holidays = [];
+    }
+    if (sideRec) state.lastSideTurn = state.turn;
+    if (beat && !/^none\b/i.test(beat)) {
+        state.beat = beat;
+        state.beatLog = [...(state.beatLog || []), beat].slice(-3);
+    }
 
     // ── Дата, время, место ──
     let slip = false;
@@ -394,7 +452,7 @@ function processReply(N) {
         mergeHolidays(cal.holidays);
         for (const [who, md] of Object.entries(cal.birthdays)) state.birthdays[who] = md;
         state.forceCal = false;
-        if (asked === 'cal') state.bdayAsked = true;       // не прислал строку B — дня рождения не знаем, не переспрашиваем
+        if (askedCal) state.bdayAsked = true;       // не прислал строку B — дня рождения не знаем, не переспрашиваем
         if (cal.passed.some(x => !langOk(x.name))) slip = true;
         logSkipped(cal.passed.filter(x => langOk(x.name)));
         state.skipFrom = null;
@@ -403,9 +461,9 @@ function processReply(N) {
     logPast();
     pruneHolidays();
     // ── Новый смысл переименованного праздника ──
-    if (small?.mean) {
+    if (sm?.mean) {
         const target = state.holidays.find(h => h.needMeaning && !isBanned(state, h.name));
-        if (target && langOk(small.mean)) { target.meaning = small.mean; delete target.needMeaning; }
+        if (target && langOk(sm.mean)) { target.meaning = sm.mean; delete target.needMeaning; }
         else if (target) slip = true;
     }
     // ── Поводы из истории — ждут решения игрока ──
@@ -444,23 +502,23 @@ function processReply(N) {
         state.lastPeopleTurn = state.turn;
     }
     // Мысль/действие персонажа и его подарок — из маленького тега
-    if (small && phase.h && (phase.kind === 'prep' || phase.kind === 'today')) {
-        if (small.char) {
-            if (langOk(small.char)) {
-                state.charNow = { hid: phase.h.id, text: small.char, turn: state.turn };
+    if (sm && phase.h && (phase.kind === 'prep' || phase.kind === 'today')) {
+        if (sm.char) {
+            if (langOk(sm.char)) {
+                state.charNow = { hid: phase.h.id, text: sm.char, turn: state.turn };
                 const log = state.charLog[phase.h.id] || (state.charLog[phase.h.id] = []);
-                if (log[log.length - 1]?.text !== small.char) log.push({ text: small.char, turn: state.turn });
+                if (log[log.length - 1]?.text !== sm.char) log.push({ text: sm.char, turn: state.turn });
                 if (log.length > 6) state.charLog[phase.h.id] = log.slice(-6);
             }
             else slip = true;
         }
-        if (small.gift || small.giftDone) {
-            if (small.gift && !langOk(small.gift)) slip = true;
+        if (sm.gift || sm.giftDone) {
+            if (sm.gift && !langOk(sm.gift)) slip = true;
             const prev = state.charGift?.hid === phase.h.id ? state.charGift : null;
             state.charGift = {
                 hid: phase.h.id,
-                text: small.gift && langOk(small.gift) ? small.gift : prev?.text || null,
-                done: !!(small.giftDone || prev?.done),
+                text: sm.gift && langOk(sm.gift) ? sm.gift : prev?.text || null,
+                done: !!(sm.giftDone || prev?.done),
             };
         }
     }
@@ -482,7 +540,7 @@ function processReply(N) {
         state.recapDone[phase.ended.id] = true;
     }
     // ── Ивенты и мероприятия ──
-    processEvents(phase, small, evs);
+    processEvents(phase, sm, evs);
     // Проигнорированные запросы повторяем не сразу, а через несколько ответов
     const answered = { cal: !!cal, day: !!day, prep: !!prep, people: !!people, recap: !!recap };
     const WAIT = { cal: 2, day: 1, prep: 3, people: 3, recap: 1 };
@@ -542,7 +600,7 @@ function processReply(N) {
     // Почему нет праздников — подсказка в инфоблоке, чтобы было видно, чья это проблема
     if (!small) state.diag = 'notag';
     else if (cal && cal.holidays.length) state.diag = null;
-    else if (asked === 'cal' && !cal) state.diag = 'nocal';                   // просили календарь — не прислал
+    else if (askedCal && !cal) state.diag = 'nocal';                          // просили календарь — не прислал
     else if (state.diag === 'notag') state.diag = null;
     state.diagThink = fromThink;
 
@@ -764,8 +822,9 @@ function rebuildCalendar() {
     // новый свайп — новый текст, его календарь примется
     state.calIgnore = state.calIgnore || [];
     for (const m of chat) {
-        const raw = m?.extra?.ht_raw?.raw;
-        if (raw && /HT-CAL/i.test(raw)) {
+        const raws = [m?.extra?.ht_raw?.raw, ...Object.values(m?.extra?.ht_side || {}).map(x => x?.text)];
+        for (const raw of raws) {
+            if (!raw || !/HT-CAL/i.test(raw)) continue;
             const hsh = hashText(raw);
             if (!state.calIgnore.includes(hsh)) state.calIgnore.push(hsh);
         }
@@ -774,7 +833,8 @@ function rebuildCalendar() {
     saveState();
     injectPrompts();
     renderAll();
-    window.toastr?.info?.(L().rebuildToast, 'Hearthtide');
+    window.toastr?.info?.(apiOn() ? L().rebuildToastApi : L().rebuildToast, 'Hearthtide');
+    if (apiOn()) maybeSide(lastProcessedMsg(), true);
 }
 
 // ─── Правка праздника игроком ───
@@ -983,6 +1043,75 @@ function injectPrompts() {
     setExtensionPrompt(PROMPT_TAG, on && !isChatCompletion() ? buildTagPrompt(ctx) : '', extension_prompt_types.IN_CHAT, 0, true, extension_prompt_roles.SYSTEM);
 }
 
+// ═══════════════════════════════════════════════════════════════
+// ОТДЕЛЬНЫЙ ЗАПРОС
+// После ответа бота (в подготовке и в праздник — после каждого, издали — изредка)
+// одна модель-помощник читает историю и присылает те же блоки. Они ложатся
+// в инфоблок этого ответа, а подсказка (BEAT) уходит основной модели в следующий.
+// ═══════════════════════════════════════════════════════════════
+let side = null;            // { N, hash, ctl } — запрос в пути
+let sideFailTurn = -99;
+
+function sideBusyFor(id) { return !!side && side.N === id; }
+
+function cancelSide() {
+    if (side) { try { side.ctl.abort(); } catch (e) { /* пусто */ } side = null; scheduleRenderAll(); }
+}
+
+/** Решить, нужен ли запрос после ответа N, и отправить */
+function maybeSide(N, force = false) {
+    if (!apiOn() || !state || generating) return;
+    const msg = chat[N];
+    if (!msg || msg.is_user || msg.is_system || N !== lastProcessedMsg()) return;
+    if (msg.extra?.ht_side?.[hashText(msg.mes)] && !force) return;       // к этому тексту уже есть
+    const phase = phaseOf(state);
+    const needs = sideNeeds(state, phase);
+    if (force) needs.add('new');
+    else if (!sideDue(state, phase, needs)) return;
+    // после сбоя издалека не долбим: подождём пару ответов (в праздник — пробуем каждый раз)
+    if (!force && phase.kind !== 'prep' && phase.kind !== 'today' && (state.turn || 0) - sideFailTurn < 3) return;
+    runSide(N, needs);
+}
+
+async function runSide(N, needs) {
+    cancelSide();
+    const ctl = new AbortController();
+    const hash = hashText(chat[N].mes);
+    const me = { N, hash, ctl };
+    side = me;
+    scheduleRenderAll();
+    const t0 = Date.now();
+    try {
+        const ctx = ctxFor(null);
+        const src = await gatherSources(N, sideDepth());
+        const messages = buildSideMessages(ctx, needs, src);
+        console.debug('[Hearthtide] отдельный запрос →', [...needs].join(', '), messages);
+        const text = await sendSide(apiProfile(), messages, ctl.signal);
+        if (side !== me) return;                                        // отменён или заменён новым
+        const msg = chat[N];
+        if (!msg || hashText(msg.mes) !== hash || N !== lastProcessedMsg()) return;   // текст уже другой
+        console.debug(`[Hearthtide] ответ за ${((Date.now() - t0) / 1000).toFixed(1)} с:\n${text}`);
+        msg.extra = msg.extra || {};
+        const map = msg.extra.ht_side || {};
+        map[hash] = { text, asked: [...needs] };
+        // храним для нескольких свайпов, не больше
+        const keys = Object.keys(map);
+        if (keys.length > 4) delete map[keys[0]];
+        msg.extra.ht_side = map;
+        side = null;
+        processReply(N);                // снимок перед N → ответ + блоки отдельного запроса
+    } catch (e) {
+        if (ctl.signal.aborted || side !== me) return;
+        sideFailTurn = state?.turn ?? 0;
+        const why = reasonOf(e);
+        console.error('[Hearthtide] отдельный запрос не прошёл:', why, e);
+        window.toastr?.error?.(`${L().sideFail}: ${why}`, 'Hearthtide', { timeOut: 12000 });
+    } finally {
+        if (side === me) side = null;
+        scheduleRenderAll();
+    }
+}
+
 // Старые маленькие теги из истории в промпт не отправляем — только последние несколько как образец
 const HT_RE = /\s*<!--\s*HT(?:-[A-Z]+)?\b[\s\S]*?-->/gi;
 function stripOldTags(list) {
@@ -1092,7 +1221,7 @@ function renderBlock(id) {
     block.dataset.mesid = String(id);
     const open = ui.open.get(id) || false;
     block.classList.toggle('ht-open', open);
-    block.innerHTML = headHtml(view, open) + (live ? offerHtml() : '') + (open ? bodyHtml(view, live) : '');
+    block.innerHTML = headHtml(view, open, live && sideBusyFor(id)) + (live ? offerHtml() : '') + (open ? bodyHtml(view, live) : '');
 }
 
 // ─── Кольцо: сколько дней осталось (из 30), в день праздника — полное ───
@@ -1121,7 +1250,7 @@ function ring(view) {
 
 function daysWord(n) { return L().days(n, plural); }
 
-function headHtml(view, open) {
+function headHtml(view, open, busy = false) {
     let title, sub = '';
     const h = view.h;
     if (view.kind === 'today' && h) {
@@ -1146,6 +1275,7 @@ function headHtml(view, open) {
             <span class="ht-title"><i class="fa-solid ${icon}"></i>${esc(title)}</span>
             ${sub ? `<span class="ht-sub${view.diag && !h ? ' ht-sub-wrap' : ''}">${esc(sub)}</span>` : ''}
         </span>
+        ${busy ? `<i class="fa-solid fa-feather-pointed ht-busy" title="${esc(L().sideBusy)}"></i>` : ''}
         <i class="fa-solid fa-chevron-down ht-chev"></i>
     </div>`;
 }
@@ -1468,7 +1598,16 @@ function injectSettingsPanel() {
                         <option value="en" ${langMode() === 'en' ? 'selected' : ''}>English</option>
                     </select>
                 </label>
-                <label class="ht-settings-row">Эпоха
+                <label class="ht-settings-row">Профиль
+                    <select id="ht-set-api" class="text_pole"><option value="auto">как в таверне</option></select>
+                </label>
+                <label class="ht-settings-row">Помнит сообщений
+                    <select id="ht-set-depth" class="text_pole">
+                        ${[5, 10, 20, 30].map(n => `<option value="${n}" ${sideDepth() === n ? 'selected' : ''}>${n}</option>`).join('')}
+                    </select>
+                </label>
+                <div class="menu_button" id="ht-set-scan"><i class="fa-solid fa-magnifying-glass"></i> Проверить историю</div>
+                <label class="ht-settings-row"><span>Эпоха <small id="ht-era-who"></small></span>
                     <select id="ht-set-era" class="text_pole">
                         <option value="ancient" ${eraMode() === 'ancient' ? 'selected' : ''}>прошлое и вымышленные миры</option>
                         <option value="modern" ${eraMode() === 'modern' ? 'selected' : ''}>наши дни</option>
@@ -1497,14 +1636,32 @@ function injectSettingsPanel() {
             injectPrompts();
             renderAll();
         });
+        fillProfiles();
+        document.getElementById('ht-set-api')?.addEventListener('focus', fillProfiles);
+        document.getElementById('ht-set-api')?.addEventListener('change', e => {
+            localStorage.setItem(LS.api, e.target.value);
+            cancelSide();
+            injectPrompts();
+            if (state && e.target.value) maybeSide(lastProcessedMsg(), true);
+        });
+        document.getElementById('ht-set-depth')?.addEventListener('change', e => {
+            localStorage.setItem(LS.depth, e.target.value);
+        });
+        document.getElementById('ht-set-scan')?.addEventListener('click', () => {
+            if (!apiOn()) { window.toastr?.info?.(L().noProfile, 'Hearthtide'); return; }
+            if (!state || lastProcessedMsg() < 0) { window.toastr?.info?.(L().scanNothing, 'Hearthtide'); return; }
+            window.toastr?.info?.(L().scanToast, 'Hearthtide');
+            maybeSide(lastProcessedMsg(), true);
+        });
+        syncCharSettings();
         document.getElementById('ht-set-era')?.addEventListener('change', e => {
-            localStorage.setItem(LS.era, e.target.value);
+            setCharSetting('era', e.target.value);
             const row = document.getElementById('ht-row-faith');
             if (row) row.style.display = e.target.value === 'modern' ? '' : 'none';
             rebuildCalendar();
         });
         document.getElementById('ht-set-faith')?.addEventListener('change', e => {
-            localStorage.setItem(LS.faith, e.target.value);
+            setCharSetting('faith', e.target.value);
             rebuildCalendar();
         });
         document.getElementById('ht-set-prev')?.addEventListener('change', e => {
@@ -1512,6 +1669,42 @@ function injectSettingsPanel() {
             renderAll();
         });
     }, 250);
+}
+
+// Профили подключения в списке (список в таверне может меняться — обновляем при каждом открытии)
+async function fillProfiles() {
+    const sel = document.getElementById('ht-set-api');
+    if (!sel) return;
+    const list = await listProfiles();
+    const cur = apiChoice();
+    sel.innerHTML = `<option value="auto">как в таверне</option>`
+        + list.map(p => `<option value="${esc(p.id)}" ${p.id === cur ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+    // выбранный профиль удалили в таверне — возвращаемся к «как в таверне»
+    if (cur !== 'auto' && !list.some(p => p.id === cur)) localStorage.setItem(LS.api, 'auto');
+}
+
+// Эпоха и вера в настройках — для текущего персонажа
+function syncCharSettings() {
+    const era = document.getElementById('ht-set-era');
+    const faith = document.getElementById('ht-set-faith');
+    if (era) era.value = eraMode();
+    if (faith) faith.value = faithMode();
+    const row = document.getElementById('ht-row-faith');
+    if (row) row.style.display = eraMode() === 'modern' ? '' : 'none';
+    const who = document.getElementById('ht-era-who');
+    if (who) who.textContent = charKey() ? `· ${getCharName()}` : '';
+}
+
+// Новый персонаж: эпоха не наследуется от прошлого — ставим «прошлое» и говорим об этом
+function noteCharSettings() {
+    const key = charKey();
+    if (key && !eraMap()[key]) {
+        const map = eraMap();
+        map[key] = { era: 'ancient', faith: 'faith' };
+        localStorage.setItem(LS.eraMap, JSON.stringify(map));
+        if (isEnabled()) window.toastr?.info?.(L().eraNew(getCharName()), 'Hearthtide', { timeOut: 8000 });
+    }
+    syncCharSettings();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1522,6 +1715,8 @@ let generating = false;
 function onGenerationStarted(type, params, dryRun) {
     if (dryRun) return;
     generating = true;
+    sideAfterGen = null;
+    cancelSide();          // пользователь уже пишет дальше — результат для прошлого ответа не нужен
     if (!isEnabled()) return;
     if (!state) loadState();
     injectPrompts();
@@ -1531,6 +1726,20 @@ function onMessageReceived(id) {
     if (!isEnabled()) return;
     if (!state) loadState();
     processReply(Number(id));
+    // таверна ещё дописывает сообщение — запрос отправим, когда генерация закончится
+    sideAfterGen = Number(id);
+    // на случай, если событие конца генерации не придёт
+    setTimeout(() => { if (sideAfterGen === Number(id)) { generating = false; onGenerationEnded(); } }, 4000);
+}
+let sideAfterGen = null;
+function onGenerationEnded() {
+    generating = false;
+    scheduleEnsure();
+    if (sideAfterGen != null) {
+        const id = sideAfterGen;
+        sideAfterGen = null;
+        setTimeout(() => maybeSide(id), 300);
+    }
 }
 
 function onMessageSwiped(id) {
@@ -1540,7 +1749,10 @@ function onMessageSwiped(id) {
         const m = chat[id];
         if (!m || m.is_user) return;
         const sw = m.swipes?.[m.swipe_id];
-        if (sw && sw.trim() && m.mes === sw && state.snapshots.some(s => s.beforeMsg === Number(id))) processReply(Number(id));
+        if (sw && sw.trim() && m.mes === sw && state.snapshots.some(s => s.beforeMsg === Number(id))) {
+            processReply(Number(id));
+            maybeSide(Number(id));
+        }
         else scheduleRenderAll();
     }, 150);
 }
@@ -1548,12 +1760,16 @@ function onMessageSwiped(id) {
 function onMessageEdited(id) {
     if (!isEnabled() || !state) return;
     const m = chat[id];
-    if (m && !m.is_user && Number(id) === lastProcessedMsg()) processReply(Number(id));
+    if (m && !m.is_user && Number(id) === lastProcessedMsg()) {
+        processReply(Number(id));
+        maybeSide(Number(id));
+    }
     else scheduleRenderAll();
 }
 
 function onMessageDeleted() {
     if (!isEnabled() || !state) return;
+    if (side && !chat[side.N]) cancelSide();
     const len = chat.length;
     const affected = state.snapshots.filter(s => s.beforeMsg >= len).sort((a, b) => a.beforeMsg - b.beforeMsg);
     if (affected.length) {
@@ -1566,8 +1782,11 @@ function onMessageDeleted() {
 }
 
 function onChatChanged() {
+    cancelSide();
+    sideAfterGen = null;
     ui.open.clear();
     loadState();
+    noteCharSettings();
     injectPrompts();
     for (const ms of [150, 600, 1500]) setTimeout(renderAll, ms);
 }
@@ -1618,8 +1837,8 @@ function init() {
     loadState();
     injectPrompts();
     on(event_types.GENERATION_STARTED, onGenerationStarted);
-    on(event_types.GENERATION_ENDED, () => { generating = false; scheduleEnsure(); });
-    on(event_types.GENERATION_STOPPED, () => { generating = false; scheduleEnsure(); });
+    on(event_types.GENERATION_ENDED, onGenerationEnded);
+    on(event_types.GENERATION_STOPPED, onGenerationEnded);
     on(event_types.MESSAGE_RECEIVED, onMessageReceived);
     on(event_types.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     on(event_types.GENERATE_AFTER_COMBINE_PROMPTS, onAfterCombinePrompts);
