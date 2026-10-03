@@ -91,7 +91,8 @@ function defaultState() {
         birthdayOff: {},        // удалённые дни рождения { user: true }
         offers: [],             // поводы из истории, ждут решения игрока: { id, cause, name, start, days, meaning, type, prep, turn }
         offerNo: [],            // названия отклонённых поводов — больше не предлагаем
-        bdayAsked: false,       // дни рождения {{user}} и {{char}} уже спрашивали: нет в карточке — не выдумываем
+        bdayAsked: false,
+        diag: null,             // почему нет календаря: notag | nocal | lang       // дни рождения {{user}} и {{char}} уже спрашивали: нет в карточке — не выдумываем
         yearLog: null,          // текущий год: { y, from, items: [{ id, name, birthday, who, type, start, days, kept }] }
         lived: {},              // hid → true: история застала этот праздник (не перепрыгнула скипом)
         skipFrom: null,         // день, с которого время прыгнуло далеко вперёд — спросить, какие праздники проскочили
@@ -317,14 +318,18 @@ function processReply(N) {
     const saved = msg.extra?.ht_raw;
     const source = saved && saved.hash === hashText(text) ? saved.raw : text;
 
-    const small = parseSmall(source);
-    const cal = (state.calIgnore || []).includes(hashText(source)) ? null : parseCalendar(source);
-    const prep = parsePrep(source);
-    const day = parseDay(source);
-    const recap = parseRecap(source);
-    const people = parsePeople(source);
-    const evs = parseEvents(source);
-    const offersIn = parseOffers(source);
+    // Модели с «думалкой» иногда пишут теги в рассуждениях, а в ответ не переносят — тогда берём оттуда
+    const think = String(msg.extra?.reasoning || '');
+    const fromThink = !/<!--\s*HT/i.test(source) && /<!--\s*HT/i.test(think);
+    const src = fromThink ? think : source;
+    const small = parseSmall(src);
+    const cal = (state.calIgnore || []).includes(hashText(src)) ? null : parseCalendar(src);
+    const prep = parsePrep(src);
+    const day = parseDay(src);
+    const recap = parseRecap(src);
+    const people = parsePeople(src);
+    const evs = parseEvents(src);
+    const offersIn = parseOffers(src);
     // Строки H, пришедшие без запроса календаря, — тоже повод из истории: решает игрок
     if (cal && asked !== 'cal' && !cal.setting && cal.holidays.length) {
         offersIn.push(...cal.holidays.map(h => ({ ...h, cause: null })));
@@ -372,6 +377,7 @@ function processReply(N) {
     if (cal) {
         const before = cal.holidays.length;
         cal.holidays = cal.holidays.filter(h => langOk(h.name));
+        if (before && !cal.holidays.length) state.diag = 'lang';     // календарь пришёл, но весь не на том языке
         if (cal.holidays.length < before) slip = true;
         if (cal.setting) {
             for (const k of ['era', 'faith', 'place']) if (cal.setting[k] && !langOk(cal.setting[k])) { cal.setting[k] = null; slip = true; }
@@ -521,6 +527,13 @@ function processReply(N) {
     }
 
     // ── Снимок для инфоблока этого сообщения ──
+    // Почему нет праздников — подсказка в инфоблоке, чтобы было видно, чья это проблема
+    if (!small) state.diag = 'notag';
+    else if (cal && cal.holidays.length) state.diag = null;
+    else if ((state.backoff?.cal ?? -1) > state.turn) state.diag = 'nocal';   // просили календарь — не прислал
+    else if (state.diag === 'notag') state.diag = null;
+    state.diagThink = fromThink;
+
     msg.extra.ht = viewSnapshot(phase);
 
     saveState();
@@ -904,6 +917,7 @@ function viewSnapshot(phase) {
         v: 1,
         setting: state.setting, place: state.place, when: state.when, part: dayPart(state.clock),
         kind: phase.kind,
+        diag: phase.h ? null : state.diag || null,
         h: phase.h ? { id: phase.h.id, name: displayName(phase.h), raw: phase.h.name, iso: isoOf(phase.h.start), meaning: phase.h.meaning, type: phase.h.type, days: phase.h.days, birthday: !!phase.h.birthday, who: phase.h.who } : null,
         daysTo: phase.daysTo ?? null,
         dayIndex: phase.dayIndex ?? null,
@@ -1109,7 +1123,7 @@ function headHtml(view, open) {
         if (view.kind === 'prep') sub += L().preparing;
     } else {
         title = L().nearest;
-        sub = L().soon;
+        sub = view.diag ? L().diag[view.diag] : L().soon;
     }
     const icon = h ? TYPE_ICON[h.birthday ? 'personal' : h.type] || 'fa-star' : 'fa-calendar-days';
     return `<div class="ht-head" role="button" tabindex="0" data-act="toggle" aria-expanded="${open}">
