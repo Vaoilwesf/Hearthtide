@@ -372,3 +372,11 @@
 @media (prefers-reduced-motion: reduce) { .ht-busy { animation: none; } }
 .ht-retry { color: var(--ht-acc); font-size: 0.85em; margin-right: 4px; cursor: pointer; padding: 4px; }
 .ht-retry:hover { transform: rotate(60deg); transition: transform 0.25s ease; }
+
+/* ─── Вкладки «Праздник» / «Текущий год» ─── */
+.ht-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; margin-bottom: 8px; border: 1px solid var(--ht-line); border-radius: 8px; }
+.ht-ib .ht-tab { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; padding: 5px 8px; border-radius: 6px; color: var(--ht-mute); font-size: 0.9em; cursor: pointer; }
+.ht-ib .ht-tab > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ht-ib .ht-tab:hover { color: var(--ht-fg); }
+.ht-ib .ht-tab.ht-on { color: var(--ht-acc); background: var(--ht-soft-2); }
+.ht-year { display: flex; flex-direction: column; }

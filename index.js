@@ -506,6 +506,9 @@ function processReply(N) {
     // Мысль/действие персонажа и его подарок — из маленького тега
     if (sm && phase.h && (phase.kind === 'prep' || phase.kind === 'today')) {
         if (sm.giftTo && langOk(sm.giftTo) && !phase.h.birthday) state.giftTo[phase.h.id] = sm.giftTo;
+        // шаг, почти повторяющий прошлые словами, не принимаем — цепочка должна идти дальше
+        const echo = (t) => (state.charLog[phase.h.id] || []).slice(-3).some(x => echoes(x.text, t));
+        if (sm.char && echo(sm.char)) sm.char = null;
         if (sm.char) {
             if (langOk(sm.char)) {
                 state.charNow = { hid: phase.h.id, text: sm.char, turn: state.turn };
@@ -612,6 +615,16 @@ function processReply(N) {
     saveState();
     injectPrompts();
     scheduleRenderAll();
+}
+
+// Повторяет ли фраза прошлую: хотя бы 3 общих слова (по корням длиной 5) и это 40% и больше
+function echoes(a, b) {
+    const set = (t) => new Set(String(t || '').toLowerCase().replace(/ё/g, 'е').split(/[^\p{L}]+/u).filter(w => w.length >= 4).map(w => w.slice(0, 5)));
+    const A = set(a), B = set(b);
+    if (!A.size || !B.size) return false;
+    let n = 0;
+    for (const w of A) if (B.has(w)) n++;
+    return n >= 3 && n / Math.min(A.size, B.size) >= 0.4;
 }
 
 // ─── Текущий год: все прошедшие праздники, отмеченные и прошедшие мимо ───
@@ -1177,7 +1190,7 @@ function onAfterCombinePrompts(data) {
 // ═══════════════════════════════════════════════════════════════
 // ИНФОБЛОК
 // ═══════════════════════════════════════════════════════════════
-const ui = { open: new Map(), confirmDel: null, editing: null, offerSeen: new Set() };
+const ui = { open: new Map(), tab: new Map(), confirmDel: null, editing: null, offerSeen: new Set() };
 
 const TYPE_ICON = {
     religious: 'fa-church', folk: 'fa-wheat-awn', seasonal: 'fa-leaf', state: 'fa-flag',
@@ -1253,7 +1266,7 @@ function renderBlock(id) {
     block.dataset.mesid = String(id);
     const open = ui.open.get(id) || false;
     block.classList.toggle('ht-open', open);
-    block.innerHTML = headHtml(view, open, live ? sideMarkHtml() : '') + (live ? offerHtml() : '') + (open ? bodyHtml(view, live) : '');
+    block.innerHTML = headHtml(view, open, live ? sideMarkHtml() : '') + (live ? offerHtml() : '') + (open ? bodyHtml(view, live, ui.tab.get(id) || 'now') : '');
 }
 
 // ─── Кольцо: сколько дней осталось (из 30), в день праздника — полное ───
@@ -1386,7 +1399,7 @@ function offerHtml() {
     </div>`;
 }
 
-function bodyHtml(view, live) {
+function bodyHtml(view, live, tab = 'now') {
     const delBtn = (hid) => {
         if (!live || !hid) return '';
         const confirm = ui.confirmDel === hid;
@@ -1502,14 +1515,24 @@ function bodyHtml(view, live) {
         return `<div class="ht-fb"><div><b>${esc(f.title)}</b>${f.when ? `<span class="ht-mute"> · ${esc(f.when)}</span>` : ''}<p>${esc(f.text)}</p></div>${btn}</div>`;
     }).join('');
 
+    // Вкладки сверху: праздник сейчас и прошедшие за год — год не растягивает инфоблок вниз
+    const n = view.year?.length || 0;
+    const tabs = `<div class="ht-tabs" role="tablist">
+        <button role="tab" class="ht-tab${tab === 'now' ? ' ht-on' : ''}" data-act="tab" data-tab="now" aria-selected="${tab === 'now'}"><i class="fa-solid fa-holly-berry"></i><span>${L().tabNow}</span></button>
+        <button role="tab" class="ht-tab${tab === 'year' ? ' ht-on' : ''}" data-act="tab" data-tab="year" aria-selected="${tab === 'year'}"><i class="fa-solid fa-calendar-check"></i><span>${L().year}</span>${n ? `<em class="ht-count">${n}</em>` : ''}</button>
+    </div>`;
+    if (tab === 'year') {
+        return `<div class="ht-body">${tabs}<div class="ht-year">${yearRows || `<p class="ht-mute">${L().yearEmpty}</p>`}</div></div>`;
+    }
+
     return `<div class="ht-body">
+        ${tabs}
         ${world ? `<div class="ht-world">${world}</div>` : ''}
         ${charCard}
         ${main}
         ${eventsSec}
         ${peopleSec}
         ${section('upcoming', 'fa-calendar-days', L().upcoming, upcoming)}
-        ${section('year', 'fa-calendar-check', L().year, yearRows || `<p class="ht-mute">${L().yearEmpty}</p>`, view.year?.length ? `<em class="ht-count">${view.year.length}</em>` : '')}
         ${section('memories', 'fa-clock-rotate-left', L().flashbacks, memories)}
         ${live ? `<div class="ht-actions"><button class="ht-btn" data-act="rebuild" title="${L().rebuildTip}"><i class="fa-solid fa-arrows-rotate"></i>${L().rebuild}</button></div>` : ''}
     </div>`;
@@ -1545,6 +1568,9 @@ function bindBlock(block) {
                 window.toastr?.success?.(L().saved, 'Hearthtide');
                 renderAll();
             }
+        } else if (t.dataset.act === 'tab') {
+            ui.tab.set(id, t.dataset.tab);
+            renderBlock(id);
         } else if (t.dataset.act === 'side-retry') {
             sideErr = null;
             maybeSide(lastProcessedMsg(), true);
