@@ -177,7 +177,20 @@ All text values in these comments: ${lang} only.`];
         // дни рождения спрашиваем один раз: не указаны в карточке — значит, их нет, пока история не скажет
         const needB = (!state.birthdays?.user || !state.birthdays?.char) && !state.bdayAsked;
         const gap = ctx.skipGap;
-        out.push(`ALSO, this reply only — after the HT line add the calendar block:
+        // Модели без рассуждений теряют блок в конце длинного ответа: просим начать с него.
+        // Пропустил — напоминаем; пропустил дважды — короткая версия без подробных правил.
+        const miss = ctx.calMiss || 0;
+        const lead = `${miss ? `REQUIRED — your last ${miss > 1 ? 'replies' : 'reply'} had no calendar block. ` : 'ALSO, this reply only — '}BEGIN your reply with the calendar block, then write the story as usual:`;
+        if (miss >= 2) {
+            out.push(`${lead}
+<!-- HT-CAL
+S | ERA_AND_YEAR | FAITH | PLACE
+H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP
+-->
+- S: the era by name and the year; the faith people live by; the place as the story names it.
+- H: the next 3 holidays people there keep, by this era and faith, from the current date. TYPE: religious | folk | seasonal | state | family | fast | memorial. PREP: days of getting ready.${ctx.banned?.length ? ` Never: ${ctx.banned.join(', ')}.` : ''}
+- All in ${lang}, names translated.`);
+        } else out.push(`${lead}
 <!-- HT-CAL
 S | ERA_AND_YEAR | FAITH | PLACE
 H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP

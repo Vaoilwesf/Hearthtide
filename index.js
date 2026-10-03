@@ -94,6 +94,7 @@ function defaultState() {
         bdayAsked: false,       // дни рождения {{user}} и {{char}} уже спрашивали: нет в карточке — не выдумываем
         diag: null,             // почему нет календаря: notag | nocal | lang
         diagNames: [],          // что пришло не на том языке — показать игроку
+        calMiss: 0,             // сколько раз подряд ИИ пропустил календарь
         yearLog: null,          // текущий год: { y, from, items: [{ id, name, birthday, who, type, start, days, kept }] }
         lived: {},              // hid → true: история застала этот праздник (не перепрыгнула скипом)
         skipFrom: null,         // день, с которого время прыгнуло далеко вперёд — спросить, какие праздники проскочили
@@ -155,6 +156,7 @@ function ctxFor(request = null) {
         fixPlace: !!placeName && !langOk(placeName),
         fixSetting: !!state.setting && (!langOk(state.setting.era) || !langOk(state.setting.faith)),
         banned: state.bannedNames || [],
+        calMiss: state.calMiss || 0,
         // игрок переименовал праздник в другой — ИИ дописывает новый смысл
         meaningFor: (state.holidays || []).find(h => h.needMeaning && !isBanned(state, h.name))?.name || null,
         // чтобы ИИ не предлагал одно и то же: ждущие решения и недавно отклонённые
@@ -489,6 +491,11 @@ function processReply(N) {
         if (answered[asked]) delete state.backoff[asked];
         else state.backoff[asked] = state.turn + WAIT[asked];
     }
+    // Календарь — основа всего: пропущенный переспрашиваем сразу, настойчивее и короче; пауза — только после трёх пропусков подряд
+    if (asked === 'cal') {
+        state.calMiss = cal ? 0 : (state.calMiss || 0) + 1;
+        if (!cal && state.calMiss < 3) delete state.backoff.cal;
+    }
     if (asked === 'event' && !evs.some(e => e.kind !== 'moment')) state.lastEventEnd = state.turn - 1;
     if (asked === 'moment' && !evs.some(e => e.kind === 'moment') && phase.h) {
         const ev = openEvent(state, phase.h.id);
@@ -535,7 +542,7 @@ function processReply(N) {
     // Почему нет праздников — подсказка в инфоблоке, чтобы было видно, чья это проблема
     if (!small) state.diag = 'notag';
     else if (cal && cal.holidays.length) state.diag = null;
-    else if ((state.backoff?.cal ?? -1) > state.turn) state.diag = 'nocal';   // просили календарь — не прислал
+    else if (asked === 'cal' && !cal) state.diag = 'nocal';                   // просили календарь — не прислал
     else if (state.diag === 'notag') state.diag = null;
     state.diagThink = fromThink;
 
