@@ -91,6 +91,7 @@ function defaultState() {
         birthdayOff: {},        // удалённые дни рождения { user: true }
         offers: [],             // поводы из истории, ждут решения игрока: { id, cause, name, start, days, meaning, type, prep, turn }
         offerNo: [],            // названия отклонённых поводов — больше не предлагаем
+        bdayAsked: false,       // дни рождения {{user}} и {{char}} уже спрашивали: нет в карточке — не выдумываем
         yearLog: null,          // текущий год: { y, from, items: [{ id, name, birthday, who, type, start, days, kept }] }
         lived: {},              // hid → true: история застала этот праздник (не перепрыгнула скипом)
         skipFrom: null,         // день, с которого время прыгнуло далеко вперёд — спросить, какие праздники проскочили
@@ -380,6 +381,7 @@ function processReply(N) {
         mergeHolidays(cal.holidays);
         for (const [who, md] of Object.entries(cal.birthdays)) state.birthdays[who] = md;
         state.forceCal = false;
+        if (asked === 'cal') state.bdayAsked = true;       // не прислал строку B — дня рождения не знаем, не переспрашиваем
         if (cal.passed.some(x => !langOk(x.name))) slip = true;
         logSkipped(cal.passed.filter(x => langOk(x.name)));
         state.skipFrom = null;
@@ -594,7 +596,10 @@ function takeOffers(list) {
     for (const o of list || []) {
         if (![o.name, o.meaning, o.cause].every(langOk)) { slip = true; continue; }
         if (state.today != null && (o.start < state.today || o.start - state.today > 180)) continue;
-        if (birthdayOwner(o.name) || offerKnown(o)) continue;
+        const owner = birthdayOwner(o.name);
+        if (owner && (state.birthdays?.[owner] || state.birthdayOff?.[owner])) continue;   // уже известен или удалён игроком
+        if (owner) o.bday = owner;                                                         // день рождения узнали из истории
+        if (offerKnown(o)) continue;
         if (state.offers.some(x => namesMatch(x.name, o.name))) continue;
         state.offers.push({ ...o, id: `of-${state.turn}-${Date.now().toString(36)}-${state.offers.length}`, turn: state.turn });
     }
@@ -616,7 +621,7 @@ function acceptOffer(oid, edit = null) {
         start = parseDate(edit.date);
         if (start == null) { window.toastr?.warning?.(L().badDate, 'Hearthtide'); return false; }
     }
-    const toBday = String(edit?.type || '').startsWith('bday_') ? edit.type.slice(5) : null;
+    const toBday = String(edit?.type || '').startsWith('bday_') ? edit.type.slice(5) : (!edit?.type && o.bday) || null;
     if (toBday) {
         const md = fromDayNum(start);
         const apply = (st) => {
@@ -1171,7 +1176,7 @@ function offerHtml() {
     const o = list[0];
     if (!o) return '';
     if (ui.editing === o.id) {
-        return `<div class="ht-offer">${editFormHtml({ id: o.id, raw: o.name, iso: isoOf(o.start), type: o.type, meaning: o.meaning }, 'offer-save', L().accept)}</div>`;
+        return `<div class="ht-offer">${editFormHtml({ id: o.id, raw: o.name, iso: isoOf(o.start), type: o.type, meaning: o.meaning, birthday: !!o.bday, who: o.bday }, 'offer-save', L().accept)}</div>`;
     }
     const d = state.today != null ? o.start - state.today : null;
     const when = d == null ? isoOf(o.start) : d <= 0 ? L().offerToday : d === 1 ? L().tomorrow : L().inDays(daysWord(d));
@@ -1434,8 +1439,8 @@ function injectSettingsPanel() {
                 </label>
                 <label class="ht-settings-row">Эпоха
                     <select id="ht-set-era" class="text_pole">
-                        <option value="ancient" ${eraMode() === 'ancient' ? 'selected' : ''}>Древность</option>
-                        <option value="modern" ${eraMode() === 'modern' ? 'selected' : ''}>Современность</option>
+                        <option value="ancient" ${eraMode() === 'ancient' ? 'selected' : ''}>прошлое и вымышленные миры</option>
+                        <option value="modern" ${eraMode() === 'modern' ? 'selected' : ''}>наши дни</option>
                     </select>
                 </label>
                 <label class="ht-settings-row" id="ht-row-faith" ${eraMode() === 'modern' ? '' : 'style="display:none"'}>Праздники

@@ -82,3 +82,27 @@ export function plural(n, forms) {
     if (b === 1) return forms[0];
     return forms[2];
 }
+
+// ─── Пасха: считаем сами, чтобы ИИ не ошибался с переходящими праздниками ───
+const JDN_EPOCH = 2440588;   // юлианский день для 1970-01-01, от него считается dayNum
+function jdnOf(y, m, d, julian) {
+    const a = Math.floor((14 - m) / 12), yy = y + 4800 - a, mm = m + 12 * a - 3;
+    const base = d + Math.floor((153 * mm + 2) / 5) + 365 * yy + Math.floor(yy / 4);
+    return julian ? base - 32083 : base - Math.floor(yy / 100) + Math.floor(yy / 400) - 32045;
+}
+/** Православная Пасха (юлианская пасхалия): { julian: 'ММ-ДД' по старому стилю, day: номер дня по григорианскому } */
+export function easterJulian(y) {
+    const a = y % 4, b = y % 7, c = y % 19;
+    const d = (19 * c + 15) % 30, e = (2 * a + 4 * b - d + 34) % 7;
+    const m = Math.floor((d + e + 114) / 31), dd = ((d + e + 114) % 31) + 1;
+    return { julian: `${String(m).padStart(2, '0')}-${String(dd).padStart(2, '0')}`, day: jdnOf(y, m, dd, true) - JDN_EPOCH };
+}
+/** Западная Пасха (григорианская пасхалия) → номер дня */
+export function easterGregorian(y) {
+    const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4;
+    const f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
+    const h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4;
+    const l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+    const mo = Math.floor((h + l - 7 * m + 114) / 31), dd = ((h + l - 7 * m + 114) % 31) + 1;
+    return dayNum(y, mo, dd);
+}

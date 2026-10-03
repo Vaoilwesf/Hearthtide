@@ -1,7 +1,7 @@
 // Hearthtide — prompts.js
 // Весь инджект — на английском. Значения для инфоблока ИИ пишет на выбранном языке.
 
-import { isoOf } from './dates.js';
+import { isoOf, fromDayNum, easterJulian, easterGregorian } from './dates.js';
 import { hasGifts, charDue, isIntimate, openEvent } from './calendar.js';
 
 const PART_EN = { morning: 'morning', day: 'daytime', evening: 'evening', night: 'night' };
@@ -105,6 +105,21 @@ export function buildStatePrompt(ctx) {
     return lines.join('\n');
 }
 
+// ─── Пасха на нужный год: считает расширение, ИИ только выбирает, подходит ли она миру ───
+function easterHint(ctx) {
+    if (ctx.state.today == null || (ctx.eraMode === 'modern' && ctx.faithMode === 'secular')) return '';
+    const { y, m } = fromDayNum(ctx.state.today);
+    if (y < 33 || y > 2300) return '';
+    const one = (yy) => {
+        const j = easterJulian(yy);
+        if (yy < 1583) return `${yy}: ${yy}-${j.julian} (Julian calendar)`;
+        const w = isoOf(easterGregorian(yy)), o = isoOf(j.day);
+        return w === o ? `${yy}: ${w}, Western and Orthodox alike` : `${yy}: Western ${w}, Orthodox ${o} (Julian ${j.julian})`;
+    };
+    const years = m >= 10 ? [y, y + 1] : [y];
+    return ` If Christian feasts belong here — Easter ${years.map(one).join('; ')}; movable feasts count from it.`;
+}
+
 // ─── Какие праздники брать: зависит от эпохи и веры из настроек ───
 function holidayGuide(ctx) {
     if (ctx.eraMode !== 'modern') {
@@ -159,15 +174,16 @@ All text values in these comments: ${lang} only.`];
     if (request === 'cal') {
         const known = (state.holidays || []).filter(x => state.today == null || x.start + x.days - 1 >= state.today)
             .map(x => `${x.name} (${isoOf(x.start)})`).slice(0, 5);
-        const needB = !state.birthdays?.user || !state.birthdays?.char;
+        // дни рождения спрашиваем один раз: не указаны в карточке — значит, их нет, пока история не скажет
+        const needB = (!state.birthdays?.user || !state.birthdays?.char) && !state.bdayAsked;
         const gap = ctx.skipGap;
         out.push(`ALSO, this reply only — after the HT line add the calendar block:
 <!-- HT-CAL
 S | ERA_AND_YEAR | FAITH | PLACE
 H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP
 ${needB ? `B | user | MM-DD | PREP\nB | char | MM-DD | PREP\n` : ''}${gap ? `X | YYYY-MM-DD | NAME | TYPE\n` : ''}-->
-- S: the era and the year in words${ctx.eraMode === 'modern' ? '' : ', as people of that time would say it, with our reckoning in brackets'} — no bare numbers or dates; FAITH — ${ctx.eraMode === 'modern' && ctx.faithMode === 'secular' ? 'secular' : 'the faith(s) people actually live by'}; PLACE — the kind of place and its proper name exactly as the story gives it (never invent a name the story doesn't use).
-- H: the next 4 holidays from the current date, in date order, decided briskly${known.length ? `, continuing after: ${known.join(', ')}` : ''}. ${holidayGuide(ctx)} Compute movable feasts properly for that year and calendar. Occasions the story itself has set up or announced come first. Also add personal and family occasions the story gives grounds for (birthdays and name days of the characters and people close to them, weddings, anniversaries, a newborn's naming, memorial days of relatives, a housewarming). DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | family | supernatural | fast | memorial. PREP = how many days before it people actually start getting ready or feel it coming (0 for a minor day; a great feast may be weeks). Birthdays of ${userName} and ${charName} go only in B lines, never as H.${needB ? `\n- B: birthdays of ${userName} and ${charName} from the card and persona; if not stated, choose plausible ones.` : ''}${gap ? `\n- X: holidays the time skip jumped over, ${gap.from} to ${gap.to}, by the same rules.` : ''}${ctx.passed?.length ? `\n- Already passed this year, don't repeat: ${ctx.passed.join(', ')}.` : ''}${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}`);
+- S: the era by name and the year${ctx.eraMode === 'modern' ? '' : ', as people of that time would say it (our reckoning in brackets only if theirs differs)'} — not a bare date; FAITH — ${ctx.eraMode === 'modern' && ctx.faithMode === 'secular' ? 'secular' : 'the faith(s) people actually live by'}; PLACE — the kind of place and its proper name exactly as the story gives it (never invent a name the story doesn't use).
+- H: the next 4 holidays from the current date, in date order, decided briskly${known.length ? `, continuing after: ${known.join(', ')}` : ''}. Only days people there already keep — never something still to happen in the story (a disaster, a death, a battle). ${holidayGuide(ctx)} Compute movable feasts properly for that year and calendar.${easterHint(ctx)} Occasions the story itself has set up or announced come first. Also add personal and family occasions the story gives grounds for (birthdays and name days of the characters and people close to them, weddings, anniversaries, a newborn's naming, memorial days of relatives, a housewarming) — only dates the card, lore or story actually gives, never guessed. DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | family | supernatural | fast | memorial. PREP = how many days before it people actually start getting ready or feel it coming (0 for a minor day; a great feast may be weeks). Birthdays of ${userName} and ${charName} go only in B lines, never as H.${needB ? `\n- B: birthdays of ${userName} and ${charName} only if the card, persona or story states them; otherwise leave that line out — never guess.` : ''}${gap ? `\n- X: holidays the time skip jumped over, ${gap.from} to ${gap.to}, by the same rules.` : ''}${ctx.passed?.length ? `\n- Already passed this year, don't repeat: ${ctx.passed.join(', ')}.` : ''}${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}`);
     }
     if (request === 'prep' && h) {
         const prev = state.prep?.hid === h.id ? state.prep : null;
