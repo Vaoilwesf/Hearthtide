@@ -1652,9 +1652,8 @@ const barHtml = (n) => {
 const signed = (n) => (n > 0 ? `+${n}` : `${n}`);
 function miniBar(src, who, n, note) {
     const words = note || L().rel[relLevel(n ?? 0)];
-    return `<div class="ht-mini-wrap" title="${esc(`${who}: ${signed(n ?? 0)} · ${words}`)}">
-        <div class="ht-mini">${avaHtml(src, who, 'ht-ava-xs')}${barHtml(n)}</div>
-        <span class="ht-mini-note">${esc(words)}</span></div>`;
+    return `<div class="ht-mini" title="${esc(`${who}: ${signed(n ?? 0)} · ${words}`)}">
+        <span class="ht-mini-row">${avaHtml(src, who, 'ht-ava-xs')}<b>${signed(n ?? 0)}</b></span>${barHtml(n)}</div>`;
 }
 
 const CAST_TABS = ['all', 'kin_user', 'kin_char', 'others'];
@@ -1685,7 +1684,6 @@ function castTabHtml(view, live) {
     const ava = avatars();
     const card = (p) => {
         const key = `cast:${p.id}`;
-        if (live && ui.editing === key) return castFormHtml(p, ava[p.id]);
         const d = p.bdayIn;
         const near = d != null && d <= 30 ? (d === 0 ? ' ht-bd-today' : d <= 7 ? ' ht-bd-near' : ' ht-bd-soon') : '';
         const name = p.name || L().noName;
@@ -1698,6 +1696,10 @@ function castTabHtml(view, live) {
             ${roles.length ? `<span class="ht-cc-role">${roles.map(esc).join('<br>')}</span>` : ''}
             ${d != null && d <= 30 ? `<span class="ht-cc-bd"><i class="fa-solid fa-cake-candles"></i>${esc(L().bdayIn(d, daysWord))}</span>` : ''}
             <div class="ht-cc-bars">${miniBar(uA, u, p.rel?.user ?? 0, p.note?.user)}${miniBar(cA, c, p.rel?.char ?? 0, p.note?.char)}</div>
+            <details class="ht-cc-status"><summary>${L().status}<i class="fa-solid fa-chevron-down"></i></summary>
+                <p><b>${esc(u)}:</b> ${esc(p.note?.user || L().rel[relLevel(p.rel?.user ?? 0)])}</p>
+                <p><b>${esc(c)}:</b> ${esc(p.note?.char || L().rel[relLevel(p.rel?.char ?? 0)])}</p>
+            </details>
             ${live ? `<div class="ht-cc-tools">
                 <button data-act="cast-eye" data-cid="${esc(p.id)}" title="${esc(p.off ? L().castOn : L().castOff)}" aria-pressed="${!p.off}"><i class="fa-solid ${p.off ? 'fa-eye-slash' : 'fa-eye'}"></i></button>
                 <button data-act="cast-edit" data-cid="${esc(p.id)}" title="${esc(L().edit)}"><i class="fa-solid fa-pen"></i></button>
@@ -1711,6 +1713,66 @@ function castTabHtml(view, live) {
     shown.sort((a, b) => (order[a.group] ?? 5) - (order[b.group] ?? 5));
     const cards = shown.map(card).join('');
     return `${subtabs}<div class="ht-gallery">${pair}${cards || (pair ? '' : `<p class="ht-mute ht-gallery-empty">${L().castEmpty}</p>`)}</div>`;
+}
+
+// Правка человека — отдельным окном поверх таверны: перерисовки чата его не сбрасывают,
+// на телефоне — на весь экран, поля крупные
+function closeCastEditor() { document.querySelector('.ht-modal')?.remove(); }
+function openCastEditor(cid) {
+    closeCastEditor();
+    const p = (state.cast || []).find(c => c.id === cid);
+    if (!p) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'ht-modal';
+    wrap.setAttribute('role', 'dialog');
+    wrap.setAttribute('aria-modal', 'true');
+    const draw = () => {
+        wrap.innerHTML = `<div class="ht-modal-card">
+            <div class="ht-modal-title"><i class="fa-solid fa-user-pen"></i>${esc(p.name || L().noName)}<button type="button" data-act="edit-cancel" aria-label="${esc(L().cancel)}"><i class="fa-solid fa-xmark"></i></button></div>
+            ${castFormHtml(p, avatars()[cid])}</div>`;
+    };
+    draw();
+    wrap.addEventListener('click', (e) => {
+        if (e.target === wrap) { closeCastEditor(); return; }      // нажали мимо окна
+        const t = e.target.closest('[data-act]');
+        if (!t) return;
+        const f = wrap.querySelector('.ht-edit');
+        const val = (k) => f?.querySelector(`[data-ed="${k}"]`)?.value ?? '';
+        if (t.dataset.act === 'edit-cancel') closeCastEditor();
+        else if (t.dataset.act === 'cast-rom') {
+            t.parentElement.querySelectorAll('button').forEach(b => { b.classList.toggle('ht-on', b === t); b.setAttribute('aria-pressed', String(b === t)); });
+        } else if (t.dataset.act === 'cast-photo-del') {
+            delete avatars()[cid];
+            saveChatDebounced();
+            wrap.querySelector('.ht-cast-photo .ht-ava')?.replaceWith(Object.assign(document.createElement('span'), { className: 'ht-ava ht-ava-none', textContent: initials(p.name) }));
+            t.remove();
+            renderAll();
+        } else if (t.dataset.act === 'cast-save') {
+            const rom = (w) => f?.querySelector(`.ht-rom-pick[data-who="${w}"] .ht-on`)?.dataset.key || '';
+            if (saveCast(cid, { name: val('name'), toU: val('toU'), toC: val('toC'), group: val('group'), bday: val('bday'), relU: val('relU'), relC: val('relC'), noteU: val('noteU'), noteC: val('noteC'), romU: rom('user'), romC: rom('char') })) {
+                closeCastEditor();
+                renderAll();
+            }
+        }
+    });
+    wrap.addEventListener('change', async (e) => {
+        const inp = e.target.closest?.('input[data-act="cast-photo"]');
+        if (!inp?.files?.[0]) return;
+        try {
+            avatars()[cid] = await shrinkImage(inp.files[0]);
+            saveChatDebounced();
+            const img = document.createElement('span');
+            img.className = 'ht-ava';
+            img.innerHTML = `<img src="${avatars()[cid]}" alt="">`;
+            wrap.querySelector('.ht-cast-photo .ht-ava')?.replaceWith(img);
+            renderAll();
+        } catch (err) {
+            console.error('[Hearthtide] картинка:', err);
+            window.toastr?.warning?.(L().badPhoto, 'Hearthtide');
+        }
+    });
+    wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeCastEditor(); });
+    document.body.appendChild(wrap);
 }
 
 function castFormHtml(p, photo) {
@@ -2060,9 +2122,8 @@ function bindBlock(block) {
             saveChatDebounced();
             renderBlock(id);
         } else if (t.dataset.act === 'cast-edit') {
-            ui.editing = `cast:${t.dataset.cid}`;
             ui.confirmDel = null;
-            renderBlock(id);
+            openCastEditor(t.dataset.cid);
         } else if (t.dataset.act === 'cast-del') {
             const key = `cast:${t.dataset.cid}`;
             if (ui.confirmDel !== key) { ui.confirmDel = key; renderBlock(id); return; }
@@ -2405,6 +2466,7 @@ function onMessageDeleted() {
 }
 
 function onChatChanged() {
+    closeCastEditor();
     cancelSide();
     sideAfterGen = null;
     ui.open.clear();

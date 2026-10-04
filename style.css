@@ -3,7 +3,7 @@
    Все цвета — из текущей темы SillyTavern.
    ═══════════════════════════════════════════════════════════════ */
 
-.ht-ib {
+.ht-ib, .ht-modal {
     --ht-fg: var(--SmartThemeBodyColor, #dcdcd2);
     --ht-acc: var(--SmartThemeQuoteColor, #e1a35a);
     --ht-line: color-mix(in srgb, var(--ht-fg) 16%, transparent);
@@ -28,7 +28,7 @@
     overflow: hidden;
 }
 .ht-ib.ht-open { background: var(--ht-soft-2); }
-.ht-ib button { all: unset; box-sizing: border-box; cursor: pointer; }
+:is(.ht-ib, .ht-modal) button { all: unset; box-sizing: border-box; cursor: pointer; }
 .ht-ib :focus-visible { outline: 2px solid var(--ht-acc); outline-offset: 2px; border-radius: 4px; }
 .ht-ib i.fa-solid, .ht-ib i.fa-regular { width: 1.1em; text-align: center; }
 
@@ -137,11 +137,11 @@
 .ht-up > b { font-weight: 600; white-space: nowrap; color: var(--ht-mute); }
 
 .ht-actions { display: flex; justify-content: flex-end; }
-.ht-ib .ht-btn {
+:is(.ht-ib, .ht-modal) .ht-btn {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 5px 11px; border: 1px solid var(--ht-line-strong); border-radius: 6px; font-size: 0.92em;
 }
-.ht-ib .ht-btn:hover { background: var(--ht-soft-2); }
+:is(.ht-ib, .ht-modal) .ht-btn:hover { background: var(--ht-soft-2); }
 
 @media (max-width: 600px) {
     .ht-head { padding: 8px; gap: 8px; }
@@ -306,7 +306,7 @@
 .ht-edit label, .ht-kv-edit > div { display: flex; flex-direction: column; gap: 2px; font-size: 0.85em; color: var(--ht-mute); }
 .ht-edit .text_pole, .ht-kv-edit .text_pole { margin: 0; font-size: 1.1em; color: var(--ht-fg); }
 .ht-edit-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
-.ht-ib .ht-btn-main { border-color: var(--ht-acc); color: var(--ht-acc); }
+:is(.ht-ib, .ht-modal) .ht-btn-main { border-color: var(--ht-acc); color: var(--ht-acc); }
 
 /* ─── Повод из истории: предложение нового праздника ─── */
 .ht-offer {
@@ -334,8 +334,8 @@
     .ht-offer-actions .ht-btn > span { display: none; }
     .ht-offer-actions .ht-btn { padding: 7px 0; }
 }
-.ht-ib .ht-btn-quiet { border-color: var(--ht-line); color: var(--ht-mute); }
-.ht-ib .ht-btn-quiet:hover { color: var(--ht-fg); }
+:is(.ht-ib, .ht-modal) .ht-btn-quiet { border-color: var(--ht-line); color: var(--ht-mute); }
+:is(.ht-ib, .ht-modal) .ht-btn-quiet:hover { color: var(--ht-fg); }
 .ht-edit textarea.text_pole { resize: vertical; min-height: 2.6em; font-family: inherit; }
 
 /* Появляется один раз — лёгкий сдвиг, только transform */
@@ -421,7 +421,7 @@
 @container (max-width: 300px) { .ht-ib .ht-tab > span { display: none; } }
 
 /* ═══ Романтика и свидания ═══ */
-.ht-ib, .ht-date-toast { --ht-rom: color-mix(in srgb, var(--ht-acc) 35%, #e0588c); }
+.ht-ib, .ht-modal, .ht-date-toast { --ht-rom: color-mix(in srgb, var(--ht-acc) 35%, #e0588c); }
 /* карточка свидания */
 .ht-date { border-style: solid; border-color: color-mix(in srgb, var(--ht-rom) 60%, transparent); background: color-mix(in srgb, var(--ht-rom) 9%, transparent); }
 .ht-date .ht-offer-cause > i, .ht-date .ht-offer-mean > i { color: var(--ht-rom); }
@@ -509,7 +509,7 @@
 .ht-ava { display: inline-grid; place-items: center; width: 52px; height: 52px; border-radius: 50%; overflow: hidden; flex: none;
     background: var(--ht-soft-2); border: 1px solid var(--ht-line); color: var(--ht-mute); font-weight: 600; font-size: 1.05em; }
 .ht-ava > img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.ht-ava-xs { width: 16px; height: 16px; font-size: 0.55em; border: 0; }
+
 .ht-cc-heart { position: absolute; right: -2px; bottom: 0; font-size: 0.8em; color: var(--ht-rom); filter: drop-shadow(0 0 2px rgba(0,0,0,.6)); }
 .ht-cc-name { width: 100%; font-weight: 700; font-size: 0.92em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ht-cc-noname { font-weight: 400; font-style: italic; color: var(--ht-mute); }
@@ -518,7 +518,12 @@
 .ht-cc-bd > i { margin-right: 4px; }
 .ht-cc-bars { width: 100%; display: flex; flex-direction: column; gap: 3px; margin-top: 2px; }
 /* мини-шкала, как в «Симс»: красный → жёлтый → зелёный */
-.ht-mini { width: 100%; display: flex; align-items: center; gap: 5px; }
+.ht-mini { width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+/* аватарка того, с кем отношения, — маленькая, над шкалой; шкала — на всю ширину */
+.ht-ava.ht-ava-xs { width: 15px; height: 15px; font-size: 0.5em; border: 0; }
+.ht-mini > .ht-mini-bar { width: 100%; flex: none; height: 6px; }
+.ht-mini-row { display: flex; align-items: center; gap: 4px; width: 100%; font-size: 0.68em; color: var(--ht-mute); }
+.ht-mini-row > b { margin-left: auto; font-weight: 600; }
 .ht-mini-ico { width: 16px; text-align: center; font-size: 0.75em; color: var(--ht-mute); }
 .ht-mini-bar { flex: 1; height: 5px; border-radius: 999px; background: var(--ht-line); overflow: hidden; }
 /* от середины: вправо — хорошо (к зелёному), влево — плохо (к красному); черта посередине — ноль */
@@ -526,8 +531,17 @@
 .ht-mini-bar::after { content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--ht-line-strong); opacity: 0.5; }
 .ht-mini-bar > i { position: absolute; top: 0; bottom: 0; left: 50%; width: calc(var(--v) * 0.5%); border-radius: inherit; background: hsl(var(--h) 60% 46%); }
 .ht-mini-bar.ht-neg > i { left: auto; right: 50%; }
-.ht-mini-wrap { width: 100%; display: flex; flex-direction: column; gap: 1px; }
-.ht-mini-note { padding-left: 21px; font-size: 0.68em; line-height: 1.2; color: var(--ht-mute); text-align: left; overflow-wrap: anywhere; }
+.ht-mini-wrap { width: 100%; }
+/* «Статус» — слова об отношениях в свёрнутой плашке, чтобы карточки были ровными */
+.ht-cc-status { width: 100%; font-size: 0.72em; color: var(--ht-mute); text-align: left; }
+.ht-cc-status > summary { list-style: none; cursor: pointer; text-align: center; padding: 1px 0; border-radius: 6px; }
+.ht-cc-status > summary::-webkit-details-marker { display: none; }
+.ht-cc-status > summary > i { margin-left: 4px; font-size: 0.85em; transition: transform 0.2s ease; }
+.ht-cc-status[open] > summary > i { transform: rotate(180deg); }
+.ht-cc-status > p { margin: 3px 0 0; line-height: 1.25; overflow-wrap: anywhere; }
+.ht-cc-status > p > b { color: var(--ht-fg); font-weight: 600; }
+/* инструменты — всегда внизу карточки, карточки в ряду одной высоты */
+.ht-cc-tools { margin-top: auto !important; padding-top: 2px; }
 .ht-cc-tools { display: flex; justify-content: center; gap: 2px; margin-top: 2px; }
 .ht-ib .ht-cc-tools > button { padding: 3px 6px; border-radius: 6px; color: var(--ht-mute); font-size: 0.78em; cursor: pointer; }
 .ht-ib .ht-cc-tools > button:hover { color: var(--ht-fg); background: var(--ht-soft-2); }
@@ -556,8 +570,30 @@
 .ht-rom-field > span { color: var(--ht-mute); }
 .ht-rom-field > span > i { color: var(--ht-rom); }
 .ht-rom-pick { display: flex; flex-wrap: wrap; gap: 4px; }
-.ht-ib .ht-rom-pick > button { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--ht-line); color: var(--ht-mute); font-size: 0.9em; cursor: pointer; }
-.ht-ib .ht-rom-pick > button > i { font-size: 0.8em; }
-.ht-ib .ht-rom-pick > button.ht-on { color: var(--ht-rom); border-color: var(--ht-rom); background: color-mix(in srgb, var(--ht-rom) 10%, transparent); }
-@media (max-width: 420px) { .ht-gallery { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; } .ht-ava { width: 46px; height: 46px; } }
+:is(.ht-ib, .ht-modal) .ht-rom-pick > button { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--ht-line); color: var(--ht-mute); font-size: 0.9em; cursor: pointer; }
+:is(.ht-ib, .ht-modal) .ht-rom-pick > button > i { font-size: 0.8em; }
+:is(.ht-ib, .ht-modal) .ht-rom-pick > button.ht-on { color: var(--ht-rom); border-color: var(--ht-rom); background: color-mix(in srgb, var(--ht-rom) 10%, transparent); }
+@media (max-width: 420px) { .ht-gallery { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; } .ht-cc-top .ht-ava { width: 46px; height: 46px; } }
 .ht-edit-two { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+
+/* ═══ Правка человека — отдельным окном поверх таверны (на телефоне — на весь экран) ═══ */
+.ht-modal { position: fixed; inset: 0; z-index: 9998; display: grid; place-items: center; padding: 12px;
+    background: rgba(0, 0, 0, 0.45); color: var(--ht-fg); }
+.ht-modal-card { width: min(460px, 100%); max-height: calc(100dvh - 24px); overflow-y: auto; overscroll-behavior: contain;
+    padding: 14px; border-radius: 12px; border: 1px solid var(--ht-line-strong);
+    background: var(--SmartThemeBlurTintColor, rgba(24, 20, 20, 0.97)); backdrop-filter: blur(10px);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5); animation: ht-modal-in 0.22s ease-out both; }
+.ht-modal-title { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-weight: 700; font-size: 1.05em; }
+.ht-modal-title > i { color: var(--ht-acc); }
+.ht-modal-title > button { margin-left: auto; padding: 4px 8px; border-radius: 6px; color: var(--ht-mute); }
+.ht-modal .ht-edit { margin: 0; border: 0; padding: 0; background: none; gap: 10px; }
+.ht-modal .ht-edit .text_pole { font-size: 16px; padding: 7px 9px; }   /* 16px — телефон не приближает поле при вводе */
+.ht-modal .ht-cast-photo .ht-ava { width: 64px; height: 64px; }
+.ht-modal .ht-edit-actions { position: sticky; bottom: -14px; margin: 4px -14px -14px; padding: 10px 14px; background: inherit; border-top: 1px solid var(--ht-line); }
+.ht-modal .ht-edit-actions .ht-btn { padding: 8px 16px; }
+@keyframes ht-modal-in { from { transform: translateY(12px) scale(0.98); } to { transform: none; } }
+@media (max-width: 520px) {
+    .ht-modal { padding: 0; place-items: stretch; }
+    .ht-modal-card { width: 100%; max-height: 100dvh; height: 100dvh; border-radius: 0; border: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .ht-modal-card { animation: none; } }
