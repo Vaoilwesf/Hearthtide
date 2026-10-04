@@ -10,7 +10,7 @@ import {
 import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
-import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, stripBlocks } from './tag.js';
+import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseRecapParts, stripBlocks } from './tag.js';
 import { PAIR_DEFAULT, newDate, trackDate, toggleStep, finishDate, dateChance } from './romance.js';
 import { CAST_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast } from './cast.js';
 import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue } from './calendar.js';
@@ -311,8 +311,8 @@ function peopleSeen() {
 }
 
 // ─── Воспоминания ───
-function addFlashback(title, text, kind) {
-    state.flashbacks.push({ id: `fb-${state.turn}-${state.flashbacks.length}`, title, text, when: state.when, kind });
+function addFlashback(title, text, kind, parts = null) {
+    state.flashbacks.push({ id: `fb-${state.turn}-${state.flashbacks.length}`, title, text, when: state.when, kind, parts });
     if (state.flashbacks.length > 40) state.flashbacks = state.flashbacks.slice(-40);
 }
 
@@ -475,6 +475,7 @@ function processReply(N) {
     const prep = both(parsePrep);
     const day = both(parseDay);
     const recap = both(parseRecap);
+    const recapParts = both(parseRecapParts);
     const people = both(parsePeople);
     const evs = [...parseEvents(src), ...(sideText ? parseEvents(sideText) : [])];
     const offersIn = [...parseOffers(src), ...(sideText ? parseOffers(sideText) : [])];
@@ -655,8 +656,9 @@ function processReply(N) {
     }
     if (recap && !langOk(recap)) slip = true;
     if (recap && phase.ended && langOk(recap)) {
-        addFlashback(displayName(phase.ended), recap, 'holiday');
-        state.recaps.push({ hid: phase.ended.id, name: displayName(phase.ended), text: recap });
+        const parts = recapParts && [...recapParts.done, ...recapParts.gifts, recapParts.best].filter(Boolean).every(langOk) ? recapParts : null;
+        addFlashback(displayName(phase.ended), recap, 'holiday', parts);
+        state.recaps.push({ hid: phase.ended.id, name: displayName(phase.ended), text: recap, parts });
         if (state.recaps.length > 30) state.recaps = state.recaps.slice(-30);
         state.recapDone[phase.ended.id] = true;
     }
@@ -1169,6 +1171,7 @@ function viewSnapshot(phase) {
             id: i.id, name: i.birthday ? L().birthday(i.who === 'user' ? getUserName() : getCharName()) : i.name, raw: i.name,
             type: i.birthday ? 'personal' : i.type, iso: isoOf(i.start), kept: i.kept,
             recap: state.recaps.find(r => r.hid === i.id)?.text || null,
+            parts: state.recaps.find(r => r.hid === i.id)?.parts || null,
         })),
         flashbacks: clone(state.flashbacks.slice(-10).reverse()),
         pair: state.pair ? clone(state.pair) : null,
@@ -1715,17 +1718,36 @@ function castTabHtml(view, live) {
     return `${subtabs}<div class="ht-gallery">${pair}${cards || (pair ? '' : `<p class="ht-mute ht-gallery-empty">${L().castEmpty}</p>`)}</div>`;
 }
 
+// Короткий итог праздника по пунктам: сделали · подарки · лучший момент
+function recapPartsHtml(p) {
+    if (!p) return '';
+    const row = (icon, items) => items?.length ? `<li><i class="fa-solid ${icon}"></i><span>${items.map(esc).join(' · ')}</span></li>` : '';
+    return `<ul class="ht-recap-parts">${row('fa-list-check', p.done)}${row('fa-gift', p.gifts)}${row('fa-star', p.best ? [p.best] : [])}</ul>`;
+}
+
 // Правка человека — отдельным окном поверх таверны: перерисовки чата его не сбрасывают,
 // на телефоне — на весь экран, поля крупные
-function closeCastEditor() { document.querySelector('.ht-modal')?.remove(); }
+function closeCastEditor() {
+    const d = document.querySelector('.ht-modal');
+    if (!d) return;
+    try { d.close?.(); } catch (e) { /* пусто */ }
+    d.remove();
+}
 function openCastEditor(cid) {
+    try { openCastEditorRaw(cid); } catch (e) {
+        console.error('[Hearthtide] окно правки:', e);
+        window.toastr?.error?.(`${L().editFail}: ${e?.message || e}`, 'Hearthtide');
+    }
+}
+function openCastEditorRaw(cid) {
     closeCastEditor();
     const p = (state.cast || []).find(c => c.id === cid);
-    if (!p) return;
-    const wrap = document.createElement('div');
+    if (!p) { window.toastr?.warning?.(L().editGone, 'Hearthtide'); return; }
+    // <dialog> через showModal() браузер кладёт в «верхний слой» — поверх всего, что есть у таверны
+    const native = typeof HTMLDialogElement === 'function' && 'showModal' in HTMLDialogElement.prototype;
+    const wrap = document.createElement(native ? 'dialog' : 'div');
     wrap.className = 'ht-modal';
-    wrap.setAttribute('role', 'dialog');
-    wrap.setAttribute('aria-modal', 'true');
+    if (!native) { wrap.setAttribute('role', 'dialog'); wrap.setAttribute('aria-modal', 'true'); }
     const draw = () => {
         wrap.innerHTML = `<div class="ht-modal-card">
             <div class="ht-modal-title"><i class="fa-solid fa-user-pen"></i>${esc(p.name || L().noName)}<button type="button" data-act="edit-cancel" aria-label="${esc(L().cancel)}"><i class="fa-solid fa-xmark"></i></button></div>
@@ -1771,8 +1793,10 @@ function openCastEditor(cid) {
             window.toastr?.warning?.(L().badPhoto, 'Hearthtide');
         }
     });
-    wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeCastEditor(); });
+    wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); closeCastEditor(); } });
+    wrap.addEventListener('cancel', (e) => { e.preventDefault(); closeCastEditor(); });
     document.body.appendChild(wrap);
+    if (native) wrap.showModal();
 }
 
 function castFormHtml(p, photo) {
@@ -2019,7 +2043,7 @@ function bodyHtml(view, live, tab = 'now') {
         const [, m, d] = i.iso.split('-');
         return `<div class="ht-yr${i.kept ? '' : ' ht-yr-missed'}">
             <time>${d}.${m}</time><i class="fa-solid ${TYPE_ICON[i.type] || 'fa-star'}"></i>
-            <div><b>${esc(i.name)}</b>${i.recap ? `<p>${esc(i.recap)}</p>` : ''}</div>
+            <div><b>${esc(i.name)}</b>${i.recap ? `<p>${esc(i.recap)}</p>` : ''}${recapPartsHtml(i.parts)}</div>
             <em>${i.kept ? L().yearKept : L().yearMissed}</em></div>`;
     }).join('');
 
@@ -2028,7 +2052,7 @@ function bodyHtml(view, live, tab = 'now') {
         const queued = view.recall === f.id;
         const btn = live ? `<button class="ht-recall${queued ? ' ht-on' : ''}" data-act="recall" data-fb="${esc(f.id)}" title="${queued ? L().recallQueued : L().recall}">
             <i class="fa-solid fa-clock-rotate-left"></i><span>${queued ? L().recallShort : L().recall}</span></button>` : '';
-        return `<div class="ht-fb"><div><b>${esc(f.title)}</b>${f.when ? `<span class="ht-mute"> · ${esc(f.when)}</span>` : ''}<p>${esc(f.text)}</p></div>${btn}</div>`;
+        return `<div class="ht-fb"><div><b>${esc(f.title)}</b>${f.when ? `<span class="ht-mute"> · ${esc(f.when)}</span>` : ''}<p>${esc(f.text)}</p>${recapPartsHtml(f.parts)}</div>${btn}</div>`;
     }).join('');
 
     // Вкладки сверху: праздник сейчас и прошедшие за год — год не растягивает инфоблок вниз

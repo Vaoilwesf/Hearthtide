@@ -65,7 +65,8 @@ export function buildStatePrompt(ctx) {
         lines.push(`TODAY: ${hName(h, ctx)}${dayInfo}${plan?.title ? ` — ${plan.title}` : ''}.`);
         if (plan && part && plan[part]) lines.push(`Now (${PART_EN[part]}): ${plan[part]}`);
         else if (h.meaning) lines.push(`Traditions: ${h.meaning}`);
-        lines.push(`The celebration fills the day around the scene: people celebrate, invite, tease, involve. Follow the day's order — don't jump ahead.`);
+        // праздник идёт своим ходом вокруг сюжета: люди держатся распорядка, сюжет его не отменяет
+        lines.push(`The holiday keeps its own course: ${charName} and the people around follow today's plan as custom expects — they gather, call, wait, come to fetch ${userName}, carry on without ${userName} if need be. The story's own events come first and can move or shorten a part, but they don't cancel the day; once a scene settles, the day pulls them back in. Follow the day's order — don't jump ahead.`);
         if (h.birthday && h.who === 'user') lines.push(`It is ${userName}'s birthday: the prepared surprise comes out today.`);
     }
     if (phase.kind === 'after' && phase.ended) {
@@ -135,7 +136,7 @@ export function buildStatePrompt(ctx) {
     // Кто может зайти в этот ответ — по очереди из людей праздника (дёшево, без отдельного запроса)
     if (!state.beat && state.nudge) {
         lines.push(state.nudge.name
-            ? `If the scene allows, ${state.nudge.name} can come into this reply, acting on what they want (${state.nudge.now}) — in person or by word; one person, never a crowd.`
+            ? `If the scene allows, ${state.nudge.name} can come into this reply, acting on what they want (${state.nudge.now})${phase.kind === 'today' ? ` or drawing ${userName} into what the day holds now` : ''} — in person or by word; one person, never a crowd.`
             : `If the scene allows, someone the occasion involves — kin or those its custom calls for — can come into this reply; one person, never a crowd.`);
     }
     // Что праздник может принести в этот ответ — придумал отдельный запрос по истории
@@ -262,7 +263,7 @@ function replanRule(ctx) {
     const ahead = ['morning', 'day', 'evening', 'night'];
     const from = Math.max(0, ahead.indexOf(ctx.part));
     return `<!-- HT-DAY ${ahead.slice(from).map(p => `${p}=…`).join(' | ')} -->
-The day has moved on: rewrite the parts from now on so they follow from what has actually happened today — what is done is not repeated, changed plans are kept. One or two sentences each.${plan[ahead[from]] ? ` The plan was: ${ahead.slice(from).filter(p => plan[p]).map(p => `${p}: ${plan[p]}`).join('; ')}.` : ''}`;
+The day has moved on: rewrite the parts from now on so the holiday keeps its own course around what has actually happened — its rites, customs and gatherings still take place (moved, shortened, or going on without someone if they must). Never replace the holiday with the story's other events or retell them; what is done is not repeated. One or two sentences each, about the holiday.${plan[ahead[from]] ? ` The plan was: ${ahead.slice(from).filter(p => plan[p]).map(p => `${p}: ${plan[p]}`).join('; ')}.` : ''}`;
 }
 
 function recapRule(ctx) {
@@ -270,7 +271,7 @@ function recapRule(ctx) {
     const e = phase.ended;
     const hl = (state.highlights?.[e.id] || []).map(x => `${x.name} — ${x.text}`).join('; ');
     const g = state.charGift?.hid === e.id && state.charGift.done ? state.charGift.text : null;
-    return `<!-- HT-RECAP 2–3 sentences in ${langOf(ctx)}: how ${hName(e, ctx)} went for ${userName} and ${charName}, the gifts given and who stood out -->${hl || g ? ` Facts: ${[g && `${charName}'s gift: ${g}`, hl].filter(Boolean).join('; ')}.` : ''}`;
+    return `<!-- HT-RECAP text=… | done=… | gifts=… | best=… --> In ${langOf(ctx)}, only what the story showed: text — how ${hName(e, ctx)} went for ${userName} and ${charName}, one or two sentences; done — what was done or kept, a few short items separated by ;; gifts — who gave what to whom, separated by ; (empty if none); best — the one moment worth remembering, a few words.${hl || g ? ` Facts: ${[g && `${charName}'s gift: ${g}`, hl].filter(Boolean).join('; ')}.` : ''}`;
 }
 
 // ─── 2. Правило тега (конец промпта) ───

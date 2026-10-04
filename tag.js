@@ -279,7 +279,18 @@ export function parseDateBlock(text) {
 /** Итог прошедшего праздника — одна строка */
 export function parseRecap(text) {
     const inner = findBlock(text, 'HT-RECAP');
-    return inner == null ? null : clean(inner, 300);
+    if (inner == null) return null;
+    if (!/\btext\s*[=:]/i.test(inner)) return clean(inner, 300);      // старый вид — просто текст
+    return clean(fields(inner).text, 300);
+}
+/** Короткий итог по пунктам: что сделали, подарки, лучший момент */
+export function parseRecapParts(text) {
+    const inner = findBlock(text, 'HT-RECAP');
+    if (inner == null || !/\btext\s*[=:]/i.test(inner)) return null;
+    const f = fields(inner);
+    const list = (v) => String(v || '').split(';').map(x => clean(x, 90)).filter(Boolean).slice(0, 5);
+    const r = { done: list(f.done), gifts: list(f.gifts), best: clean(f.best, 120) };
+    return r.done.length || r.gifts.length || r.best ? r : null;
 }
 
 /**
