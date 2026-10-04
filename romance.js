@@ -2,7 +2,7 @@
 // {{char}} и {{user}}: дружба и романтика; свидания со шкалой успеха и шагами.
 
 /** Как идут дела у {{char}} и {{user}} по умолчанию — пока ИИ не скажет иначе */
-export const PAIR_DEFAULT = { f: 50, r: 0, note: null };
+export const PAIR_DEFAULT = { f: 0, r: 0, note: null, scale: 2 };   // дружба и романтика: −100…100, 0 — ровно
 
 // Свидание: старт, шаг, «лучше/хуже»
 export const DATE_SCORE = { start: 35, step: 15, up: 8, down: -10 };
@@ -68,7 +68,7 @@ export function finishDate(state, turn) {
     d.endTurn = turn;
     const p = state.pair || (state.pair = { ...PAIR_DEFAULT });
     const before = { f: p.f, r: p.r };
-    p.f = clamp(p.f + res.f, 0, 100);
+    p.f = clamp(p.f + res.f, -100, 100);
     p.r = clamp(p.r + res.r, -100, 100);
     d.delta = { f: p.f - before.f, r: p.r - before.r };
     state.lastDateEnd = turn;

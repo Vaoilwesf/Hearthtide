@@ -139,8 +139,6 @@ function requestForRaw(state, phase, skip = null) {
         const ev = openEvent(state, phase.h.id);
         if (ev?.kind === 'party' && ev.status === 'joined' && (state.turn || 0) - (ev.lastMoment ?? ev.turn) >= 3) { if (ok('moment')) return 'moment'; }
     }
-    if (state.evRoll && phase.h) { if (ok('event')) return 'event'; }
-    if (state.dateRoll) { if (ok('date')) return 'date'; }
     // Люди праздника: текущее состояние каждого обновляется по ходу ролплея
     if ((phase.kind === 'prep' || phase.kind === 'today') && phase.h) {
         const every = (state.people || []).length ? (phase.kind === 'today' ? 2 : 4) : 5;
@@ -179,15 +177,13 @@ export function sideNeeds(state, phase) {
         const ev = openEvent(state, h.id);
         if (ev?.kind === 'party' && ev.status === 'joined') n.add('moments');
     }
-    if (state.evRoll && h) n.add('evoffer');   // выпал шанс на случайный ивент
     if (active && !h.birthday && !state.giftTo?.[h.id] && state.gifts?.[h.id]) n.add('giftto');
     if (active || (phase.kind === 'far' && h && phase.daysTo <= 14)) n.add('beat');
     if ((state.holidays || []).some(x => x.needMeaning && !isBanned(state, x.name))) n.add('mean');
     n.add('new');   // поводы из истории ищем при каждом запросе — это почти ничего не стоит
     n.add('cast');  // новые люди истории и перемены в отношениях — тоже
-    // свидание: выпал шанс — предложить; иначе — заметить, если история сама к нему пришла
-    if (state.dateRoll) n.add('dateoffer');
-    else if (!state.date || state.date.status === 'ended') n.add('datewatch');
+    // свидание: заметить, если история сама к нему пришла (предлагает его основная модель — прямо в ответе)
+    if (!state.dateRoll && (!state.date || state.date.status === 'ended')) n.add('datewatch');
     return n;
 }
 
@@ -197,7 +193,7 @@ export const SIDE_EVERY = { prep: 3, today: 2, far: 5 };
 /** Отправлять ли отдельный запрос после этого ответа */
 export function sideDue(state, phase, needs) {
     // то, без чего инфоблок пустой или неверный, — сразу
-    if (['recap', 'cal', 'mean', 'day', 'replan', 'evoffer', 'dateoffer'].some(k => needs.has(k))) return true;
+    if (['recap', 'cal', 'mean', 'day', 'replan'].some(k => needs.has(k))) return true;
     const since = (state.turn || 0) - (state.lastSideTurn ?? -99);
     if (phase.kind === 'prep') return needs.has('prep') || since >= SIDE_EVERY.prep;   // новый день — тоже
     if (phase.kind === 'today') return since >= SIDE_EVERY.today;

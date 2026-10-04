@@ -54,7 +54,7 @@ export function parseSmall(text, name = 'HT') {
         giftDone: /^(true|yes|1|да)$/i.test(String(f.gift_done || '').trim()),
         giftTo: clean(f.gift_to, 60),
         // {{char}} и {{user}}: дружба 0–100 / романтика −100…100 и коротко, как они сейчас
-        bond: (() => { const m = String(f.bond || '').match(/(-?\d{1,3})\s*[/|;,]\s*(-?\d{1,3})/); return m ? { f: Math.max(0, Math.min(100, +m[1])), r: Math.max(-100, Math.min(100, +m[2])) } : null; })(),
+        bond: (() => { const m = String(f.bond || '').match(/(-?\d{1,3})\s*[/|;,]\s*(-?\d{1,3})/); return m ? { f: Math.max(-100, Math.min(100, +m[1])), r: Math.max(-100, Math.min(100, +m[2])) } : null; })(),
         bondNote: clean(f.bond_note, 60),
         // свидание: какой шаг сделан, как идёт, кончилось ли
         dateStep: (String(f.date_step || '').match(/\d+/g) || []).map(Number).filter(n => n >= 1 && n <= 6),
@@ -227,31 +227,33 @@ export function parseBeat(text) {
 
 /**
  * Люди истории (по одному разу):
- *   C | ИМЯ | GROUP | КТО КОМУ | ДР (ДД.ММ[.ГГГГ]) | С USER 0–100 | С CHAR 0–100
- *   R | ИМЯ | С USER | С CHAR   — отношения заметно изменились
+ *   C | ИМЯ (или ?) | kin_user|kin_char|friend|acquaintance|other | КЕМ ДЛЯ USER | КЕМ ДЛЯ CHAR | ДР | С USER −100…100 | С CHAR | КАК С USER | КАК С CHAR
+ *   R | ИМЯ | С USER | С CHAR | КАК С USER | КАК С CHAR   — отношения заметно изменились
  */
 export function parseCast(text) {
     const inner = findBlock(text, 'HT-CAST');
     if (inner == null) return null;
     const add = [], upd = [];
-    const rel = (v) => { const n = parseInt(v); return isNaN(n) ? null : Math.max(0, Math.min(100, n)); };
-    const rom = (v) => { const n = parseInt(v); return isNaN(n) ? null : Math.max(-100, Math.min(100, n)); };
+    const rel = (v) => { const n = parseInt(v); return isNaN(n) ? null : Math.max(-100, Math.min(100, n)); };
     for (const raw of inner.split(/\n+/)) {
         const cols = raw.split('|').map(x => x.trim());
         const kind = (cols[0] || '').toUpperCase();
-        const name = clean(cols[1], 60);
-        if (!name) continue;
+        const nm = clean(cols[1], 60);
+        const name = nm && !/^[?？]+$/.test(nm) ? nm : null;
         if (kind === 'C') {
-            const g = String(cols[2] || '').toLowerCase();
-            const bd = String(cols[4] || '').trim().match(/^(\d{1,2})[./-](\d{1,2})(?:[./-](-?\d{1,5}))?$/);
+            const g = String(cols[2] || '').toLowerCase().replace(/[\s-]+/g, '_');
+            const group = /^kin_?c|char/.test(g) ? 'kin_char' : /^kin|^rel|род|сем|famil/.test(g) ? 'kin_user'
+                : /^fri|друг|подруг/.test(g) ? 'friend' : /^acq|знак/.test(g) ? 'acquaintance' : 'other';
+            const bd = String(cols[5] || '').trim().match(/^(\d{1,2})[./-](\d{1,2})(?:[./-](-?\d{1,5}))?$/);
+            const toU = clean(cols[3], 60), toC = clean(cols[4], 60);
+            if (!name && !toU && !toC) continue;
             add.push({
-                name, who: clean(cols[3], 140),
-                group: ['relative', 'friend', 'acquaintance'].find(x => g.startsWith(x.slice(0, 4))) || (/(род|сем|famil|kin)/.test(g) ? 'relative' : /(друг|подруг)/.test(g) ? 'friend' : /(знак)/.test(g) ? 'acquaintance' : 'other'),
+                name, group, toU, toC,
                 bday: bd && +bd[2] >= 1 && +bd[2] <= 12 && +bd[1] >= 1 && +bd[1] <= 31 ? { d: +bd[1], m: +bd[2], y: bd[3] != null ? +bd[3] : null } : null,
-                relU: rel(cols[5]), relC: rel(cols[6]), romU: rom(cols[7]), romC: rom(cols[8]),
+                relU: rel(cols[6]), relC: rel(cols[7]), noteU: clean(cols[8], 50), noteC: clean(cols[9], 50),
             });
-        } else if (kind === 'R') {
-            upd.push({ name, relU: rel(cols[2]), relC: rel(cols[3]), romU: rom(cols[4]), romC: rom(cols[5]) });
+        } else if (kind === 'R' && name) {
+            upd.push({ name, relU: rel(cols[2]), relC: rel(cols[3]), noteU: clean(cols[4], 50), noteC: clean(cols[5], 50) });
         }
     }
     return add.length || upd.length ? { add: add.slice(0, 10), upd: upd.slice(0, 10) } : null;

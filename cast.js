@@ -4,12 +4,17 @@
 
 import { dayNum, fromDayNum, nextOccurrence } from './dates.js';
 
-export const CAST_GROUPS = ['relative', 'friend', 'acquaintance', 'other'];
+// родня {{user}} · родня {{char}} · друзья · знакомые · прочие
+export const CAST_GROUPS = ['kin_user', 'kin_char', 'friend', 'acquaintance', 'other'];
+export const isKin = (g) => g === 'kin_user' || g === 'kin_char' || g === 'relative';
+// романтика у людей — только вручную, кнопками
+export const ROM_KEYS = ['spark', 'love', 'deep', 'ex', 'hate'];
 
 const norm = (n) => String(n || '').toLowerCase().replace(/ё/g, 'е').replace(/[^\p{L}\d ]+/gu, ' ').replace(/\s+/g, ' ').trim();
 
 /** Один и тот же человек: то же имя или одно имя целиком входит в другое («Млада» и «Млада Гордеевна») */
 export function samePerson(a, b) {
+    if (!a || !b) return false;
     const x = norm(a), y = norm(b);
     if (!x || !y) return false;
     if (x === y) return true;
@@ -18,6 +23,12 @@ export function samePerson(a, b) {
 }
 
 export const findCast = (state, name) => (state.cast || []).find(c => samePerson(c.name, name)) || null;
+// «Мать Алексея», «тёща», «старший брат» — это роль, а не имя
+const ROLE_WORD = /^(мать|мама|матушка|отец|папа|батюшка|тятя|брат|сестра|сын|дочь|дочка|жена|муж|тёща|теща|тесть|свекровь|свёкор|свекор|золовка|деверь|шурин|сноха|невестка|зять|дед|дедушка|бабка|бабушка|дядя|тётя|тетя|кум|кума|крёстн|крестн|старш|младш|mother|father|mom|dad|brother|sister|son|daughter|wife|husband|aunt|uncle|grand)/i;
+export const roleName = (n) => !!n && ROLE_WORD.test(String(n).trim());
+
+// безымянный (имя история ещё не назвала) — узнаём по тому, кем он приходится обоим
+const sameRoles = (a, b) => !!(a.toU || a.toC) && norm(a.toU) === norm(b.toU) && norm(a.toC) === norm(b.toC);
 export const castBanned = (state, name) => (state.castNo || []).some(n => samePerson(n, name));
 
 /** «21.12», «21.12.1123», «1123-12-21» → { d, m, y? } */
@@ -44,17 +55,17 @@ export function ageOf(c, today) {
     return age >= 0 && age < 200 ? age : null;
 }
 
-/** Отношения 0–100 → ступень для подписи */
+/** Отношения −100…100 (0 — ровно; ниже нуля — плохие) → ступень для подписи, если ИИ не дал своих слов */
 export function relLevel(n) {
     if (n == null) return null;
-    if (n <= 15) return 'enmity';
-    if (n <= 35) return 'conflict';
-    if (n <= 50) return 'tolerate';
-    if (n <= 65) return 'neutral';
-    if (n <= 82) return 'warm';
+    if (n <= -60) return 'enmity';
+    if (n <= -25) return 'conflict';
+    if (n < -5) return 'cool';
+    if (n <= 10) return 'neutral';
+    if (n <= 50) return 'warm';
     return 'close';
 }
-const clampRel = (v) => { const n = parseInt(v); return isNaN(n) ? null : Math.max(0, Math.min(100, n)); };
+const clampRel = (v) => { const n = parseInt(v); return isNaN(n) ? null : Math.max(-100, Math.min(100, n)); };
 export { clampRel };
 
 /** Романтика −100…100 → ступень */
@@ -68,29 +79,32 @@ export function romLevel(n) {
     return 'deep';
 }
 
-/** Разобранный HT-CAST → в состояние. Новых — добавить, известных — только обновить отношения. */
+/** Разобранный HT-CAST → в состояние. Новых — добавить, известных — дополнить пустое и обновить отношения. */
 export function mergeCast(state, parsed, langOk, turn) {
     if (!parsed) return false;
     let slip = false;
     state.cast = state.cast || [];
     for (const c of parsed.add) {
-        if (![c.name, c.who].every(langOk)) { slip = true; continue; }
-        if (castBanned(state, c.name)) continue;
-        const ex = findCast(state, c.name);
+        if (![c.name, c.toU, c.toC, c.noteU, c.noteC].every(langOk)) { slip = true; continue; }
+        if (roleName(c.name)) c.name = null;          // роль вместо имени — считаем безымянным
+        if (c.name && castBanned(state, c.name)) continue;
+        // тот же человек: по имени — или безымянный с теми же ролями, которому теперь дали имя
+        const ex = (c.name && findCast(state, c.name)) || state.cast.find(x => (!x.name || !c.name) && sameRoles(x, c));
         if (ex) {
-            // уже есть: дополняем только пустое, правки игрока не трогаем
             if (!ex.edited) {
-                if (!ex.who && c.who) ex.who = c.who;
+                if (!ex.name && c.name) ex.name = c.name;
+                if (!ex.toU && c.toU) ex.toU = c.toU;
+                if (!ex.toC && c.toC) ex.toC = c.toC;
                 if (!ex.bday && c.bday) ex.bday = c.bday;
+                if (c.group && (ex.group === 'other' || ex.group === 'relative')) ex.group = c.group;
             }
             continue;
         }
         state.cast.push({
             id: `c-${turn}-${state.cast.length}-${Math.random().toString(36).slice(2, 6)}`,
-            name: c.name, group: c.group, who: c.who, bday: c.bday,
-            rel: { user: c.relU ?? 50, char: c.relC ?? 50 },
-            // романтика — только не у родни: −100 ненависть/бывшие … 0 нет … 100 любовь
-            rom: c.group === 'relative' ? null : { user: c.romU ?? 0, char: c.romC ?? 0 }, turn,
+            name: c.name || null, group: c.group, toU: c.toU, toC: c.toC, bday: c.bday,
+            rel: { user: c.relU ?? 0, char: c.relC ?? 0 }, note: { user: c.noteU || null, char: c.noteC || null },
+            rom: { user: null, char: null }, scale: 2, turn,
         });
     }
     for (const u of parsed.upd) {
@@ -98,13 +112,34 @@ export function mergeCast(state, parsed, langOk, turn) {
         if (!ex || ex.relLock) continue;
         if (u.relU != null) ex.rel.user = u.relU;
         if (u.relC != null) ex.rel.char = u.relC;
-        if (ex.group !== 'relative' && (u.romU != null || u.romC != null)) {
-            ex.rom = ex.rom || { user: 0, char: 0 };
-            if (u.romU != null) ex.rom.user = u.romU;
-            if (u.romC != null) ex.rom.char = u.romC;
-        }
+        ex.note = ex.note || { user: null, char: null };
+        if (u.noteU && langOk(u.noteU)) ex.note.user = u.noteU;
+        if (u.noteC && langOk(u.noteC)) ex.note.char = u.noteC;
         ex.relTurn = turn;
     }
     if (state.cast.length > 40) state.cast = state.cast.slice(-40);
     return slip;
+}
+
+/** Старые записи (до вкладки-галереи): «relative» → родня {{user}} или {{char}}, «who» → роли, шкала романтики → кнопки */
+export function migrateCast(state, userName, charName) {
+    // дружба {{char}} и {{user}}: старая шкала 0–100 → −100…100
+    if (state.pair && state.pair.scale !== 2) { state.pair.f = (state.pair.f - 50) * 2; state.pair.scale = 2; }
+    const stem = (n) => norm(n).slice(0, 4);
+    for (const c of state.cast || []) {
+        if (c.group === 'relative') {
+            const w = norm(c.who);
+            c.group = stem(charName) && w.includes(stem(charName)) && !(stem(userName) && w.indexOf(stem(userName)) < w.indexOf(stem(charName)) && w.includes(stem(userName))) ? 'kin_char' : 'kin_user';
+        }
+        if (c.toU == null && c.toC == null && c.who) c.toU = c.who;
+        if (roleName(c.name)) c.name = null;          // «Мать Алексея» — роль; имя появится, когда история его назовёт
+        // старая шкала 0–100 (50 — ровно) → −100…100 (0 — ровно)
+        if (c.scale !== 2) {
+            c.rel = { user: ((c.rel?.user ?? 50) - 50) * 2, char: ((c.rel?.char ?? 50) - 50) * 2 };
+            c.scale = 2;
+        }
+        if (!c.note) c.note = { user: null, char: null };
+        if (c.rom && typeof c.rom.user === 'number') c.rom = { user: null, char: null };
+        if (!c.rom) c.rom = { user: null, char: null };
+    }
 }

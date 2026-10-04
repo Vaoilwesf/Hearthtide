@@ -12,7 +12,7 @@ import { eventSource, event_types } from '../../../../scripts/events.js';
 import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
 import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, stripBlocks } from './tag.js';
 import { PAIR_DEFAULT, newDate, trackDate, toggleStep, finishDate, dateChance } from './romance.js';
-import { CAST_GROUPS, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast } from './cast.js';
+import { CAST_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast } from './cast.js';
 import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt, buildSideMessages, giftTarget } from './prompts.js';
 import { listProfiles, gatherSources, sendSide, reasonOf } from './side.js';
@@ -173,6 +173,8 @@ function loadState() {
     // место, сохранённое вместе с английским словом-типом («settlement Деревня Березовка»)
     if (state.place) state.place = tidyPlace(state.place);
     if (state.setting?.place) state.setting.place = tidyPlace(state.setting.place);
+    // люди из старых версий: роли, родня по сторонам, романтика — кнопками
+    migrateCast(state, getUserName(), getCharName());
 }
 
 // ИИ иногда пишет тип места словом из промпта на другом языке: «settlement Деревня Березовка» → «Деревня Березовка»
@@ -287,17 +289,19 @@ function seenInStory(name, text) {
 /** Люди, которые действительно есть в последних сообщениях — только их показываем и отправляем ИИ */
 // Люди истории для промпта: кто сейчас рядом (имя в последних сообщениях) и у кого скоро день рождения
 function castForPrompt() {
-    const cast = (state.cast || []).filter(c => !castBanned(state, c.name));
+    // «глазок» выключен — человек не попадает в промпт (но и не вносится заново)
+    const cast = (state.cast || []).filter(c => !c.off && !castBanned(state, c.name));
     if (!cast.length) return { castSeen: [], castBdays: [] };
     const text = recentStoryText(8);
     const castBdays = cast.map(c => ({ c, days: bdayIn(c, state.today) })).filter(x => x.days != null && x.days <= 7)
         .sort((a, b) => a.days - b.days).slice(0, 2)
         .map(({ c, days }) => ({
-            name: c.name, days, relU: c.rel?.user ?? 50, relC: c.rel?.char ?? 50,
+            name: c.name || c.toU || c.toC, days, relU: c.rel?.user ?? 0, relC: c.rel?.char ?? 0,
             // ближе к дню — чаще всплывает в разговоре
             nudge: (state.turn || 0) % (days <= 2 ? 2 : 3) === 0,
         }));
-    const castSeen = cast.filter(c => seenInStory(c.name, text) || castBdays.some(b => b.name === c.name)).slice(0, 8);
+    const castSeen = cast.filter(c => (c.name ? seenInStory(c.name, text) : [c.toU, c.toC].some(r => r && seenInStory(r, text)))
+        || castBdays.some(b => b.name === (c.name || c.toU || c.toC))).slice(0, 8);
     return { castSeen, castBdays };
 }
 
@@ -558,8 +562,8 @@ function processReply(N) {
     if (sm?.bond) {
         if (sm.bondNote && !langOk(sm.bondNote)) slip = true;
         const prev = state.pair;
-        if (prev && sm.bond.f <= prev.f - 10) state.pairDrop = state.turn;       // заметно поссорились
-        state.pair = { f: sm.bond.f, r: sm.bond.r, note: sm.bondNote && langOk(sm.bondNote) ? sm.bondNote : prev?.note || null };
+        if (prev && sm.bond.f <= prev.f - 15) state.pairDrop = state.turn;       // заметно поссорились
+        state.pair = { scale: 2, f: sm.bond.f, r: sm.bond.r, note: sm.bondNote && langOk(sm.bondNote) ? sm.bondNote : prev?.note || null };
     }
     // ── Свидание: идёт — считаем шаги и настроение; кончилось — итог и уведомление ──
     let dateEnded = null;
@@ -1564,7 +1568,7 @@ function decideDate(yes) {
     state.dateDecisions = { ...(state.dateDecisions || {}), [String(d.title).toLowerCase()]: yes ? 'accepted' : 'declined' };
     changeDate(st => {
         if (yes) { st.date.status = 'active'; st.date.startTurn = st.turn; st.date.lastUpdate = st.turn; }
-        else { st.date = null; st.lastDateEnd = st.turn; }
+        else { st.dateDeclined = { title: st.date.title, turn: st.turn }; st.date = null; st.lastDateEnd = st.turn; }
     });
 }
 function endDateNow() {
@@ -1604,65 +1608,137 @@ function showDateToast(d) {
     setTimeout(close, 7000);
 }
 
-// ─── Люди истории: вкладка «Люди» ───
+// ═══ Вкладка «Люди»: галерея карточек ═══
+// Сверху — {{char}} и {{user}}; дальше люди по подвкладкам: все · родня {{user}} · родня {{char}} · знакомые.
+
+// Аватарки: бот и персона — из таверны; остальным игрок ставит свою картинку (ужимаем до 112 px, ~5 КБ)
+let personaMod = null;
+import('../../../personas.js').then(m => { personaMod = m; }).catch(() => { /* старая таверна — возьмём из чата */ });
+function charAvatarUrl() {
+    const ch = this_chid !== undefined ? characters[this_chid] : null;
+    return ch?.avatar && ch.avatar !== 'none' ? `/thumbnail?type=avatar&file=${encodeURIComponent(ch.avatar)}` : null;
+}
+function userAvatarUrl() {
+    const f = personaMod?.user_avatar;
+    if (f) return `/thumbnail?type=persona&file=${encodeURIComponent(f)}`;
+    return document.querySelector?.('.mes[is_user="true"] .avatar img')?.getAttribute('src') || null;
+}
+const avatars = () => (chat_metadata.ht_avatars = chat_metadata.ht_avatars || {});
+async function shrinkImage(file, size = 112) {
+    const url = URL.createObjectURL(file);
+    try {
+        const img = new Image();
+        img.src = url;
+        await img.decode();
+        const c = document.createElement('canvas');
+        c.width = c.height = size;
+        const k = Math.max(size / img.width, size / img.height);
+        const w = img.width * k, h = img.height * k;
+        c.getContext('2d').drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
+        return c.toDataURL('image/jpeg', 0.82);
+    } finally { URL.revokeObjectURL(url); }
+}
+const initials = (n) => String(n || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0] || '').join('').toUpperCase() || '?';
+const avaHtml = (src, name, cls = '') => src
+    ? `<span class="ht-ava ${cls}"><img src="${esc(src)}" alt="" loading="lazy" decoding="async"></span>`
+    : `<span class="ht-ava ht-ava-none ${cls}">${esc(initials(name))}</span>`;
+
+// маленькая шкала, как в «Симс»: от середины — вправо зелёным (хорошо), влево красным (плохо);
+// под ней — как они ладят, своими словами ИИ (или ступень, если слов нет)
+const barHtml = (n) => {
+    const v = Math.max(-100, Math.min(100, n ?? 0));
+    return `<span class="ht-mini-bar${v < 0 ? ' ht-neg' : ''}" role="meter" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="${v}"><i style="--v:${Math.abs(v)};--h:${Math.round((v + 100) * 0.6)}"></i></span>`;
+};
+const signed = (n) => (n > 0 ? `+${n}` : `${n}`);
+function miniBar(src, who, n, note) {
+    const words = note || L().rel[relLevel(n ?? 0)];
+    return `<div class="ht-mini-wrap" title="${esc(`${who}: ${signed(n ?? 0)} · ${words}`)}">
+        <div class="ht-mini">${avaHtml(src, who, 'ht-ava-xs')}${barHtml(n)}</div>
+        <span class="ht-mini-note">${esc(words)}</span></div>`;
+}
+
+const CAST_TABS = ['all', 'kin_user', 'kin_char', 'others'];
+const inCastTab = (p, t) => t === 'all' || (t === 'others' ? !['kin_user', 'kin_char'].includes(p.group) : p.group === t);
+
 function castTabHtml(view, live) {
     const list = view.cast || [];
     const u = getUserName(), c = getCharName();
-    const meter = (who, n) => {
-        const lvl = relLevel(n);
-        return `<div class="ht-rel"><span class="ht-rel-who">${esc(who)}</span>
-            <div class="ht-rel-bar" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${n}"><i style="--v:${n}"></i></div>
-            <b>${n}%</b><small>${esc(L().rel[lvl])}</small></div>`;
-    };
-    // романтика: вправо — розовым, влево — красным (ненависть, бывшие), пусто — нет
-    const romMeter = (n) => {
-        const lvl = romLevel(n ?? 0);
-        const v = Math.abs(n ?? 0);
-        return `<div class="ht-rel ht-rom"><span class="ht-rel-who"><i class="fa-solid fa-heart"></i></span>
-            <div class="ht-rel-bar ht-rom-bar${(n ?? 0) < 0 ? ' ht-rom-neg' : ''}" role="meter" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="${n ?? 0}"><i style="--v:${v}"></i></div>
-            <b>${n ? `${n > 0 ? '' : '−'}${v}%` : ''}</b><small>${esc(L().rom[lvl])}</small></div>`;
-    };
-    const pairCard = view.pair ? `<div class="ht-pair">
-        <div class="ht-cast-head"><b>${esc(c)}</b><i class="fa-solid fa-heart-pulse"></i><b>${esc(u)}</b>${view.pair.note ? `<em class="ht-bd-chip">${esc(view.pair.note)}</em>` : ''}</div>
-        <div class="ht-rels">${meter(L().friendship, view.pair.f)}${romMeter(view.pair.r)}</div></div>` : '';
-    if (!list.length) return pairCard + `<p class="ht-mute">${L().castEmpty}</p>`;
-    const row = (p) => {
+    const uA = userAvatarUrl(), cA = charAvatarUrl();
+    const tab = CAST_TABS.includes(ui.castTab) ? ui.castTab : 'all';
+    const tabLabel = { all: L().castAll, kin_user: L().kinOf(u), kin_char: L().kinOf(c), others: L().castOthers };
+    const subtabs = `<div class="ht-subtabs" role="tablist">${CAST_TABS.map(t => {
+        const n = list.filter(p => inCastTab(p, t)).length;
+        return `<button role="tab" class="${t === tab ? 'ht-on' : ''}" data-act="cast-tab" data-tab="${t}" aria-selected="${t === tab}">${esc(tabLabel[t])}${n ? `<em>${n}</em>` : ''}</button>`;
+    }).join('')}</div>`;
+
+    // {{char}} и {{user}} — первая карточка, шире остальных; романтика — розовая подсветка и бьющееся сердце
+    const pr = view.pair;
+    const rl = pr ? romLevel(pr.r) : null;
+    const pair = pr && tab === 'all' ? `<div class="ht-cc ht-cc-pair${pr.r > 0 ? ' ht-cc-love' : ''}">
+        <div class="ht-pair-avas">${avaHtml(cA, c)}<i class="fa-solid ${pr.r > 0 ? 'fa-heart' : 'fa-handshake'} ht-pair-mid"></i>${avaHtml(uA, u)}</div>
+        <b class="ht-cc-name">${esc(c)} · ${esc(u)}</b>
+        ${pr.note ? `<span class="ht-cc-role">${esc(pr.note)}</span>` : ''}
+        <div class="ht-mini" title="${esc(`${L().friendship}: ${signed(pr.f)} · ${L().rel[relLevel(pr.f)]}`)}"><i class="fa-solid fa-handshake ht-mini-ico"></i>${barHtml(pr.f)}</div>
+        ${pr.r !== 0 ? `<span class="ht-rom-chip${pr.r < 0 ? ' ht-rom-neg' : ''}"><i class="fa-solid fa-heart"></i>${esc(L().rom[rl])}</span>` : ''}
+    </div>` : '';
+
+    const ava = avatars();
+    const card = (p) => {
         const key = `cast:${p.id}`;
-        if (live && ui.editing === key) return castFormHtml(p);
+        if (live && ui.editing === key) return castFormHtml(p, ava[p.id]);
         const d = p.bdayIn;
         const near = d != null && d <= 30 ? (d === 0 ? ' ht-bd-today' : d <= 7 ? ' ht-bd-near' : ' ht-bd-soon') : '';
+        const name = p.name || L().noName;
+        const roles = [p.toU && `${u}: ${p.toU}`, p.toC && `${c}: ${p.toC}`].filter(Boolean);
+        const romSet = p.rom?.user || p.rom?.char;
         const confirm = ui.confirmDel === key;
-        const tools = live ? `<span class="ht-cast-tools">
-            <button class="ht-del ht-edit-btn" data-act="cast-edit" data-cid="${esc(p.id)}" title="${L().edit}" aria-label="${L().edit}"><i class="fa-solid fa-pen"></i></button>
-            <button class="ht-del${confirm ? ' ht-del-confirm' : ''}" data-act="cast-del" data-cid="${esc(p.id)}" title="${confirm ? L().removeSure : L().remove}" aria-label="${L().remove}"><i class="fa-solid ${confirm ? 'fa-check' : 'fa-trash-can'}"></i>${confirm ? `<span>${L().removeQ}</span>` : ''}</button></span>` : '';
-        return `<div class="ht-cast${near}">
-            <div class="ht-cast-head"><b>${esc(p.name)}</b>${d != null && d <= 30 ? `<em class="ht-bd-chip"><i class="fa-solid fa-cake-candles"></i>${esc(L().bdayIn(d, daysWord))}</em>` : ''}${tools}</div>
-            ${p.who ? `<p class="ht-cast-who">${esc(p.who)}</p>` : ''}
-            ${p.bday ? `<p class="ht-cast-bd"><i class="fa-solid fa-cake-candles"></i>${esc(bdayText(p.bday))}${p.age != null ? ` · ${esc(L().age(p.age, plural))}` : ''}</p>` : ''}
-            <div class="ht-rels">${meter(u, p.rel?.user ?? 50)}${p.rom ? romMeter(p.rom.user) : ''}${meter(c, p.rel?.char ?? 50)}${p.rom ? romMeter(p.rom.char) : ''}</div>
+        return `<div class="ht-cc${near}${p.off ? ' ht-cc-off' : ''}" data-cid="${esc(p.id)}">
+            <div class="ht-cc-top">${avaHtml(ava[p.id], name)}${romSet ? `<i class="fa-solid fa-heart ht-cc-heart" title="${esc([p.rom.user && `${u}: ${L().rom[p.rom.user]}`, p.rom.char && `${c}: ${L().rom[p.rom.char]}`].filter(Boolean).join(' · '))}"></i>` : ''}</div>
+            <b class="ht-cc-name${p.name ? '' : ' ht-cc-noname'}">${esc(name)}</b>
+            ${roles.length ? `<span class="ht-cc-role">${roles.map(esc).join('<br>')}</span>` : ''}
+            ${d != null && d <= 30 ? `<span class="ht-cc-bd"><i class="fa-solid fa-cake-candles"></i>${esc(L().bdayIn(d, daysWord))}</span>` : ''}
+            <div class="ht-cc-bars">${miniBar(uA, u, p.rel?.user ?? 0, p.note?.user)}${miniBar(cA, c, p.rel?.char ?? 0, p.note?.char)}</div>
+            ${live ? `<div class="ht-cc-tools">
+                <button data-act="cast-eye" data-cid="${esc(p.id)}" title="${esc(p.off ? L().castOn : L().castOff)}" aria-pressed="${!p.off}"><i class="fa-solid ${p.off ? 'fa-eye-slash' : 'fa-eye'}"></i></button>
+                <button data-act="cast-edit" data-cid="${esc(p.id)}" title="${esc(L().edit)}"><i class="fa-solid fa-pen"></i></button>
+                <button class="${confirm ? 'ht-del-confirm' : ''}" data-act="cast-del" data-cid="${esc(p.id)}" title="${esc(confirm ? L().removeSure : L().remove)}"><i class="fa-solid ${confirm ? 'fa-check' : 'fa-trash-can'}"></i></button>
+            </div>` : ''}
         </div>`;
     };
-    return pairCard + CAST_GROUPS.map(g => {
-        const items = list.filter(p => (p.group || 'other') === g);
-        return items.length ? `<div class="ht-group"><div class="ht-group-title">${L().groups[g]}</div>${items.map(row).join('')}</div>` : '';
-    }).join('');
+    const shown = list.filter(p => inCastTab(p, tab));
+    // в «Все» — родня {{user}}, потом родня {{char}}, потом остальные
+    const order = { kin_user: 0, kin_char: 1, friend: 2, acquaintance: 3, other: 4 };
+    shown.sort((a, b) => (order[a.group] ?? 5) - (order[b.group] ?? 5));
+    const cards = shown.map(card).join('');
+    return `${subtabs}<div class="ht-gallery">${pair}${cards || (pair ? '' : `<p class="ht-mute ht-gallery-empty">${L().castEmpty}</p>`)}</div>`;
 }
 
-function castFormHtml(p) {
-    const groups = CAST_GROUPS.map(g => `<option value="${g}" ${p.group === g ? 'selected' : ''}>${L().groups[g]}</option>`).join('');
-    return `<div class="ht-edit ht-cast-edit">
-        <label>${L().fName}<input class="text_pole" data-ed="name" value="${esc(p.name)}"></label>
-        <label>${L().fWho}<input class="text_pole" data-ed="who" value="${esc(p.who || '')}"></label>
+function castFormHtml(p, photo) {
+    const groups = CAST_GROUPS.map(g => `<option value="${g}" ${p.group === g ? 'selected' : ''}>${esc(L().castGroup(g, getUserName(), getCharName()))}</option>`).join('');
+    const romRow = (who, cur) => `<div class="ht-rom-pick" data-who="${who}">${['', ...ROM_KEYS].map(k =>
+        `<button type="button" data-act="cast-rom" data-who="${who}" data-key="${k}" class="${(cur || '') === k ? 'ht-on' : ''}" aria-pressed="${(cur || '') === k}">${k ? '<i class="fa-solid fa-heart"></i>' : ''}${esc(k ? L().rom[k] : L().rom.none)}</button>`).join('')}</div>`;
+    return `<div class="ht-edit ht-cast-edit" data-cid="${esc(p.id)}">
+        <div class="ht-cast-photo">${avaHtml(photo, p.name)}
+            <label class="ht-btn"><i class="fa-solid fa-image"></i>${L().photo}<input type="file" accept="image/*" data-act="cast-photo" data-cid="${esc(p.id)}" hidden></label>
+            ${photo ? `<button class="ht-btn ht-btn-quiet" data-act="cast-photo-del" data-cid="${esc(p.id)}" title="${esc(L().remove)}"><i class="fa-solid fa-xmark"></i></button>` : ''}
+        </div>
+        <label>${L().fName}<input class="text_pole" data-ed="name" value="${esc(p.name || '')}"></label>
+        <div class="ht-edit-two">
+            <label>${esc(L().toWhom(getUserName()))}<input class="text_pole" data-ed="toU" value="${esc(p.toU || '')}"></label>
+            <label>${esc(L().toWhom(getCharName()))}<input class="text_pole" data-ed="toC" value="${esc(p.toC || '')}"></label>
+        </div>
         <label>${L().fGroup}<select class="text_pole" data-ed="group">${groups}</select></label>
         <label>${L().fBday}<input class="text_pole" data-ed="bday" value="${esc(bdayText(p.bday))}" inputmode="numeric" placeholder="21.12.1123"></label>
         <div class="ht-edit-two">
-            <label>${esc(getUserName())}, %<input class="text_pole" data-ed="relU" type="number" min="0" max="100" value="${p.rel?.user ?? 50}"></label>
-            <label>${esc(getCharName())}, %<input class="text_pole" data-ed="relC" type="number" min="0" max="100" value="${p.rel?.char ?? 50}"></label>
+            <label>${esc(getUserName())} −100…100<input class="text_pole" data-ed="relU" type="number" min="-100" max="100" value="${p.rel?.user ?? 0}"></label>
+            <label>${esc(getCharName())} −100…100<input class="text_pole" data-ed="relC" type="number" min="-100" max="100" value="${p.rel?.char ?? 0}"></label>
         </div>
-        ${p.group !== 'relative' ? `<div class="ht-edit-two">
-            <label><span><i class="fa-solid fa-heart"></i> ${esc(getUserName())}</span><input class="text_pole" data-ed="romU" type="number" min="-100" max="100" value="${p.rom?.user ?? 0}"></label>
-            <label><span><i class="fa-solid fa-heart"></i> ${esc(getCharName())}</span><input class="text_pole" data-ed="romC" type="number" min="-100" max="100" value="${p.rom?.char ?? 0}"></label>
-        </div>` : ''}
+        <div class="ht-edit-two">
+            <label>${esc(L().howWith(getUserName()))}<input class="text_pole" data-ed="noteU" value="${esc(p.note?.user || '')}"></label>
+            <label>${esc(L().howWith(getCharName()))}<input class="text_pole" data-ed="noteC" value="${esc(p.note?.char || '')}"></label>
+        </div>
+        ${isKin(p.group) ? '' : `<div class="ht-rom-field"><span><i class="fa-solid fa-heart"></i> ${esc(getUserName())}</span>${romRow('user', p.rom?.user)}
+            <span><i class="fa-solid fa-heart"></i> ${esc(getCharName())}</span>${romRow('char', p.rom?.char)}</div>`}
         <div class="ht-edit-actions">
             <button class="ht-btn" data-act="edit-cancel">${L().cancel}</button>
             <button class="ht-btn ht-btn-main" data-act="cast-save" data-cid="${esc(p.id)}"><i class="fa-solid fa-check"></i>${L().save}</button>
@@ -1670,29 +1746,30 @@ function castFormHtml(p) {
     </div>`;
 }
 
-// Правка человека игроком: переживает свайпы; ИИ после этого не трогает имя, роль и дату, а отношения — только если игрок их не менял
+// Правка человека игроком: переживает свайпы; ИИ после неё не трогает имя, роли и дату, а отношения — если игрок их менял
 function saveCast(cid, f) {
     const cur = (state.cast || []).find(c => c.id === cid);
     if (!cur) return false;
-    const name = String(f.name || '').trim() || cur.name;
+    const name = String(f.name || '').trim() || null;
     const bdayRaw = String(f.bday || '').trim();
     const bday = bdayRaw ? parseBday(bdayRaw) : null;
     if (bdayRaw && !bday) { window.toastr?.warning?.(L().badBday, 'Hearthtide'); return false; }
     const relU = clampRel(f.relU), relC = clampRel(f.relC);
-    const relChanged = relU !== (cur.rel?.user ?? 50) || relC !== (cur.rel?.char ?? 50);
-    const fix = { name, who: String(f.who || '').trim() || null, group: CAST_GROUPS.includes(f.group) ? f.group : cur.group, bday, edited: true };
+    const relChanged = relU !== (cur.rel?.user ?? 0) || relC !== (cur.rel?.char ?? 0)
+        || String(f.noteU || '').trim() !== (cur.note?.user || '') || String(f.noteC || '').trim() !== (cur.note?.char || '');
+    const group = CAST_GROUPS.includes(f.group) ? f.group : cur.group;
+    const fix = {
+        name, toU: String(f.toU || '').trim() || null, toC: String(f.toC || '').trim() || null, group, bday, edited: true,
+        rom: isKin(group) ? { user: null, char: null } : { user: ROM_KEYS.includes(f.romU) ? f.romU : null, char: ROM_KEYS.includes(f.romC) ? f.romC : null },
+    };
     const apply = (st) => {
         const x = (st.cast || []).find(c => c.id === cid);
         if (!x) return;
         Object.assign(x, fix);
-        if (relChanged) { x.rel = { user: relU ?? 50, char: relC ?? 50 }; x.relLock = true; }
-        // романтика: у родни её нет; у остальных — как выставил игрок
-        if (x.group === 'relative') x.rom = null;
-        else {
-            const ru = parseInt(f.romU), rc = parseInt(f.romC);
-            const nu = isNaN(ru) ? (x.rom?.user ?? 0) : Math.max(-100, Math.min(100, ru));
-            const nc = isNaN(rc) ? (x.rom?.char ?? 0) : Math.max(-100, Math.min(100, rc));
-            if (!x.rom || nu !== x.rom.user || nc !== x.rom.char) { x.rom = { user: nu, char: nc }; x.relLock = true; }
+        if (relChanged) {
+            x.rel = { user: relU ?? 0, char: relC ?? 0 };
+            x.note = { user: String(f.noteU || '').trim() || null, char: String(f.noteC || '').trim() || null };
+            x.relLock = true;
         }
     };
     apply(state);
@@ -1703,13 +1780,28 @@ function saveCast(cid, f) {
     return true;
 }
 
+// «Глазок»: выключенный человек не идёт в промпт, но остаётся в списке — ИИ не внесёт его заново
+function toggleCastOff(cid) {
+    const x = (state.cast || []).find(c => c.id === cid);
+    if (!x) return;
+    const off = !x.off;
+    const apply = (st) => { const y = (st.cast || []).find(c => c.id === cid); if (y) y.off = off; };
+    apply(state);
+    applyToSnapshots(apply);
+    saveState();
+    injectPrompts();
+    renderAll();
+}
+
 function removeCast(cid) {
     const cur = (state.cast || []).find(c => c.id === cid);
     if (!cur) return;
-    state.castNo = [...(state.castNo || []).filter(n => !samePerson(n, cur.name)), cur.name].slice(-60);
-    const apply = (st) => { st.cast = (st.cast || []).filter(c => !samePerson(c.name, cur.name)); };
+    if (cur.name) state.castNo = [...(state.castNo || []).filter(n => !samePerson(n, cur.name)), cur.name].slice(-60);
+    const apply = (st) => { st.cast = (st.cast || []).filter(c => c.id !== cid && !(cur.name && samePerson(c.name, cur.name))); };
     apply(state);
     applyToSnapshots(apply);
+    delete avatars()[cid];
+    saveChatDebounced();
     saveState();
     injectPrompts();
     renderAll();
@@ -1904,6 +1996,19 @@ function bodyHtml(view, live, tab = 'now') {
 }
 
 function bindBlock(block) {
+    // своя картинка человеку: ужимаем и храним в чате отдельно от снимков
+    block.addEventListener('change', async (e) => {
+        const inp = e.target.closest?.('input[data-act="cast-photo"]');
+        if (!inp?.files?.[0]) return;
+        try {
+            avatars()[inp.dataset.cid] = await shrinkImage(inp.files[0]);
+            saveChatDebounced();
+            renderBlock(Number(block.dataset.mesid));
+        } catch (err) {
+            console.error('[Hearthtide] картинка:', err);
+            window.toastr?.warning?.(L().badPhoto, 'Hearthtide');
+        }
+    });
     block.addEventListener('click', (e) => {
         const t = e.target.closest('[data-act]');
         if (!t || !block.contains(t)) return;
@@ -1942,6 +2047,18 @@ function bindBlock(block) {
             changeDate(st => toggleStep(st.date, i));
         } else if (t.dataset.act === 'date-end') {
             endDateNow();
+        } else if (t.dataset.act === 'cast-tab') {
+            ui.castTab = t.dataset.tab;
+            renderBlock(id);
+        } else if (t.dataset.act === 'cast-eye') {
+            toggleCastOff(t.dataset.cid);
+        } else if (t.dataset.act === 'cast-rom') {
+            // выбор в форме — сохранится по «Сохранить»
+            t.parentElement.querySelectorAll('button').forEach(b => { b.classList.toggle('ht-on', b === t); b.setAttribute('aria-pressed', String(b === t)); });
+        } else if (t.dataset.act === 'cast-photo-del') {
+            delete avatars()[t.dataset.cid];
+            saveChatDebounced();
+            renderBlock(id);
         } else if (t.dataset.act === 'cast-edit') {
             ui.editing = `cast:${t.dataset.cid}`;
             ui.confirmDel = null;
@@ -1954,7 +2071,8 @@ function bindBlock(block) {
         } else if (t.dataset.act === 'cast-save') {
             const f = t.closest('.ht-edit');
             const val = (k) => f?.querySelector(`[data-ed="${k}"]`)?.value ?? '';
-            if (saveCast(t.dataset.cid, { name: val('name'), who: val('who'), group: val('group'), bday: val('bday'), relU: val('relU'), relC: val('relC'), romU: val('romU'), romC: val('romC') })) {
+            const rom = (w) => f?.querySelector(`.ht-rom-pick[data-who="${w}"] .ht-on`)?.dataset.key || '';
+            if (saveCast(t.dataset.cid, { name: val('name'), toU: val('toU'), toC: val('toC'), group: val('group'), bday: val('bday'), relU: val('relU'), relC: val('relC'), noteU: val('noteU'), noteC: val('noteC'), romU: rom('user'), romC: rom('char') })) {
                 ui.editing = null;
                 renderAll();
             }

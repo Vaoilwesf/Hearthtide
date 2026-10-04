@@ -97,18 +97,23 @@ export function buildStatePrompt(ctx) {
         }
     }
 
+    // игрок только что отказался — без нажима
+    const evNo = h ? (state.evts || []).find(e => e.hid === h.id && e.status === 'declined' && e.lastUpdate >= state.turn) : null;
+    if (evNo) lines.push(`${userName} let "${evNo.title}" pass — it goes on without ${userName} or fades; don't push it.`);
+    if (state.dateDeclined?.turn >= state.turn) lines.push(`${userName} said no to the date (${state.dateDeclined.title}) — ${charName} takes it in ${charName}'s own way.`);
+
     // {{char}} и {{user}}: как они сейчас
-    if (state.pair) lines.push(`${charName} and ${userName}: friendship ${state.pair.f}/100, romance ${state.pair.r} (−100…100)${state.pair.note ? ` — ${state.pair.note}` : ''}.`);
+    if (state.pair) lines.push(`${charName} and ${userName}: friendship ${state.pair.f}, romance ${state.pair.r} (both −100…100, 0 neutral)${state.pair.note ? ` — ${state.pair.note}` : ''}.`);
     // Свидание
     const dt = state.date;
     if (dt?.status === 'active') {
         const steps = dt.steps.map((s, i) => `${i + 1}. ${s.t} (${s.who === 'user' ? userName : charName})${s.done ? ' — done' : ''}`).join('; ');
-        lines.push(`${userName} and ${charName} are on a date: ${dt.title}${dt.goal ? ` — meant to ${dt.goal}` : ''}. ${dt.startTurn >= state.turn - 1 ? `${charName} brings it in now${dt.hook ? `: ${dt.hook}` : ''}. ` : ''}Things that could happen: ${steps}. Going ${dt.score}% well so far. Play it out at its own pace — ${charName} does ${charName}'s part, ${userName} decides everything of ${userName}'s own.`);
+        lines.push(`${userName} and ${charName} are on a date: ${dt.title}${dt.goal ? ` — meant to ${dt.goal}` : ''}. ${dt.startTurn >= state.turn - 1 ? `${userName} said yes — the date begins now. ` : ''}Things that could happen: ${steps}. Going ${dt.score}% well so far. Play it out at its own pace — ${charName} does ${charName}'s part, ${userName} decides everything of ${userName}'s own.`);
     }
 
     // Люди истории, которые сейчас рядом: кто кому кем приходится и как ладят (0 — вражда, 100 — близки)
     if (ctx.castSeen?.length) {
-        lines.push(`Who is who: ${ctx.castSeen.map(c => `${c.name} (${c.who || c.group}) — with ${userName} ${c.rel?.user ?? 50}, with ${charName} ${c.rel?.char ?? 50}`).join(' · ')}. Relations show in how they speak and act.`);
+        lines.push(`Who is who: ${ctx.castSeen.map(c => `${c.name || c.toU || c.toC} (to ${userName}: ${c.toU || c.who || '—'}; to ${charName}: ${c.toC || '—'}) — with ${userName} ${c.rel?.user ?? 0}${c.note?.user ? ` (${c.note.user})` : ''}, with ${charName} ${c.rel?.char ?? 0}${c.note?.char ? ` (${c.note.char})` : ''}${c.rom?.user ? `; romance with ${userName}: ${c.rom.user}` : ''}${c.rom?.char ? `; romance with ${charName}: ${c.rom.char}` : ''}`).join(' · ')}. Relations −100…100, 0 neutral; they show in how people speak and act.`);
     }
     // Дни рождения людей вокруг: позовут или промолчат — по отношениям
     for (const b of ctx.castBdays || []) {
@@ -123,9 +128,9 @@ export function buildStatePrompt(ctx) {
     if (ev) {
         const who = ev.who ? ` (${ev.who})` : '';
         if (ev.status === 'invited') lines.push(`Invitation pending: ${ev.title}${who}. ${userName} decides whether to go.`);
-        else if (ev.kind === 'party' && !ev.moments?.length) lines.push(`${userName} accepted the invitation: ${ev.title}${who}${ev.hook ? ` — ${ev.hook}` : ''}. Lead there when the scene allows; it unfolds around the scene.`);
+        else if (ev.kind === 'party' && !ev.moments?.length) lines.push(`${userName} accepted the invitation: ${ev.title}${who}. Lead there when the scene allows; it unfolds around the scene.`);
         else if (ev.kind === 'party') lines.push(`At the gathering: ${ev.title}${who}${ev.moments?.length ? `; so far: ${ev.moments.slice(-2).map(m => m.title).join('; ')}` : ''}. It unfolds around the scene.`);
-        else lines.push(`${userName} chose to step into: ${ev.title}${who}${ev.hook ? ` — ${ev.hook}` : ''}. ${ev.turn >= state.turn - 1 ? 'Bring it in now' : 'Let it unfold'} over the next replies; ${userName} still makes every own choice.`);
+        else lines.push(`${userName} joins: ${ev.title}${who}${ev.hook ? ` (it began: ${ev.hook})` : ''}. ${ev.turn >= state.turn - 1 ? 'Carry on from where it began' : 'Let it unfold'} over the next replies; ${userName} still makes every own choice.`);
     }
     // Кто может зайти в этот ответ — по очереди из людей праздника (дёшево, без отдельного запроса)
     if (!state.beat && state.nudge) {
@@ -179,14 +184,14 @@ const PEOPLE_BLOCK = '<!-- HT-PEOPLE\nP | NAME | GROUP | WANT | GIFT\nD | NAME |
 // Люди истории: каждого — один раз; потом только изменения отношений
 function castRule(ctx) {
     const { state, userName, charName } = ctx;
-    const known = (state.cast || []).map(c => c.name);
+    const known = (state.cast || []).map(c => c.name || `? (${[c.toU, c.toC].filter(Boolean).join(' / ')})`);
     const no = state.castNo || [];
     return `<!-- HT-CAST
-C | NAME | GROUP | WHO | BIRTHDAY | WITH_USER | WITH_CHAR | LOVE_USER | LOVE_CHAR
-R | NAME | WITH_USER | WITH_CHAR | LOVE_USER | LOVE_CHAR
+C | NAME | GROUP | TO_USER | TO_CHAR | BIRTHDAY | WITH_USER | WITH_CHAR | HOW_USER | HOW_CHAR
+R | NAME | WITH_USER | WITH_CHAR | HOW_USER | HOW_CHAR
 -->
-C: people of the story not in the list yet (not ${userName}, not ${charName}) who have appeared or been named, once each, under the name the story uses. GROUP: relative (kin of ${userName} or ${charName}, by blood or marriage) | friend | acquaintance | other. WHO: who they are to ${userName} and to ${charName}, a few words in ${langOf(ctx)}. BIRTHDAY: DD.MM or DD.MM.YYYY only if the story, card or lore states it, else empty. WITH_USER / WITH_CHAR: how they get on, 0–100 (0 enmity, 50 neutral, 100 very close), by the story. LOVE_USER / LOVE_CHAR: romance, −100 (hatred, exes) … 0 (none) … 100 (deep love); empty for relatives.
-R: only someone whose relations clearly changed in the latest messages — the new numbers.
+C: people of the story not in the list yet (not ${userName}, not ${charName}), once each. NAME: the person's own name only — never a role as a name; if the story hasn't named them yet, write ?. GROUP: kin_user (${userName}'s own blood family) | kin_char (${charName}'s own blood family) | friend | acquaintance | other. TO_USER / TO_CHAR: who they are to ${userName} and to ${charName}, a word or two each, in ${langOf(ctx)}. Work out kinship from the card, persona, lore and story — never guess what they don't support. BIRTHDAY: DD.MM or DD.MM.YYYY only if stated, else empty. WITH_USER / WITH_CHAR: how they get on, −100 (enmity) … 0 (neutral) … 100 (very close). HOW_USER / HOW_CHAR: how they are with each, 2–4 words of your own, specific to these two people — not a generic label, in ${langOf(ctx)}.
+R: only someone whose relations clearly changed in the latest messages — the new numbers and words.
 Leave the block out if there is nothing.${known.length ? ` Already listed: ${known.join(', ')}.` : ''}${no.length ? ` Never add: ${no.join(', ')}.` : ''}`;
 }
 
@@ -196,8 +201,7 @@ function dateOfferRule(ctx) {
     const p = state.pair || {};
     const past = (state.datesDone || []).slice(-3).map(d => d.title);
     const gift = state.charGift && !state.charGift.done && state.charGift.text ? ` ${charName}'s gift is ready (${state.charGift.text}) — it may be part of it.` : '';
-    return `<!-- HT-DATE title=… | goal=… | hook=… | steps=… -->
-A date ${charName} could invite ${userName} to, by ${charName}'s nature and how they stand now (friendship ${p.f ?? 50}, romance ${p.r ?? 0}${p.note ? `, ${p.note}` : ''}) — if they have quarrelled, it may be a way to make up. title: where and what, a few words; goal: what it is meant to mend, say or celebrate; hook: one sentence on how ${charName} asks; steps: 3–4 small things for it, each marked (char) or (user), separated by ;.${gift} True to the era and place.${past.length ? ` Different from: ${past.join(' / ')}.` : ''} If ${charName} wouldn't ask now (too proud, too hurt, the moment is wrong), write <!-- HT-DATE none -->. It is only offered — ${userName} decides first. In ${langOf(ctx)}.`;
+    return `This reply, if it fits ${charName}'s nature and how they stand now (friendship ${p.f ?? 0}, romance ${p.r ?? 0}${p.note ? `, ${p.note}` : ''}): ${charName} asks ${userName} on a date — after a quarrel it may be a way to make up. Write only the asking; ${userName} answers. Then add after the HT line: <!-- HT-DATE title=… | goal=… | hook=… | steps=… --> — title: where and what, a few words; goal: what it is meant to mend, say or celebrate; hook: how ${charName} asked, one sentence; steps: 3–4 small things for it, each marked (char) or (user), separated by ;.${gift} True to the era and place; in ${langOf(ctx)}.${past.length ? ` Different from: ${past.join(' / ')}.` : ''} If ${charName} wouldn't ask now (too proud, too hurt, the moment is wrong), don't — and add nothing.`;
 }
 
 // Случайный ивент: предлагается игроку кнопками, в историю входит, только если он принял
@@ -205,8 +209,7 @@ function eventOfferRule(ctx) {
     const { state, phase, userName } = ctx;
     const h = phase.h;
     const past = (state.evts || []).filter(e => e.hid === h.id && e.kind !== 'moment').map(e => e.title).slice(-4);
-    return `<!-- HT-EV kind=event|party | title=… | who=… | hook=… -->
-One chance happening around ${hName(h, ctx)} that ${userName} may choose to step into — outside the holiday's own rites and schedule: brought by a person, by chance or by the world around, true to the era, the place and what is happening now. kind=party if someone hosts or invites to a gathering. title: a few words; who: who brings it; hook: one sentence on how it would begin. In ${langOf(ctx)}.${past.length ? ` Different in kind from: ${past.join(' / ')}.` : ''} It is only offered — ${userName} decides first.`;
+    return `This reply, if the scene allows: let one chance happening around ${hName(h, ctx)} begin — outside the holiday's own rites and schedule, brought by a person, by chance or by the world around, true to the era, the place and the moment. Show only its start (someone begins it or invites ${userName}) and stop where ${userName} can choose to join. Then add after the HT line: <!-- HT-EV kind=event|party | title=… | who=… | hook=… --> — kind=party if it is an invitation to a gathering; title a few words; who brings it; hook: what has just begun, one sentence; in ${langOf(ctx)}.${past.length ? ` Different in kind from: ${past.join(' / ')}.` : ''} If the scene is urgent or nothing fits, skip it and add nothing.`;
 }
 function calRule(ctx, lite = false) {
     const { state, userName, charName } = ctx;
@@ -289,8 +292,11 @@ All text values in these comments: ${lang} only.`];
     const pr = state.pair;
     out.push(pr
         ? `Add bond=FRIENDSHIP/ROMANCE and bond_note=… to the HT line only when this reply clearly changes how ${charName} and ${userName} stand (now ${pr.f}/${pr.r}${pr.note ? `, ${pr.note}` : ''}).`
-        : `Add bond=FRIENDSHIP/ROMANCE and bond_note=… to the HT line: how ${charName} and ${userName} stand now by the card and story — friendship 0–100; romance −100 (hatred, exes) … 0 (none) … 100 (deep love); bond_note a few words in ${lang}.`);
+        : `Add bond=FRIENDSHIP/ROMANCE and bond_note=… to the HT line: how ${charName} and ${userName} stand now by the card and story — friendship −100 (enmity) … 0 (neutral) … 100 (very close); romance −100 (hatred, exes) … 0 (none) … 100 (deep love); bond_note: a few words of your own on how they are right now, in ${lang}.`);
     const dt = state.date?.status === 'active' ? state.date : null;
+    // выпал шанс — ивент или приглашение на свидание начинаются прямо в этом ответе, игрок решает кнопками
+    if (state.evRoll && h) out.push(eventOfferRule(ctx));
+    if (state.dateRoll && !dt) out.push(dateOfferRule(ctx));
     if (dt) out.push(`During the date add to the HT line: date_step=N when step N happens in this reply; date_mood=up or down when it clearly goes better or worse; date_end=yes when the date is over.`);
     if (charDue(state, phase)) {
         out.push(`Add char=… to the HT line: a short thought of ${charName}'s about the holiday right now, in ${charName}'s own voice, the way people speak in this era, setting and story, under 12 words — about the feast, the people in it or what is coming, never a description of what ${charName} is doing; a new thought each time, not echoing earlier ones.`);
@@ -326,9 +332,8 @@ All text values in these comments: ${lang} only.`];
     if (request === 'day' && h) out.push(`ALSO add after the HT line: ${dayRule(ctx)}`);
     if (request === 'replan' && h) out.push(`ALSO add after the HT line: ${replanRule(ctx)}`);
     if (request === 'cast') out.push(`ALSO add after the HT line:\n${castRule(ctx)}`);
-    if (request === 'date') out.push(`ALSO add after the HT line, NOT written into this reply's story:\n${dateOfferRule(ctx)}`);
     if (!dt && state.date?.status !== 'offered') out.push(`If in this reply ${userName} and ${charName} set off on a date, add after the HT line: <!-- HT-DATE title=… | goal=… | steps=… | started=yes --> (steps: 3–4 small things for it, each marked (char) or (user)).`);
-    if (request === 'event' && h) out.push(`ALSO add after the HT line, NOT written into this reply's story:\n${eventOfferRule(ctx)}`);
+
     if (request === 'moment' && h) {
         const ev = openEvent(state, h.id);
         out.push(`ALSO, this reply: something new happens at "${ev?.title || 'the gathering'}" that involves ${charName} or ${userName}, shown in your narration. Then add after the HT line: <!-- HT-EV kind=moment | title=… -->, a few words in ${lang}.`);
@@ -389,10 +394,8 @@ export function buildSideMessages(ctx, needs, src) {
         task.push(`<!-- HT-EV kind=moment | title=… -->
 Only if the latest messages show something new at "${ev?.title || 'the gathering'}" that ${userName} joined — a few words. Leave it out otherwise.${ev?.moments?.length ? ` Already: ${ev.moments.slice(-3).map(m => m.title).join(' / ')}.` : ''}`);
     }
-    if (needs.has('evoffer') && h) task.push(eventOfferRule(ctx));
     if (needs.has('cast')) task.push(castRule(ctx));
-    if (needs.has('dateoffer')) task.push(dateOfferRule(ctx));
-    else if (needs.has('datewatch')) task.push(`<!-- HT-DATE title=… | goal=… | steps=… | started=yes -->
+    if (needs.has('datewatch')) task.push(`<!-- HT-DATE title=… | goal=… | steps=… | started=yes -->
 Only if the latest messages show ${userName} and ${charName} setting off on a date that isn't tracked yet. steps: 3–4 small things for it, each marked (char) or (user). Leave it out otherwise.`);
     if (needs.has('new')) {
         const known = [...(state.holidays || []).map(x => x.name), ...(ctx.offerNames || []), ...(ctx.passed || [])].filter(Boolean).slice(0, 14);
