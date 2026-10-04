@@ -152,9 +152,6 @@
 }
 
 /* ─── Панель настроек ─── */
-.ht-settings { display: flex; flex-direction: column; gap: 6px; }
-.ht-settings .ht-settings-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.ht-settings .ht-settings-row .text_pole { flex: 1; min-width: 120px; margin: 0; }
 
 /* ─── Удалить праздник ─── */
 .ht-ib .ht-del {
@@ -374,7 +371,7 @@
 .ht-retry:hover { transform: rotate(60deg); transition: transform 0.25s ease; }
 
 /* ─── Вкладки «Праздник» / «Текущий год» ─── */
-.ht-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; margin-bottom: 8px; border: 1px solid var(--ht-line); border-radius: 8px; }
+.ht-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); container-type: inline-size; gap: 4px; padding: 3px; margin-bottom: 8px; border: 1px solid var(--ht-line); border-radius: 8px; }
 .ht-ib .ht-tab { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; padding: 5px 8px; border-radius: 6px; color: var(--ht-mute); font-size: 0.9em; cursor: pointer; }
 .ht-ib .ht-tab > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ht-ib .ht-tab:hover { color: var(--ht-fg); }
@@ -400,16 +397,11 @@
 @media (prefers-reduced-motion: reduce) {
     .ht-ring-wait::after, .ht-ring-wait > i, .ht-loading .ht-head::after { animation: none; }
 }
-.ht-settings .menu_button_icon { margin: 0; }
 .ht-pinging i { animation: ht-spin 1s linear infinite; }
 
 /* ─── Праздничный день компактнее ─── */
-/* подзаголовок шапки — до двух строк, а не многоточие */
-.ht-sub { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .ht-world-mini { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--ht-mute); font-size: 0.88em; }
 .ht-world-mini > i { color: var(--ht-acc); }
-/* части дня: сейчас — целиком, остальные — одной строкой */
-.ht-part:not(.ht-now) span { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
 /* мысль персонажа — в кавычках, чуть курсивом */
 .ht-char-now { font-style: italic; }
 .ht-char-now > span { font-style: normal; }
@@ -419,3 +411,119 @@
 .ht-evcard { border-style: solid; }
 .ht-evcard-party { border-color: color-mix(in srgb, var(--ht-party, var(--ht-acc)) 70%, transparent); }
 .ht-offer-actions.ht-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+/* подзаголовок шапки переносится целиком, без многоточия */
+.ht-sub { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+/* части дня: текущая выделена, остальные приглушены, но читаются целиком */
+.ht-part:not(.ht-now) { opacity: 0.8; }
+
+/* три вкладки на узком экране — только иконки и счётчик */
+@container (max-width: 300px) { .ht-ib .ht-tab > span { display: none; } }
+
+/* ─── Вкладка «Люди» ─── */
+.ht-cast { padding: 7px 0 8px 10px; margin-bottom: 6px; border-left: 2px solid var(--ht-line-strong); }
+.ht-cast-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ht-cast-head > b { font-weight: 700; }
+.ht-cast-tools { margin-left: auto; display: inline-flex; gap: 2px; }
+.ht-cast-who { margin: 2px 0 0; color: var(--ht-fg); font-size: 0.92em; line-height: 1.35; }
+.ht-cast-bd { margin: 2px 0 0; color: var(--ht-mute); font-size: 0.82em; }
+.ht-cast-bd > i, .ht-bd-chip > i { margin-right: 5px; }
+.ht-rels { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.ht-rel { display: grid; grid-template-columns: minmax(0, 5.5em) 1fr auto; grid-template-rows: auto auto; column-gap: 8px; align-items: center; font-size: 0.82em; }
+.ht-rel-who { color: var(--ht-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ht-rel-bar { height: 6px; border-radius: 999px; background: var(--ht-line); overflow: hidden; }
+/* от красного (вражда) к зелёному (близки) — единственное место с цветами не из темы, по задумке шкалы */
+.ht-rel-bar > i { display: block; height: 100%; width: calc(var(--v) * 1%); border-radius: inherit; background: hsl(calc(var(--v) * 1.2) 55% 48%); }
+.ht-rel > b { font-weight: 600; font-size: 0.95em; min-width: 2.6em; text-align: right; }
+.ht-rel > small { grid-column: 2 / 4; color: var(--ht-mute); font-size: 0.92em; line-height: 1.2; }
+/* день рождения скоро: за месяц — слабо, за неделю — сильнее, в сам день — ярко */
+.ht-bd-chip { font-style: normal; font-size: 0.78em; padding: 0 7px; border-radius: 999px; border: 1px solid var(--ht-line-strong); color: var(--ht-mute); white-space: nowrap; }
+.ht-bd-soon { border-left-color: color-mix(in srgb, var(--ht-acc) 45%, transparent); }
+.ht-bd-near { border-left-color: var(--ht-acc); background: color-mix(in srgb, var(--ht-acc) 7%, transparent); }
+.ht-bd-near .ht-bd-chip { border-color: var(--ht-acc); color: var(--ht-acc); }
+.ht-bd-today { border-left-color: var(--ht-fire); background: color-mix(in srgb, var(--ht-fire) 12%, transparent); }
+.ht-bd-today .ht-bd-chip { border-color: var(--ht-fire); color: var(--ht-fire); }
+.ht-edit-two { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+
+/* ═══ Романтика и свидания ═══ */
+.ht-ib, .ht-date-toast { --ht-rom: color-mix(in srgb, var(--ht-acc) 35%, #e0588c); }
+/* шкала романтики: вправо — розовая, влево (ненависть, бывшие) — красная, ноль — пустая */
+.ht-rom .ht-rel-who { text-align: right; color: var(--ht-rom); font-size: 0.85em; }
+.ht-rom-bar { height: 4px; }
+.ht-rom-bar > i { background: var(--ht-rom); }
+.ht-rom-bar.ht-rom-neg > i { background: hsl(0 60% 48%); margin-left: auto; }
+.ht-rom > b { color: var(--ht-rom); }
+/* пара {{char}} и {{user}} — сверху вкладки «Люди» */
+.ht-pair { padding: 8px 10px; margin-bottom: 10px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--ht-rom) 45%, transparent); background: color-mix(in srgb, var(--ht-rom) 7%, transparent); }
+.ht-pair .ht-cast-head > i { color: var(--ht-rom); }
+.ht-pair .ht-bd-chip { border-color: color-mix(in srgb, var(--ht-rom) 60%, transparent); color: var(--ht-rom); }
+/* карточка свидания */
+.ht-date { border-style: solid; border-color: color-mix(in srgb, var(--ht-rom) 60%, transparent); background: color-mix(in srgb, var(--ht-rom) 9%, transparent); }
+.ht-date .ht-offer-cause > i, .ht-date .ht-offer-mean > i { color: var(--ht-rom); }
+.ht-date .ht-offer-cause { display: flex; align-items: center; gap: 4px; }
+.ht-date-pct { margin-left: auto; color: var(--ht-rom); font-size: 1.05em; }
+.ht-date-meter { height: 7px; border-radius: 999px; background: var(--ht-line); overflow: hidden; }
+.ht-date-meter > i { display: block; height: 100%; width: calc(var(--v) * 1%); border-radius: inherit; background: var(--ht-rom); transition: width 0.4s ease; }
+.ht-date-steps { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+.ht-ib .ht-date-step { display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 7px; padding: 4px 6px; border-radius: 6px; cursor: pointer; text-align: left; }
+.ht-ib .ht-date-step:hover { background: var(--ht-soft-2); }
+.ht-date-step > i { color: var(--ht-rom); }
+.ht-date-step > em { font-style: normal; font-size: 0.78em; color: var(--ht-mute); white-space: nowrap; }
+.ht-date-step.ht-done > span { text-decoration: line-through; opacity: 0.7; }
+.ht-offer-actions.ht-one { grid-template-columns: 1fr; }
+
+/* уведомление об итоге свидания — посреди экрана; анимации только transform */
+.ht-date-toast {
+    --ht-fg: var(--SmartThemeBodyColor, #dcdcd2);
+    --ht-acc: var(--SmartThemeQuoteColor, #e1a35a);
+    --ht-mute: color-mix(in srgb, var(--ht-fg) 62%, transparent);
+}
+.ht-date-toast { position: fixed; inset: 0; z-index: 9999; display: grid; place-items: center; pointer-events: auto; background: transparent; }
+.ht-date-toast-card {
+    display: flex; flex-direction: column; align-items: center; gap: 4px; max-width: min(88vw, 340px); padding: 16px 22px;
+    border-radius: 14px; text-align: center; color: var(--SmartThemeBodyColor);
+    background: var(--SmartThemeBlurTintColor, rgba(20, 16, 18, 0.92)); border: 1px solid var(--ht-rom);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45); backdrop-filter: blur(8px);
+    animation: ht-toast-in 0.45s cubic-bezier(.2, 1.3, .4, 1) both;
+}
+.ht-date-toast.ht-out .ht-date-toast-card { animation: ht-toast-out 0.3s ease-in both; }
+.ht-date-toast-card > span { font-size: 0.85em; opacity: 0.8; }
+.ht-date-toast-card > b { font-size: 1.35em; color: var(--ht-rom); }
+.ht-date-toast-card > p { margin: 0; font-size: 0.9em; }
+.ht-date-delta { opacity: 0.85; }
+.ht-date-delta > i { color: var(--ht-rom); }
+.ht-date-hearts { display: flex; gap: 6px; color: var(--ht-rom); }
+.ht-date-hearts > i { animation: ht-heart 1.2s ease-in-out infinite; }
+.ht-date-hearts > i:nth-child(2) { animation-delay: 0.15s; font-size: 1.3em; }
+.ht-date-hearts > i:nth-child(3) { animation-delay: 0.3s; }
+.ht-date-bad .ht-date-hearts, .ht-date-bad .ht-date-toast-card > b { color: var(--ht-mute); }
+@keyframes ht-toast-in { from { transform: translateY(14px) scale(0.85); } to { transform: none; } }
+@keyframes ht-toast-out { to { transform: translateY(10px) scale(0.9); } }
+@keyframes ht-heart { 50% { transform: translateY(-3px) scale(1.15); } }
+@media (prefers-reduced-motion: reduce) { .ht-date-toast-card, .ht-date-hearts > i { animation: none; } }
+
+/* ═══ Настройки расширения (панель свёрнута по умолчанию — ею управляет таверна) ═══ */
+.ht-set { display: flex; flex-direction: column; gap: 10px; padding: 4px 0 6px; }
+.ht-set-sec { display: flex; flex-direction: column; gap: 7px; padding: 9px 10px; border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--SmartThemeBodyColor) 14%, transparent);
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 4%, transparent); }
+.ht-set-title { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 0.95em; }
+.ht-set-title > i { color: var(--SmartThemeQuoteColor); width: 1.1em; text-align: center; }
+.ht-set-title small { font-weight: 400; opacity: 0.6; }
+.ht-set-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.ht-set-row > span { flex: 0 0 auto; min-width: 7.5em; opacity: 0.85; font-size: 0.92em; }
+.ht-set-row .text_pole { flex: 1; min-width: 120px; margin: 0; }
+.ht-set-row .menu_button_icon { margin: 0; }
+.ht-set .checkbox_label { margin: 0; }
+.ht-set-wide { width: 100%; justify-content: center; margin: 0; }
+.ht-set-row input[type="range"] { flex: 1; min-width: 100px; accent-color: var(--SmartThemeQuoteColor); }
+.ht-set-val { min-width: 3.2em; text-align: right; font-size: 0.9em; }
+/* переключатель «сверху / посередине / снизу» */
+.ht-seg { flex: 1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; padding: 3px; border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--SmartThemeBodyColor) 16%, transparent); }
+.ht-seg > button { all: unset; display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; padding: 4px 6px;
+    border-radius: 6px; cursor: pointer; font-size: 0.88em; opacity: 0.7; }
+.ht-seg > button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ht-seg > button:hover { opacity: 1; }
+.ht-seg > button.ht-on { opacity: 1; color: var(--SmartThemeQuoteColor); background: color-mix(in srgb, var(--SmartThemeBodyColor) 10%, transparent); }
+.ht-seg > button:focus-visible { outline: 1px solid var(--SmartThemeQuoteColor); }

@@ -53,6 +53,13 @@ export function parseSmall(text, name = 'HT') {
         mean: clean(f.mean, 240),                                   // смысл праздника, который игрок переименовал
         giftDone: /^(true|yes|1|да)$/i.test(String(f.gift_done || '').trim()),
         giftTo: clean(f.gift_to, 60),
+        // {{char}} и {{user}}: дружба 0–100 / романтика −100…100 и коротко, как они сейчас
+        bond: (() => { const m = String(f.bond || '').match(/(-?\d{1,3})\s*[/|;,]\s*(-?\d{1,3})/); return m ? { f: Math.max(0, Math.min(100, +m[1])), r: Math.max(-100, Math.min(100, +m[2])) } : null; })(),
+        bondNote: clean(f.bond_note, 60),
+        // свидание: какой шаг сделан, как идёт, кончилось ли
+        dateStep: (String(f.date_step || '').match(/\d+/g) || []).map(Number).filter(n => n >= 1 && n <= 6),
+        dateMood: /^up|^better|^лучш|^\+/i.test(String(f.date_mood || '').trim()) ? 1 : /^down|^worse|^хуж|^-/i.test(String(f.date_mood || '').trim()) ? -1 : 0,
+        dateEnd: /^(yes|true|1|да|end)/i.test(String(f.date_end || '').trim()),
     };
 }
 
@@ -218,6 +225,55 @@ export function parseBeat(text) {
     return inner == null ? null : clean(inner, 300);
 }
 
+/**
+ * Люди истории (по одному разу):
+ *   C | ИМЯ | GROUP | КТО КОМУ | ДР (ДД.ММ[.ГГГГ]) | С USER 0–100 | С CHAR 0–100
+ *   R | ИМЯ | С USER | С CHAR   — отношения заметно изменились
+ */
+export function parseCast(text) {
+    const inner = findBlock(text, 'HT-CAST');
+    if (inner == null) return null;
+    const add = [], upd = [];
+    const rel = (v) => { const n = parseInt(v); return isNaN(n) ? null : Math.max(0, Math.min(100, n)); };
+    const rom = (v) => { const n = parseInt(v); return isNaN(n) ? null : Math.max(-100, Math.min(100, n)); };
+    for (const raw of inner.split(/\n+/)) {
+        const cols = raw.split('|').map(x => x.trim());
+        const kind = (cols[0] || '').toUpperCase();
+        const name = clean(cols[1], 60);
+        if (!name) continue;
+        if (kind === 'C') {
+            const g = String(cols[2] || '').toLowerCase();
+            const bd = String(cols[4] || '').trim().match(/^(\d{1,2})[./-](\d{1,2})(?:[./-](-?\d{1,5}))?$/);
+            add.push({
+                name, who: clean(cols[3], 140),
+                group: ['relative', 'friend', 'acquaintance'].find(x => g.startsWith(x.slice(0, 4))) || (/(род|сем|famil|kin)/.test(g) ? 'relative' : /(друг|подруг)/.test(g) ? 'friend' : /(знак)/.test(g) ? 'acquaintance' : 'other'),
+                bday: bd && +bd[2] >= 1 && +bd[2] <= 12 && +bd[1] >= 1 && +bd[1] <= 31 ? { d: +bd[1], m: +bd[2], y: bd[3] != null ? +bd[3] : null } : null,
+                relU: rel(cols[5]), relC: rel(cols[6]), romU: rom(cols[7]), romC: rom(cols[8]),
+            });
+        } else if (kind === 'R') {
+            upd.push({ name, relU: rel(cols[2]), relC: rel(cols[3]), romU: rom(cols[4]), romC: rom(cols[5]) });
+        }
+    }
+    return add.length || upd.length ? { add: add.slice(0, 10), upd: upd.slice(0, 10) } : null;
+}
+
+/**
+ * Свидание: <!-- HT-DATE title=… | goal=… | hook=… | steps=шаг (char); шаг (user); … | started=yes -->
+ * started=yes — история уже его начала (не предложение)
+ */
+export function parseDateBlock(text) {
+    const inner = findBlock(text, 'HT-DATE');
+    if (inner == null) return null;
+    const f = fields(inner);
+    const title = clean(f.title, 120);
+    if (!title) return null;
+    const steps = String(f.steps || '').split(/;|\n/).map(x => x.trim()).filter(Boolean).slice(0, 5).map(x => {
+        const who = /\((?:\s*)(user|юзер|игрок)/i.test(x) ? 'user' : 'char';
+        return { t: clean(x.replace(/\s*\([^)]*\)\s*$/, ''), 120), who, done: false };
+    }).filter(s => s.t);
+    return { title, goal: clean(f.goal, 160), hook: clean(f.hook, 240), steps, started: /^(yes|true|1|да)/i.test(String(f.started || '').trim()) };
+}
+
 /** Итог прошедшего праздника — одна строка */
 export function parseRecap(text) {
     const inner = findBlock(text, 'HT-RECAP');
@@ -232,8 +288,8 @@ export function parseRecap(text) {
 export function stripBlocks(text) {
     let t = String(text ?? '');
     t = t.replace(/```[a-z]*\s*(?:<!--\s*)?HT(?:-[A-Z]+)?\b[\s\S]*?```/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT)\b[\s\S]*?-->/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT)\b(?![\s\S]*-->)[\s\S]*$/i, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT|CAST|DATE)\b[\s\S]*?-->/gi, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT|CAST|DATE)\b(?![\s\S]*-->)[\s\S]*$/i, '');
     t = t.replace(/^\s*HT(?:-[A-Z]+)?\b[\s:]+[^\n]*$/gim, '');
     return t.replace(/\s+$/, '');
 }

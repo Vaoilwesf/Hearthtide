@@ -10,7 +10,9 @@ import {
 import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
-import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, stripBlocks } from './tag.js';
+import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, stripBlocks } from './tag.js';
+import { PAIR_DEFAULT, newDate, trackDate, toggleStep, finishDate, dateChance } from './romance.js';
+import { CAST_GROUPS, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast } from './cast.js';
 import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt, buildSideMessages, giftTarget } from './prompts.js';
 import { listProfiles, gatherSources, sendSide, reasonOf } from './side.js';
@@ -32,6 +34,7 @@ const LS = {
     api: 'hearthtide_api',             // профиль подключения для отдельного запроса: auto — тот, что выбран в таверне
     depth: 'hearthtide_depth',         // сколько последних сообщений читает отдельный запрос
     eraMap: 'hearthtide_era_map',      // эпоха и вера — отдельно для каждого персонажа или группы
+    dateChance: 'hearthtide_date_chance', // шанс, что чар сам позовёт на свидание после ответа (%)
 };
 const lsGet = (k, d) => { const v = localStorage.getItem(k); return v === null ? d : v; };
 const isEnabled = () => lsGet(LS.enabled, 'true') !== 'false';
@@ -46,6 +49,7 @@ function apiProfile() {
 }
 const apiOn = () => isEnabled() && !!apiProfile();
 const sideDepth = () => Number(lsGet(LS.depth, '10')) || 10;
+const dateChanceSetting = () => { const n = Number(lsGet(LS.dateChance, '6')); return isNaN(n) ? 6 : Math.max(0, Math.min(30, n)); };
 
 // ─── Эпоха и вера запоминаются для каждого персонажа (и группы) ───
 function charKey() {
@@ -110,6 +114,16 @@ function defaultState() {
         lastEventEnd: -99,
         evRoll: false,          // выпал шанс: в следующем ответе (или запросе помощника) предложить случайный ивент
         evDecisions: {},        // решения игрока по ивентам (по названию): accepted | declined — переживают свайпы
+        pair: null,             // {{char}} и {{user}}: { f: дружба 0–100, r: романтика −100…100, note }
+        pairDrop: -99,          // когда дружба заметно упала (ссора) — шанс свидания выше
+        date: null,             // свидание: { id, title, goal, hook, steps [{t, who, done}], score, status offered|active|ended, … }
+        dateRoll: false,        // выпал шанс: предложить свидание
+        lastDateEnd: -99,
+        datesDone: [],          // прошедшие свидания: { title, result, score }
+        dateDecisions: {},      // решения игрока по предложенным свиданиям (по названию) — переживают свайпы
+        cast: [],               // люди истории: { id, name, group, who, bday {d,m,y}, rel {user, char}, edited, relLock }
+        castNo: [],             // убранные игроком — ИИ их не вернёт
+        lastCastTurn: -99,
         flashbacks: [],         // воспоминания: { id, title, text, when, kind } — в контекст только по кнопке
         recall: null,           // id воспоминания, которое уйдёт в следующий ответ
         planPart: {},           // `${hid}#${день}` → часть дня, к которой распорядок уже подстроен
@@ -207,6 +221,7 @@ function ctxFor(request = null) {
         passed: (state.yearLog?.items || []).filter(i => !i.birthday && i.name && !isBanned(state, i.name)).slice(-10).map(i => i.name),
         offerNames: [...(state.offers || []).map(o => o.name), ...(state.offerNo || []).slice(-2)].slice(0, 4),
         peopleSeen: peopleSeen(),
+        ...castForPrompt(),
         eraMode: eraMode(),
         api: apiOn(),
         lang: L().promptLang,
@@ -222,7 +237,7 @@ function takeSnapshot(beforeMsg) {
     if (state.snapshots.length > 20) state.snapshots = state.snapshots.slice(-20);
 }
 // Решения игрока (удалённые праздники) переживают откаты
-const USER_FIELDS = ['banned', 'bannedNames', 'birthdayOff', 'calIgnore', 'offerNo', 'evDecisions'];
+const USER_FIELDS = ['banned', 'bannedNames', 'birthdayOff', 'calIgnore', 'offerNo', 'evDecisions', 'castNo', 'dateDecisions'];
 
 function restoreSnapshot(snap) {
     const keep = state.snapshots;
@@ -270,6 +285,22 @@ function seenInStory(name, text) {
     return !!st && new RegExp(`(?<![\\p{L}])${st.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'u').test(text);
 }
 /** Люди, которые действительно есть в последних сообщениях — только их показываем и отправляем ИИ */
+// Люди истории для промпта: кто сейчас рядом (имя в последних сообщениях) и у кого скоро день рождения
+function castForPrompt() {
+    const cast = (state.cast || []).filter(c => !castBanned(state, c.name));
+    if (!cast.length) return { castSeen: [], castBdays: [] };
+    const text = recentStoryText(8);
+    const castBdays = cast.map(c => ({ c, days: bdayIn(c, state.today) })).filter(x => x.days != null && x.days <= 7)
+        .sort((a, b) => a.days - b.days).slice(0, 2)
+        .map(({ c, days }) => ({
+            name: c.name, days, relU: c.rel?.user ?? 50, relC: c.rel?.char ?? 50,
+            // ближе к дню — чаще всплывает в разговоре
+            nudge: (state.turn || 0) % (days <= 2 ? 2 : 3) === 0,
+        }));
+    const castSeen = cast.filter(c => seenInStory(c.name, text) || castBdays.some(b => b.name === c.name)).slice(0, 8);
+    return { castSeen, castBdays };
+}
+
 function peopleSeen() {
     const text = recentStoryText(6);
     return (state.people || []).filter(p => seenInStory(p.name, text));
@@ -443,6 +474,8 @@ function processReply(N) {
     const people = both(parsePeople);
     const evs = [...parseEvents(src), ...(sideText ? parseEvents(sideText) : [])];
     const offersIn = [...parseOffers(src), ...(sideText ? parseOffers(sideText) : [])];
+    const castIn = [parseCast(src), sideText ? parseCast(sideText) : null].filter(Boolean);
+    const dateIn = parseDateBlock(src) || (sideText ? parseDateBlock(sideText) : null);
     const beat = sideText ? parseBeat(sideText) : null;
     // Строки H, пришедшие без запроса календаря, — тоже повод из истории: решает игрок
     if (cal && !askedCal && !cal.setting && cal.holidays.length) {
@@ -517,6 +550,36 @@ function processReply(N) {
     }
     // ── Поводы из истории — ждут решения игрока ──
     if (takeOffers(offersIn)) slip = true;
+    // ── Люди истории: новые — один раз, известные — только отношения ──
+    for (const c of castIn) if (mergeCast(state, c, langOk, state.turn)) slip = true;
+    if (asked === 'cast' || sideAsked.includes('cast')) state.lastCastTurn = state.turn;
+
+    // ── {{char}} и {{user}}: дружба и романтика ──
+    if (sm?.bond) {
+        if (sm.bondNote && !langOk(sm.bondNote)) slip = true;
+        const prev = state.pair;
+        if (prev && sm.bond.f <= prev.f - 10) state.pairDrop = state.turn;       // заметно поссорились
+        state.pair = { f: sm.bond.f, r: sm.bond.r, note: sm.bondNote && langOk(sm.bondNote) ? sm.bondNote : prev?.note || null };
+    }
+    // ── Свидание: идёт — считаем шаги и настроение; кончилось — итог и уведомление ──
+    let dateEnded = null;
+    if (state.date?.status === 'active') {
+        const over = trackDate(state.date, sm, state.turn) || state.turn - (state.date.lastUpdate ?? state.date.turn) > 14;
+        if (over) {
+            dateEnded = finishDate(state, state.turn);
+            if (dateEnded) addFlashback(`${L().dateWord}: ${dateEnded.title}`, L().dateResult[dateEnded.result], 'date');
+        }
+    }
+    if (state.date?.status === 'offered' && state.turn - state.date.turn > 4) state.date = null;   // не ответили — забылось
+    if (dateIn && state.date?.status !== 'active' && state.date?.status !== 'offered'
+        && [dateIn.title, dateIn.goal, dateIn.hook, ...dateIn.steps.map(s => s.t)].every(langOk)) {
+        const d = newDate(dateIn, state.turn, dateIn.started);
+        const dec = !dateIn.started && state.dateDecisions?.[String(d.title).toLowerCase()];
+        if (dec === 'declined') d.status = 'declined';
+        else if (dec === 'accepted') { d.status = 'active'; d.startTurn = state.turn; }
+        if (d.status !== 'declined') state.date = d;
+        state.dateRoll = false;
+    }
 
     // ── Подготовка, день праздника, итог — привязываем к текущей фазе ──
     let phase = phaseOf(state);
@@ -650,6 +713,9 @@ function processReply(N) {
         state.evRoll = rollFor(text, state.turn) < EVENT_CHANCE[phase.kind];
     }
 
+    // ── Свидание: бросок после ответа (есть романтика; после ссоры шанс выше) ──
+    state.dateRoll = !state.date || state.date.status === 'ended' ? rollFor(text, state.turn + 7919) < dateChance(state, state.turn, dateChanceSetting()) : false;
+
     // ── Упоминать ли подготовку в следующем ответе (чем ближе, тем чаще) ──
     state.mentionNow = false;
     if (phase.kind === 'prep' && state.turn - state.lastMention >= mentionEvery(phase.daysTo)) {
@@ -677,6 +743,8 @@ function processReply(N) {
     state.diagThink = fromThink;
 
     msg.extra.ht = viewSnapshot(phase);
+    // свидание закончилось в этом ответе — уведомление посреди экрана (один раз)
+    if (dateEnded) showDateToast(dateEnded);
 
     saveState();
     injectPrompts();
@@ -1099,6 +1167,8 @@ function viewSnapshot(phase) {
             recap: state.recaps.find(r => r.hid === i.id)?.text || null,
         })),
         flashbacks: clone(state.flashbacks.slice(-10).reverse()),
+        pair: state.pair ? clone(state.pair) : null,
+        cast: (state.cast || []).filter(c => !castBanned(state, c.name)).map(c => ({ ...clone(c), bdayIn: bdayIn(c, state.today), age: ageOf(c, state.today) })),
         recall: state.recall,
         ...(() => {
             const act = phase.h && (phase.kind === 'prep' || phase.kind === 'today');
@@ -1335,7 +1405,7 @@ function renderBlock(id) {
     // пока помощник читает историю — заставка: кольцо крутится, по шапке бежит блик, содержимое приглушено
     const loading = live && sideLoading();
     block.classList.toggle('ht-loading', loading);
-    block.innerHTML = headHtml(view, open, live ? sideMarkHtml() : '', loading) + (live ? eventCardHtml() + offerHtml() : '') + (open ? bodyHtml(view, live, ui.tab.get(id) || 'now') : '');
+    block.innerHTML = headHtml(view, open, live ? sideMarkHtml() : '', loading) + (live ? dateCardHtml() + eventCardHtml() + offerHtml() : '') + (open ? bodyHtml(view, live, ui.tab.get(id) || 'now') : '');
 }
 
 // ─── Кольцо: сколько дней осталось (из 30), в день праздника — полное ───
@@ -1371,7 +1441,8 @@ function headHtml(view, open, mark = '', loading = false) {
         title = L().today(h.name);
         // название дня, совпадающее с названием праздника, не повторяем
         const pt = view.plan?.title && !namesMatch(view.plan.title, h.name) ? view.plan.title : '';
-        sub = pt || (h.days > 1 ? L().dayOf(view.dayIndex, h.days) : h.meaning || '');
+        // коротко: название дня, «день N из M» или часть суток — смысл праздника есть ниже
+        sub = pt || (h.days > 1 ? L().dayOf(view.dayIndex, h.days) : (view.part ? L().part[view.part] : ''));
     } else if (view.kind === 'after' && view.ended) {
         title = L().ended(view.ended.name);
         sub = h ? L().nextIn(h.name, daysWord(view.daysTo)) : '';
@@ -1443,6 +1514,205 @@ function editFormHtml(x, act = 'edit-save', label = L().save) {
             <button class="ht-btn ht-btn-main" data-act="${act}" data-hid="${esc(x.id)}"><i class="fa-solid fa-check"></i>${label}</button>
         </div>
     </div>`;
+}
+
+// ═══ Свидания ═══
+// Карточка под шапкой последнего инфоблока: предложение (принять / отклонить) или идущее свидание —
+// цель, шкала успеха, шаги (можно отмечать самому), «завершить».
+function dateCardHtml() {
+    const d = state?.date;
+    if (!d || (d.status !== 'offered' && d.status !== 'active')) return '';
+    const fresh = !ui.offerSeen.has(d.id + d.status);
+    ui.offerSeen.add(d.id + d.status);
+    const u = getUserName(), c = getCharName();
+    if (d.status === 'offered') {
+        return `<div class="ht-offer ht-date${fresh ? ' ht-offer-new' : ''}">
+            <div class="ht-offer-cause"><i class="fa-solid fa-heart"></i><span>${esc(L().dateInvite(c))}</span></div>
+            <div class="ht-offer-hol"><span><b>${esc(d.title)}</b>${d.goal ? ` · ${esc(d.goal)}` : ''}</span></div>
+            ${d.hook ? `<p class="ht-offer-mean">${esc(d.hook)}</p>` : ''}
+            <div class="ht-offer-actions ht-two">
+                <button class="ht-btn ht-btn-main" data-act="date-yes" title="${esc(L().evGo)}"><i class="fa-solid fa-heart"></i><span>${L().evGo}</span></button>
+                <button class="ht-btn ht-btn-quiet" data-act="date-no" title="${esc(L().decline)}"><i class="fa-solid fa-xmark"></i><span>${L().decline}</span></button>
+            </div>
+        </div>`;
+    }
+    const steps = d.steps.map((s, i) => `<button class="ht-date-step${s.done ? ' ht-done' : ''}" data-act="date-step" data-i="${i}" aria-pressed="${s.done}">
+        <i class="fa-${s.done ? 'solid fa-heart' : 'regular fa-heart'}"></i><span>${esc(s.t)}</span><em>${esc(s.who === 'user' ? u : c)}</em></button>`).join('');
+    return `<div class="ht-offer ht-date ht-date-on${fresh ? ' ht-offer-new' : ''}">
+        <div class="ht-offer-cause"><i class="fa-solid fa-heart"></i><span>${L().dateWord}</span><b class="ht-date-pct">${d.score}%</b></div>
+        <div class="ht-date-meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${d.score}"><i style="--v:${d.score}"></i></div>
+        <div class="ht-offer-hol"><span><b>${esc(d.title)}</b></span></div>
+        ${d.goal ? `<p class="ht-offer-mean"><i class="fa-solid fa-bullseye"></i> ${esc(d.goal)}</p>` : ''}
+        <div class="ht-date-steps">${steps}</div>
+        <div class="ht-offer-actions ht-one"><button class="ht-btn ht-btn-quiet" data-act="date-end"><i class="fa-solid fa-flag-checkered"></i><span>${L().dateFinish}</span></button></div>
+    </div>`;
+}
+
+// Решения игрока по свиданию — и в снимки, чтобы пережили свайпы
+function changeDate(fn) {
+    const id = state.date?.id;
+    if (!id) return;
+    fn(state);
+    applyToSnapshots(st => { if (st.date?.id === id) fn(st); });
+    saveState();
+    injectPrompts();
+    renderAll();
+}
+function decideDate(yes) {
+    const d = state.date;
+    if (!d || d.status !== 'offered') return;
+    state.dateDecisions = { ...(state.dateDecisions || {}), [String(d.title).toLowerCase()]: yes ? 'accepted' : 'declined' };
+    changeDate(st => {
+        if (yes) { st.date.status = 'active'; st.date.startTurn = st.turn; st.date.lastUpdate = st.turn; }
+        else { st.date = null; st.lastDateEnd = st.turn; }
+    });
+}
+function endDateNow() {
+    if (state.date?.status !== 'active') return;
+    let done = null;
+    changeDate(st => {
+        const d = finishDate(st, st.turn);
+        if (st === state) done = d;
+    });
+    if (done) {
+        addFlashback(`${L().dateWord}: ${done.title}`, L().dateResult[done.result], 'date');
+        saveState();
+        renderAll();
+        showDateToast(done);
+    }
+}
+
+// Уведомление об итоге свидания — посреди экрана, один раз, закрывается само или по нажатию
+const dateToasted = new Set();
+function showDateToast(d) {
+    if (!d || dateToasted.has(d.id) || typeof document?.createElement !== 'function') return;
+    dateToasted.add(d.id);
+    const el = document.createElement('div');
+    el.className = `ht-date-toast ht-date-${d.result}`;
+    el.setAttribute('role', 'status');
+    const sign = (n) => (n > 0 ? `+${n}` : `${n}`);
+    el.innerHTML = `<div class="ht-date-toast-card">
+        <div class="ht-date-hearts"><i class="fa-solid fa-heart"></i><i class="fa-solid fa-heart"></i><i class="fa-solid fa-heart"></i></div>
+        <span>${esc(L().dateOver)}</span>
+        <b>${esc(L().dateResult[d.result])}</b>
+        <p>${esc(d.title)} · ${d.score}%</p>
+        ${d.delta && (d.delta.r || d.delta.f) ? `<p class="ht-date-delta"><i class="fa-solid fa-heart"></i> ${esc(L().romance)} ${sign(d.delta.r)} · <i class="fa-solid fa-handshake"></i> ${esc(L().friendship)} ${sign(d.delta.f)}</p>` : ''}
+    </div>`;
+    const close = () => { el.classList.add('ht-out'); setTimeout(() => el.remove(), 300); };
+    el.addEventListener('click', close);
+    document.body.appendChild(el);
+    setTimeout(close, 7000);
+}
+
+// ─── Люди истории: вкладка «Люди» ───
+function castTabHtml(view, live) {
+    const list = view.cast || [];
+    const u = getUserName(), c = getCharName();
+    const meter = (who, n) => {
+        const lvl = relLevel(n);
+        return `<div class="ht-rel"><span class="ht-rel-who">${esc(who)}</span>
+            <div class="ht-rel-bar" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${n}"><i style="--v:${n}"></i></div>
+            <b>${n}%</b><small>${esc(L().rel[lvl])}</small></div>`;
+    };
+    // романтика: вправо — розовым, влево — красным (ненависть, бывшие), пусто — нет
+    const romMeter = (n) => {
+        const lvl = romLevel(n ?? 0);
+        const v = Math.abs(n ?? 0);
+        return `<div class="ht-rel ht-rom"><span class="ht-rel-who"><i class="fa-solid fa-heart"></i></span>
+            <div class="ht-rel-bar ht-rom-bar${(n ?? 0) < 0 ? ' ht-rom-neg' : ''}" role="meter" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="${n ?? 0}"><i style="--v:${v}"></i></div>
+            <b>${n ? `${n > 0 ? '' : '−'}${v}%` : ''}</b><small>${esc(L().rom[lvl])}</small></div>`;
+    };
+    const pairCard = view.pair ? `<div class="ht-pair">
+        <div class="ht-cast-head"><b>${esc(c)}</b><i class="fa-solid fa-heart-pulse"></i><b>${esc(u)}</b>${view.pair.note ? `<em class="ht-bd-chip">${esc(view.pair.note)}</em>` : ''}</div>
+        <div class="ht-rels">${meter(L().friendship, view.pair.f)}${romMeter(view.pair.r)}</div></div>` : '';
+    if (!list.length) return pairCard + `<p class="ht-mute">${L().castEmpty}</p>`;
+    const row = (p) => {
+        const key = `cast:${p.id}`;
+        if (live && ui.editing === key) return castFormHtml(p);
+        const d = p.bdayIn;
+        const near = d != null && d <= 30 ? (d === 0 ? ' ht-bd-today' : d <= 7 ? ' ht-bd-near' : ' ht-bd-soon') : '';
+        const confirm = ui.confirmDel === key;
+        const tools = live ? `<span class="ht-cast-tools">
+            <button class="ht-del ht-edit-btn" data-act="cast-edit" data-cid="${esc(p.id)}" title="${L().edit}" aria-label="${L().edit}"><i class="fa-solid fa-pen"></i></button>
+            <button class="ht-del${confirm ? ' ht-del-confirm' : ''}" data-act="cast-del" data-cid="${esc(p.id)}" title="${confirm ? L().removeSure : L().remove}" aria-label="${L().remove}"><i class="fa-solid ${confirm ? 'fa-check' : 'fa-trash-can'}"></i>${confirm ? `<span>${L().removeQ}</span>` : ''}</button></span>` : '';
+        return `<div class="ht-cast${near}">
+            <div class="ht-cast-head"><b>${esc(p.name)}</b>${d != null && d <= 30 ? `<em class="ht-bd-chip"><i class="fa-solid fa-cake-candles"></i>${esc(L().bdayIn(d, daysWord))}</em>` : ''}${tools}</div>
+            ${p.who ? `<p class="ht-cast-who">${esc(p.who)}</p>` : ''}
+            ${p.bday ? `<p class="ht-cast-bd"><i class="fa-solid fa-cake-candles"></i>${esc(bdayText(p.bday))}${p.age != null ? ` · ${esc(L().age(p.age, plural))}` : ''}</p>` : ''}
+            <div class="ht-rels">${meter(u, p.rel?.user ?? 50)}${p.rom ? romMeter(p.rom.user) : ''}${meter(c, p.rel?.char ?? 50)}${p.rom ? romMeter(p.rom.char) : ''}</div>
+        </div>`;
+    };
+    return pairCard + CAST_GROUPS.map(g => {
+        const items = list.filter(p => (p.group || 'other') === g);
+        return items.length ? `<div class="ht-group"><div class="ht-group-title">${L().groups[g]}</div>${items.map(row).join('')}</div>` : '';
+    }).join('');
+}
+
+function castFormHtml(p) {
+    const groups = CAST_GROUPS.map(g => `<option value="${g}" ${p.group === g ? 'selected' : ''}>${L().groups[g]}</option>`).join('');
+    return `<div class="ht-edit ht-cast-edit">
+        <label>${L().fName}<input class="text_pole" data-ed="name" value="${esc(p.name)}"></label>
+        <label>${L().fWho}<input class="text_pole" data-ed="who" value="${esc(p.who || '')}"></label>
+        <label>${L().fGroup}<select class="text_pole" data-ed="group">${groups}</select></label>
+        <label>${L().fBday}<input class="text_pole" data-ed="bday" value="${esc(bdayText(p.bday))}" inputmode="numeric" placeholder="21.12.1123"></label>
+        <div class="ht-edit-two">
+            <label>${esc(getUserName())}, %<input class="text_pole" data-ed="relU" type="number" min="0" max="100" value="${p.rel?.user ?? 50}"></label>
+            <label>${esc(getCharName())}, %<input class="text_pole" data-ed="relC" type="number" min="0" max="100" value="${p.rel?.char ?? 50}"></label>
+        </div>
+        ${p.group !== 'relative' ? `<div class="ht-edit-two">
+            <label><span><i class="fa-solid fa-heart"></i> ${esc(getUserName())}</span><input class="text_pole" data-ed="romU" type="number" min="-100" max="100" value="${p.rom?.user ?? 0}"></label>
+            <label><span><i class="fa-solid fa-heart"></i> ${esc(getCharName())}</span><input class="text_pole" data-ed="romC" type="number" min="-100" max="100" value="${p.rom?.char ?? 0}"></label>
+        </div>` : ''}
+        <div class="ht-edit-actions">
+            <button class="ht-btn" data-act="edit-cancel">${L().cancel}</button>
+            <button class="ht-btn ht-btn-main" data-act="cast-save" data-cid="${esc(p.id)}"><i class="fa-solid fa-check"></i>${L().save}</button>
+        </div>
+    </div>`;
+}
+
+// Правка человека игроком: переживает свайпы; ИИ после этого не трогает имя, роль и дату, а отношения — только если игрок их не менял
+function saveCast(cid, f) {
+    const cur = (state.cast || []).find(c => c.id === cid);
+    if (!cur) return false;
+    const name = String(f.name || '').trim() || cur.name;
+    const bdayRaw = String(f.bday || '').trim();
+    const bday = bdayRaw ? parseBday(bdayRaw) : null;
+    if (bdayRaw && !bday) { window.toastr?.warning?.(L().badBday, 'Hearthtide'); return false; }
+    const relU = clampRel(f.relU), relC = clampRel(f.relC);
+    const relChanged = relU !== (cur.rel?.user ?? 50) || relC !== (cur.rel?.char ?? 50);
+    const fix = { name, who: String(f.who || '').trim() || null, group: CAST_GROUPS.includes(f.group) ? f.group : cur.group, bday, edited: true };
+    const apply = (st) => {
+        const x = (st.cast || []).find(c => c.id === cid);
+        if (!x) return;
+        Object.assign(x, fix);
+        if (relChanged) { x.rel = { user: relU ?? 50, char: relC ?? 50 }; x.relLock = true; }
+        // романтика: у родни её нет; у остальных — как выставил игрок
+        if (x.group === 'relative') x.rom = null;
+        else {
+            const ru = parseInt(f.romU), rc = parseInt(f.romC);
+            const nu = isNaN(ru) ? (x.rom?.user ?? 0) : Math.max(-100, Math.min(100, ru));
+            const nc = isNaN(rc) ? (x.rom?.char ?? 0) : Math.max(-100, Math.min(100, rc));
+            if (!x.rom || nu !== x.rom.user || nc !== x.rom.char) { x.rom = { user: nu, char: nc }; x.relLock = true; }
+        }
+    };
+    apply(state);
+    applyToSnapshots(apply);
+    saveState();
+    injectPrompts();
+    window.toastr?.success?.(L().saved, 'Hearthtide');
+    return true;
+}
+
+function removeCast(cid) {
+    const cur = (state.cast || []).find(c => c.id === cid);
+    if (!cur) return;
+    state.castNo = [...(state.castNo || []).filter(n => !samePerson(n, cur.name)), cur.name].slice(-60);
+    const apply = (st) => { st.cast = (st.cast || []).filter(c => !samePerson(c.name, cur.name)); };
+    apply(state);
+    applyToSnapshots(apply);
+    saveState();
+    injectPrompts();
+    renderAll();
 }
 
 // ─── Случайный ивент: карточка под шапкой последнего инфоблока, видна и в свёрнутом ───
@@ -1609,10 +1879,13 @@ function bodyHtml(view, live, tab = 'now') {
 
     // Вкладки сверху: праздник сейчас и прошедшие за год — год не растягивает инфоблок вниз
     const n = view.year?.length || 0;
+    const nc = view.cast?.length || 0;
     const tabs = `<div class="ht-tabs" role="tablist">
         <button role="tab" class="ht-tab${tab === 'now' ? ' ht-on' : ''}" data-act="tab" data-tab="now" aria-selected="${tab === 'now'}"><i class="fa-solid fa-holly-berry"></i><span>${L().tabNow}</span></button>
+        <button role="tab" class="ht-tab${tab === 'cast' ? ' ht-on' : ''}" data-act="tab" data-tab="cast" aria-selected="${tab === 'cast'}"><i class="fa-solid fa-people-group"></i><span>${L().tabPeople}</span>${nc ? `<em class="ht-count">${nc}</em>` : ''}</button>
         <button role="tab" class="ht-tab${tab === 'year' ? ' ht-on' : ''}" data-act="tab" data-tab="year" aria-selected="${tab === 'year'}"><i class="fa-solid fa-calendar-check"></i><span>${L().year}</span>${n ? `<em class="ht-count">${n}</em>` : ''}</button>
     </div>`;
+    if (tab === 'cast') return `<div class="ht-body">${tabs}${castTabHtml(view, live)}</div>`;
     if (tab === 'year') {
         return `<div class="ht-body">${tabs}<div class="ht-year">${yearRows || `<p class="ht-mute">${L().yearEmpty}</p>`}</div>
             ${section('memories', 'fa-clock-rotate-left', L().flashbacks, memories)}</div>`;
@@ -1662,6 +1935,29 @@ function bindBlock(block) {
             }
         } else if (t.dataset.act === 'ev-yes' || t.dataset.act === 'ev-no') {
             decideEvent(t.dataset.eid, t.dataset.act === 'ev-yes' ? 'accepted' : 'declined');
+        } else if (t.dataset.act === 'date-yes' || t.dataset.act === 'date-no') {
+            decideDate(t.dataset.act === 'date-yes');
+        } else if (t.dataset.act === 'date-step') {
+            const i = Number(t.dataset.i);
+            changeDate(st => toggleStep(st.date, i));
+        } else if (t.dataset.act === 'date-end') {
+            endDateNow();
+        } else if (t.dataset.act === 'cast-edit') {
+            ui.editing = `cast:${t.dataset.cid}`;
+            ui.confirmDel = null;
+            renderBlock(id);
+        } else if (t.dataset.act === 'cast-del') {
+            const key = `cast:${t.dataset.cid}`;
+            if (ui.confirmDel !== key) { ui.confirmDel = key; renderBlock(id); return; }
+            ui.confirmDel = null;
+            removeCast(t.dataset.cid);
+        } else if (t.dataset.act === 'cast-save') {
+            const f = t.closest('.ht-edit');
+            const val = (k) => f?.querySelector(`[data-ed="${k}"]`)?.value ?? '';
+            if (saveCast(t.dataset.cid, { name: val('name'), who: val('who'), group: val('group'), bday: val('bday'), relU: val('relU'), relC: val('relC'), romU: val('romU'), romC: val('romC') })) {
+                ui.editing = null;
+                renderAll();
+            }
         } else if (t.dataset.act === 'tab') {
             ui.tab.set(id, t.dataset.tab);
             renderBlock(id);
@@ -1739,47 +2035,64 @@ function injectSettingsPanel() {
                 <b><i class="fa-solid fa-holly-berry"></i> Hearthtide</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
-            <div class="inline-drawer-content ht-settings">
-                <label class="checkbox_label"><input type="checkbox" id="ht-set-enabled" ${isEnabled() ? 'checked' : ''}>Включить</label>
-                <label class="ht-settings-row">Инфоблок в ответе бота
-                    <select id="ht-set-position" class="text_pole">
-                        <option value="top" ${position() === 'top' ? 'selected' : ''}>сверху</option>
-                        <option value="middle" ${position() === 'middle' ? 'selected' : ''}>посередине</option>
-                        <option value="bottom" ${position() === 'bottom' ? 'selected' : ''}>снизу</option>
-                    </select>
-                </label>
-                <label class="checkbox_label"><input type="checkbox" id="ht-set-prev" ${showPrev() ? 'checked' : ''}>Показывать в предыдущих ответах</label>
-                <label class="ht-settings-row">Язык инфоблока
-                    <select id="ht-set-lang" class="text_pole">
-                        <option value="ru" ${langMode() === 'ru' ? 'selected' : ''}>русский</option>
-                        <option value="en" ${langMode() === 'en' ? 'selected' : ''}>English</option>
-                    </select>
-                </label>
-                <div class="ht-settings-row">
-                    <label for="ht-set-api">Профиль</label>
-                    <select id="ht-set-api" class="text_pole"><option value="auto">текущий профиль</option></select>
-                    <div class="menu_button menu_button_icon" id="ht-set-refresh" title="Обновить список профилей"><i class="fa-solid fa-arrows-rotate"></i></div>
-                    <div class="menu_button menu_button_icon" id="ht-set-ping" title="Проверить подключение"><i class="fa-solid fa-plug-circle-check"></i></div>
-                </div>
-                <label class="ht-settings-row">Помнит сообщений
-                    <select id="ht-set-depth" class="text_pole">
-                        ${[5, 10, 20, 30].map(n => `<option value="${n}" ${sideDepth() === n ? 'selected' : ''}>${n}</option>`).join('')}
-                    </select>
-                </label>
-                <div class="menu_button" id="ht-set-scan"><i class="fa-solid fa-magnifying-glass"></i> Проверить историю</div>
-                <label class="ht-settings-row"><span>Эпоха <small id="ht-era-who"></small></span>
-                    <select id="ht-set-era" class="text_pole">
-                        <option value="auto" ${eraMode() === 'auto' ? 'selected' : ''}>по карточке</option>
-                        <option value="ancient" ${eraMode() === 'ancient' ? 'selected' : ''}>прошлое и вымышленные миры</option>
-                        <option value="modern" ${eraMode() === 'modern' ? 'selected' : ''}>наши дни</option>
-                    </select>
-                </label>
-                <label class="ht-settings-row" id="ht-row-faith" ${eraMode() === 'modern' ? '' : 'style="display:none"'}>Праздники
-                    <select id="ht-set-faith" class="text_pole">
-                        <option value="faith" ${faithMode() === 'faith' ? 'selected' : ''}>с верой — крупные религиозные тоже</option>
-                        <option value="secular" ${faithMode() === 'secular' ? 'selected' : ''}>светские — без религиозных</option>
-                    </select>
-                </label>
+            <div class="inline-drawer-content">
+              <div class="ht-set">
+                <section class="ht-set-sec">
+                    <div class="ht-set-title"><i class="fa-solid fa-sliders"></i>Основное</div>
+                    <label class="checkbox_label"><input type="checkbox" id="ht-set-enabled" ${isEnabled() ? 'checked' : ''}>Включить</label>
+                    <div class="ht-set-row"><span>Инфоблок</span>
+                        <div class="ht-seg" id="ht-set-position" role="radiogroup">
+                            ${[['top', 'сверху', 'fa-arrow-up'], ['middle', 'посередине', 'fa-grip-lines'], ['bottom', 'снизу', 'fa-arrow-down']].map(([v, t, i]) =>
+                                `<button type="button" role="radio" data-pos="${v}" aria-checked="${position() === v}" class="${position() === v ? 'ht-on' : ''}"><i class="fa-solid ${i}"></i><span>${t}</span></button>`).join('')}
+                        </div>
+                    </div>
+                    <label class="checkbox_label"><input type="checkbox" id="ht-set-prev" ${showPrev() ? 'checked' : ''}>В предыдущих ответах тоже</label>
+                    <div class="ht-set-row"><span>Язык</span>
+                        <select id="ht-set-lang" class="text_pole">
+                            <option value="ru" ${langMode() === 'ru' ? 'selected' : ''}>русский</option>
+                            <option value="en" ${langMode() === 'en' ? 'selected' : ''}>English</option>
+                        </select>
+                    </div>
+                </section>
+                <section class="ht-set-sec">
+                    <div class="ht-set-title"><i class="fa-solid fa-feather-pointed"></i>Помощник</div>
+                    <div class="ht-set-row"><span>Профиль</span>
+                        <select id="ht-set-api" class="text_pole"><option value="auto">текущий профиль</option></select>
+                        <div class="menu_button menu_button_icon" id="ht-set-refresh" title="Обновить список профилей"><i class="fa-solid fa-arrows-rotate"></i></div>
+                        <div class="menu_button menu_button_icon" id="ht-set-ping" title="Проверить подключение"><i class="fa-solid fa-plug-circle-check"></i></div>
+                    </div>
+                    <div class="ht-set-row"><span>Помнит сообщений</span>
+                        <select id="ht-set-depth" class="text_pole">
+                            ${[5, 10, 20, 30].map(n => `<option value="${n}" ${sideDepth() === n ? 'selected' : ''}>${n}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div class="menu_button ht-set-wide" id="ht-set-scan"><i class="fa-solid fa-magnifying-glass"></i> Проверить историю</div>
+                </section>
+                <section class="ht-set-sec">
+                    <div class="ht-set-title"><i class="fa-solid fa-hourglass-half"></i>Мир <small id="ht-era-who"></small></div>
+                    <div class="ht-set-row"><span>Эпоха</span>
+                        <select id="ht-set-era" class="text_pole">
+                            <option value="auto" ${eraMode() === 'auto' ? 'selected' : ''}>по карточке</option>
+                            <option value="ancient" ${eraMode() === 'ancient' ? 'selected' : ''}>прошлое и вымышленные миры</option>
+                            <option value="modern" ${eraMode() === 'modern' ? 'selected' : ''}>наши дни</option>
+                        </select>
+                    </div>
+                    <div class="ht-set-row" id="ht-row-faith" ${eraMode() === 'modern' ? '' : 'style="display:none"'}><span>Праздники</span>
+                        <select id="ht-set-faith" class="text_pole">
+                            <option value="faith" ${faithMode() === 'faith' ? 'selected' : ''}>с верой</option>
+                            <option value="secular" ${faithMode() === 'secular' ? 'selected' : ''}>светские</option>
+                        </select>
+                    </div>
+                </section>
+                <section class="ht-set-sec">
+                    <div class="ht-set-title"><i class="fa-solid fa-heart"></i>Романтика</div>
+                    <div class="ht-set-row" title="Как часто чар сам зовёт на свидание после ответа. После ссоры — в 2,5 раза чаще. Свидания из самого ролплея от этого не зависят.">
+                        <span>Случайные свидания</span>
+                        <input type="range" id="ht-set-datechance" min="0" max="30" step="1" value="${dateChanceSetting()}">
+                        <b class="ht-set-val" id="ht-set-datechance-val">${dateChanceSetting() ? `${dateChanceSetting()}%` : 'выкл.'}</b>
+                    </div>
+                </section>
+              </div>
             </div>
         </div>`);
         document.getElementById('ht-set-enabled')?.addEventListener('change', e => {
@@ -1787,10 +2100,21 @@ function injectSettingsPanel() {
             injectPrompts();
             renderAll();
         });
-        document.getElementById('ht-set-position')?.addEventListener('change', e => {
-            localStorage.setItem(LS.position, e.target.value);
-            document.querySelectorAll('.ht-ib').forEach(b => b.remove());
+        document.getElementById('ht-set-position')?.addEventListener('click', e => {
+            const b = e.target.closest('[data-pos]');
+            if (!b) return;
+            localStorage.setItem(LS.position, b.dataset.pos);
+            document.querySelectorAll('#ht-set-position [data-pos]').forEach(x => {
+                x.classList.toggle('ht-on', x === b);
+                x.setAttribute('aria-checked', String(x === b));
+            });
+            document.querySelectorAll('.ht-ib').forEach(x => x.remove());
             renderAll();
+        });
+        document.getElementById('ht-set-datechance')?.addEventListener('input', e => {
+            localStorage.setItem(LS.dateChance, e.target.value);
+            const v = document.getElementById('ht-set-datechance-val');
+            if (v) v.textContent = +e.target.value ? `${e.target.value}%` : 'выкл.';
         });
         document.getElementById('ht-set-lang')?.addEventListener('change', e => {
             localStorage.setItem(LS.lang, e.target.value);

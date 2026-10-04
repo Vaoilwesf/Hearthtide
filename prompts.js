@@ -97,6 +97,24 @@ export function buildStatePrompt(ctx) {
         }
     }
 
+    // {{char}} и {{user}}: как они сейчас
+    if (state.pair) lines.push(`${charName} and ${userName}: friendship ${state.pair.f}/100, romance ${state.pair.r} (−100…100)${state.pair.note ? ` — ${state.pair.note}` : ''}.`);
+    // Свидание
+    const dt = state.date;
+    if (dt?.status === 'active') {
+        const steps = dt.steps.map((s, i) => `${i + 1}. ${s.t} (${s.who === 'user' ? userName : charName})${s.done ? ' — done' : ''}`).join('; ');
+        lines.push(`${userName} and ${charName} are on a date: ${dt.title}${dt.goal ? ` — meant to ${dt.goal}` : ''}. ${dt.startTurn >= state.turn - 1 ? `${charName} brings it in now${dt.hook ? `: ${dt.hook}` : ''}. ` : ''}Things that could happen: ${steps}. Going ${dt.score}% well so far. Play it out at its own pace — ${charName} does ${charName}'s part, ${userName} decides everything of ${userName}'s own.`);
+    }
+
+    // Люди истории, которые сейчас рядом: кто кому кем приходится и как ладят (0 — вражда, 100 — близки)
+    if (ctx.castSeen?.length) {
+        lines.push(`Who is who: ${ctx.castSeen.map(c => `${c.name} (${c.who || c.group}) — with ${userName} ${c.rel?.user ?? 50}, with ${charName} ${c.rel?.char ?? 50}`).join(' · ')}. Relations show in how they speak and act.`);
+    }
+    // Дни рождения людей вокруг: позовут или промолчат — по отношениям
+    for (const b of ctx.castBdays || []) {
+        lines.push(`${b.name}'s birthday ${b.days === 0 ? 'is today' : `is in ${b.days} day${b.days === 1 ? '' : 's'}`}. Whether ${b.name} brings it up or invites — and whom — follows how they get on (with ${userName} ${b.relU}, with ${charName} ${b.relC}): on good terms they mention it or invite; on bad terms they keep quiet or leave someone out.${b.nudge ? ` This reply, if the scene allows: ${b.name} or someone close to them brings it up.` : ''}`);
+    }
+
     // Воспоминание по кнопке «вспомнить» — один раз
     const fb = state.recall && (state.flashbacks || []).find(f => f.id === state.recall);
     if (fb) lines.push(`${charName} suddenly remembers: ${fb.title} — ${fb.text} Let it surface naturally in this reply.`);
@@ -152,11 +170,35 @@ function holidayGuide(ctx) {
 // Список людей — общий текст для подготовки и обновлений
 function peopleRules(ctx) {
     const { userName, charName } = ctx;
-    return `HT-PEOPLE replaces the previous list. P lines: up to 6 people taking part in this holiday (not ${charName}, not ${userName}) — those in the story, and for a family occasion the kin and those its custom calls for. GROUP: relative | friend | acquaintance (to ${userName}). WANT: what this person wants, hopes, plans or worries about around the holiday, a few words — something that could draw them into the story; never what they are doing in the current scene, and each person different. GIFT: their gift while still pending, else empty. No surprise meant for ${userName} spoiled, no one who has left. D lines: people whose part is done (gave their gift, did their bit) — what they did; they leave the P list. Skip the block if nobody qualifies.`;
+    return `HT-PEOPLE replaces the previous list. P lines: up to 8 people taking part in this holiday (not ${charName}, not ${userName}) — those in the story, kin first, and for a family occasion also those its custom calls for. Each person once, under the name the story uses for them (never the same person twice under a name and a role). GROUP: relative = kin of ${userName} or of ${charName}, by blood or marriage (parents, siblings, in-laws); friend; acquaintance — judge by the card, persona and story. WANT: what this person wants, hopes, plans or worries about around the holiday, a few words — something that could draw them into the story; it must fit where they are and what they have just done in the latest messages, never what they are doing in the current scene, each person different. GIFT: their gift while still pending, else empty. No surprise meant for ${userName} spoiled, no one who has left. D lines: people whose part is done (gave their gift, did their bit) — what they did; they leave the P list. Skip the block if nobody qualifies.`;
 }
 const PEOPLE_BLOCK = '<!-- HT-PEOPLE\nP | NAME | GROUP | WANT | GIFT\nD | NAME | WHAT_THEY_DID\n-->';
 
 // ═══ Правила крупных блоков — общие для инджекта и отдельного запроса ═══
+
+// Люди истории: каждого — один раз; потом только изменения отношений
+function castRule(ctx) {
+    const { state, userName, charName } = ctx;
+    const known = (state.cast || []).map(c => c.name);
+    const no = state.castNo || [];
+    return `<!-- HT-CAST
+C | NAME | GROUP | WHO | BIRTHDAY | WITH_USER | WITH_CHAR | LOVE_USER | LOVE_CHAR
+R | NAME | WITH_USER | WITH_CHAR | LOVE_USER | LOVE_CHAR
+-->
+C: people of the story not in the list yet (not ${userName}, not ${charName}) who have appeared or been named, once each, under the name the story uses. GROUP: relative (kin of ${userName} or ${charName}, by blood or marriage) | friend | acquaintance | other. WHO: who they are to ${userName} and to ${charName}, a few words in ${langOf(ctx)}. BIRTHDAY: DD.MM or DD.MM.YYYY only if the story, card or lore states it, else empty. WITH_USER / WITH_CHAR: how they get on, 0–100 (0 enmity, 50 neutral, 100 very close), by the story. LOVE_USER / LOVE_CHAR: romance, −100 (hatred, exes) … 0 (none) … 100 (deep love); empty for relatives.
+R: only someone whose relations clearly changed in the latest messages — the new numbers.
+Leave the block out if there is nothing.${known.length ? ` Already listed: ${known.join(', ')}.` : ''}${no.length ? ` Never add: ${no.join(', ')}.` : ''}`;
+}
+
+// Свидание, которое {{char}} может предложить: игрок решает кнопками
+function dateOfferRule(ctx) {
+    const { state, userName, charName } = ctx;
+    const p = state.pair || {};
+    const past = (state.datesDone || []).slice(-3).map(d => d.title);
+    const gift = state.charGift && !state.charGift.done && state.charGift.text ? ` ${charName}'s gift is ready (${state.charGift.text}) — it may be part of it.` : '';
+    return `<!-- HT-DATE title=… | goal=… | hook=… | steps=… -->
+A date ${charName} could invite ${userName} to, by ${charName}'s nature and how they stand now (friendship ${p.f ?? 50}, romance ${p.r ?? 0}${p.note ? `, ${p.note}` : ''}) — if they have quarrelled, it may be a way to make up. title: where and what, a few words; goal: what it is meant to mend, say or celebrate; hook: one sentence on how ${charName} asks; steps: 3–4 small things for it, each marked (char) or (user), separated by ;.${gift} True to the era and place.${past.length ? ` Different from: ${past.join(' / ')}.` : ''} If ${charName} wouldn't ask now (too proud, too hurt, the moment is wrong), write <!-- HT-DATE none -->. It is only offered — ${userName} decides first. In ${langOf(ctx)}.`;
+}
 
 // Случайный ивент: предлагается игроку кнопками, в историю входит, только если он принял
 function eventOfferRule(ctx) {
@@ -189,7 +231,7 @@ S | ERA_AND_YEAR | FAITH | PLACE${askMode ? ' | MODE' : ''}
 H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP
 ${needB ? `B | user | MM-DD | PREP\nB | char | MM-DD | PREP\n` : ''}${gap ? `X | YYYY-MM-DD | NAME | TYPE\n` : ''}-->
 - S: the era by name and the year${ctx.eraMode === 'modern' ? '' : ', as people of that time would say it (our reckoning in brackets only if theirs differs)'} — not a bare date; FAITH — ${ctx.eraMode === 'modern' && ctx.faithMode === 'secular' ? 'secular' : 'the faith(s) people actually live by'}; PLACE — the kind of place and its proper name exactly as the story gives it (never invent a name the story doesn't use).${askMode ? ' MODE — present if the story is set in our real world today, otherwise past (history, fantasy, other worlds).' : ''}
-- H: the next 4 holidays from the current date, in date order, decided briskly${known.length ? `, continuing after: ${known.join(', ')}` : ''}. Only days people there already keep — never something still to happen in the story (a disaster, a death, a battle). ${holidayGuide(ctx)} Compute movable feasts properly for that year and calendar.${easterHint(ctx)} Occasions the story itself has set up or announced come first. Also add personal and family occasions the story gives grounds for (birthdays and name days of the characters and people close to them, weddings, anniversaries, a newborn's naming, memorial days of relatives, a housewarming) — only dates the card, lore or story actually gives, never guessed. DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | family | supernatural | fast | memorial. PREP = how many days before it people actually start getting ready or feel it coming (0 for a minor day; a great feast may be weeks). Birthdays of ${userName} and ${charName} go only in B lines, never as H.${needB ? `\n- B: birthdays of ${userName} and ${charName} only if the card, persona or story states them; otherwise leave that line out — never guess.` : ''}${gap ? `\n- X: holidays the time skip jumped over, ${gap.from} to ${gap.to}, by the same rules.` : ''}${ctx.passed?.length ? `\n- Already passed this year, don't repeat: ${ctx.passed.join(', ')}.` : ''}${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}
+- H: the next 4 holidays from the current date, in date order, decided briskly${known.length ? `, continuing after: ${known.join(', ')}` : ''}. Only days people there already keep — never something still to happen in the story (a disaster, a death, a battle). ${holidayGuide(ctx)} Compute movable feasts properly for that year and calendar.${easterHint(ctx)} Occasions the story itself has set up or announced come first. Also add personal and family occasions the story gives grounds for (birthdays and name days of the characters and people close to them, weddings, anniversaries, a newborn's naming, memorial days of relatives, a housewarming) — only dates the card, lore or story actually gives, never guessed. DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | family | supernatural | fast | memorial. PREP = how many days before it people actually start getting ready or feel it coming (0 for a minor day; a great feast may be weeks). Birthdays of ${userName} and ${charName} go only in B lines, never as H; birthdays of other people are tracked separately — not as H.${needB ? `\n- B: birthdays of ${userName} and ${charName} only if the card, persona or story states them; otherwise leave that line out — never guess.` : ''}${gap ? `\n- X: holidays the time skip jumped over, ${gap.from} to ${gap.to}, by the same rules.` : ''}${ctx.passed?.length ? `\n- Already passed this year, don't repeat: ${ctx.passed.join(', ')}.` : ''}${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}
 - All of it in ${lang}: translate holiday names even if the story's world speaks another language.`;
 }
 
@@ -243,6 +285,13 @@ All text values in these comments: ${lang} only.`];
     if (ctx.fixPlace) out.push(`Add place=… to the HT line THIS reply: the current place rewritten in ${lang}.`);
     if (ctx.fixSetting) out.push(`ALSO add after the HT line: <!-- HT-CAL\nS | ERA_AND_YEAR | FAITH | PLACE\n--> — the current setting rewritten in ${lang}.`);
     if (state.missed > 0) out.push(`Your previous reply had no HT line — include it now.`);
+    // {{char}} и {{user}}: дружба / романтика — коротко в теге, только когда меняется
+    const pr = state.pair;
+    out.push(pr
+        ? `Add bond=FRIENDSHIP/ROMANCE and bond_note=… to the HT line only when this reply clearly changes how ${charName} and ${userName} stand (now ${pr.f}/${pr.r}${pr.note ? `, ${pr.note}` : ''}).`
+        : `Add bond=FRIENDSHIP/ROMANCE and bond_note=… to the HT line: how ${charName} and ${userName} stand now by the card and story — friendship 0–100; romance −100 (hatred, exes) … 0 (none) … 100 (deep love); bond_note a few words in ${lang}.`);
+    const dt = state.date?.status === 'active' ? state.date : null;
+    if (dt) out.push(`During the date add to the HT line: date_step=N when step N happens in this reply; date_mood=up or down when it clearly goes better or worse; date_end=yes when the date is over.`);
     if (charDue(state, phase)) {
         out.push(`Add char=… to the HT line: a short thought of ${charName}'s about the holiday right now, in ${charName}'s own voice, under 12 words — about the feast, the people in it or what is coming, never a description of what ${charName} is doing; a new thought each time, not echoing earlier ones.`);
     }
@@ -276,6 +325,9 @@ All text values in these comments: ${lang} only.`];
     if (request === 'prep' && h) out.push(`ALSO add after the HT line:\n${prepRule(ctx)}`);
     if (request === 'day' && h) out.push(`ALSO add after the HT line: ${dayRule(ctx)}`);
     if (request === 'replan' && h) out.push(`ALSO add after the HT line: ${replanRule(ctx)}`);
+    if (request === 'cast') out.push(`ALSO add after the HT line:\n${castRule(ctx)}`);
+    if (request === 'date') out.push(`ALSO add after the HT line, NOT written into this reply's story:\n${dateOfferRule(ctx)}`);
+    if (!dt && state.date?.status !== 'offered') out.push(`If in this reply ${userName} and ${charName} set off on a date, add after the HT line: <!-- HT-DATE title=… | goal=… | steps=… | started=yes --> (steps: 3–4 small things for it, each marked (char) or (user)).`);
     if (request === 'event' && h) out.push(`ALSO add after the HT line, NOT written into this reply's story:\n${eventOfferRule(ctx)}`);
     if (request === 'moment' && h) {
         const ev = openEvent(state, h.id);
@@ -316,6 +368,7 @@ export function buildSideMessages(ctx, needs, src) {
     if (needs.has('prep') && h) task.push(prepRule(ctx));
     if (needs.has('day') && h) task.push(dayRule(ctx));
     if (needs.has('replan') && h) task.push(replanRule(ctx));
+    else if (needs.has('plancheck') && h) task.push(`Only if the latest messages have moved away from today's plan (something happened earlier, later or differently): ${replanRule(ctx)} Leave this block out if the plan still holds.`);
     if (needs.has('people') && h) task.push(`${PEOPLE_BLOCK}\n${peopleRules(ctx)}`);
     if (needs.has('recap') && phase.ended) task.push(recapRule(ctx));
 
@@ -337,6 +390,10 @@ export function buildSideMessages(ctx, needs, src) {
 Only if the latest messages show something new at "${ev?.title || 'the gathering'}" that ${userName} joined — a few words. Leave it out otherwise.${ev?.moments?.length ? ` Already: ${ev.moments.slice(-3).map(m => m.title).join(' / ')}.` : ''}`);
     }
     if (needs.has('evoffer') && h) task.push(eventOfferRule(ctx));
+    if (needs.has('cast')) task.push(castRule(ctx));
+    if (needs.has('dateoffer')) task.push(dateOfferRule(ctx));
+    else if (needs.has('datewatch')) task.push(`<!-- HT-DATE title=… | goal=… | steps=… | started=yes -->
+Only if the latest messages show ${userName} and ${charName} setting off on a date that isn't tracked yet. steps: 3–4 small things for it, each marked (char) or (user). Leave it out otherwise.`);
     if (needs.has('new')) {
         const known = [...(state.holidays || []).map(x => x.name), ...(ctx.offerNames || []), ...(ctx.passed || [])].filter(Boolean).slice(0, 14);
         task.push(`<!-- HT-NEW CAUSE | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP -->
