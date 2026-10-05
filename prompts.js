@@ -271,7 +271,7 @@ function recapRule(ctx) {
     const e = phase.ended;
     const hl = (state.highlights?.[e.id] || []).map(x => `${x.name} — ${x.text}`).join('; ');
     const g = state.charGift?.hid === e.id && state.charGift.done ? state.charGift.text : null;
-    return `<!-- HT-RECAP text=… | done=… | gifts=… | best=… --> In ${langOf(ctx)}, only what the story showed: text — how ${hName(e, ctx)} went for ${userName} and ${charName}, one or two sentences; done — what was done or kept, a few short items separated by ;; gifts — who gave what to whom, separated by ; (empty if none); best — the one moment worth remembering, a few words.${hl || g ? ` Facts: ${[g && `${charName}'s gift: ${g}`, hl].filter(Boolean).join('; ')}.` : ''}`;
+    return `<!-- HT-RECAP text=… | done=… | gifts=… | best=… --> In ${langOf(ctx)}, only what the story showed: text — how ${hName(e, ctx)} went for ${userName} and ${charName}, one or two short sentences (under 40 words); done — what was done or kept, a few short items separated by ;; gifts — who gave what to whom, separated by ; (empty if none); best — the one moment worth remembering, a few words.${hl || g ? ` Facts: ${[g && `${charName}'s gift: ${g}`, hl].filter(Boolean).join('; ')}.` : ''}`;
 }
 
 // ─── 2. Правило тега (конец промпта) ───

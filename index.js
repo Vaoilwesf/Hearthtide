@@ -1718,6 +1718,13 @@ function castTabHtml(view, live) {
     return `${subtabs}<div class="ht-gallery">${pair}${cards || (pair ? '' : `<p class="ht-mute ht-gallery-empty">${L().castEmpty}</p>`)}</div>`;
 }
 
+// Итог праздника — под спойлером «Итог», чтобы список был коротким
+function recapSpoiler(text, parts) {
+    if (!text && !parts) return '';
+    return `<details class="ht-recap"><summary><i class="fa-solid fa-scroll"></i><span>${L().recapTitle}</span><i class="fa-solid fa-chevron-down ht-recap-chev"></i></summary>
+        ${text ? `<p>${esc(text)}</p>` : ''}${recapPartsHtml(parts)}</details>`;
+}
+
 // Короткий итог праздника по пунктам: сделали · подарки · лучший момент
 function recapPartsHtml(p) {
     if (!p) return '';
@@ -1814,7 +1821,7 @@ function castFormHtml(p, photo) {
             <label>${esc(L().toWhom(getCharName()))}<input class="text_pole" data-ed="toC" value="${esc(p.toC || '')}"></label>
         </div>
         <label>${L().fGroup}<select class="text_pole" data-ed="group">${groups}</select></label>
-        <label>${L().fBday}<input class="text_pole" data-ed="bday" value="${esc(bdayText(p.bday))}" inputmode="numeric" placeholder="21.12.1123"></label>
+        <label>${L().fBday}<input class="text_pole" data-ed="bday" value="${esc(bdayText(p.bday))}" inputmode="numeric" placeholder="${esc(L().unknown)}"></label>
         <div class="ht-edit-two">
             <label>${esc(getUserName())} −100…100<input class="text_pole" data-ed="relU" type="number" min="-100" max="100" value="${p.rel?.user ?? 0}"></label>
             <label>${esc(getCharName())} −100…100<input class="text_pole" data-ed="relC" type="number" min="-100" max="100" value="${p.rel?.char ?? 0}"></label>
@@ -2043,7 +2050,7 @@ function bodyHtml(view, live, tab = 'now') {
         const [, m, d] = i.iso.split('-');
         return `<div class="ht-yr${i.kept ? '' : ' ht-yr-missed'}">
             <time>${d}.${m}</time><i class="fa-solid ${TYPE_ICON[i.type] || 'fa-star'}"></i>
-            <div><b>${esc(i.name)}</b>${i.recap ? `<p>${esc(i.recap)}</p>` : ''}${recapPartsHtml(i.parts)}</div>
+            <div><b>${esc(i.name)}</b>${recapSpoiler(i.recap, i.parts)}</div>
             <em>${i.kept ? L().yearKept : L().yearMissed}</em></div>`;
     }).join('');
 
@@ -2052,7 +2059,7 @@ function bodyHtml(view, live, tab = 'now') {
         const queued = view.recall === f.id;
         const btn = live ? `<button class="ht-recall${queued ? ' ht-on' : ''}" data-act="recall" data-fb="${esc(f.id)}" title="${queued ? L().recallQueued : L().recall}">
             <i class="fa-solid fa-clock-rotate-left"></i><span>${queued ? L().recallShort : L().recall}</span></button>` : '';
-        return `<div class="ht-fb"><div><b>${esc(f.title)}</b>${f.when ? `<span class="ht-mute"> · ${esc(f.when)}</span>` : ''}<p>${esc(f.text)}</p>${recapPartsHtml(f.parts)}</div>${btn}</div>`;
+        return `<div class="ht-fb"><div><b>${esc(f.title)}</b>${f.when ? `<span class="ht-mute"> · ${esc(f.when)}</span>` : ''}${recapSpoiler(f.text, f.parts)}</div>${btn}</div>`;
     }).join('');
 
     // Вкладки сверху: праздник сейчас и прошедшие за год — год не растягивает инфоблок вниз

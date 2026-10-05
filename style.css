@@ -606,3 +606,26 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-recap-parts { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 0.86em; color: var(--ht-mute); }
 .ht-recap-parts > li { display: flex; gap: 6px; align-items: baseline; }
 .ht-recap-parts > li > i { color: var(--ht-acc); width: 1em; text-align: center; flex: none; }
+
+/* итог праздника под спойлером */
+.ht-recap { margin-top: 4px; }
+.ht-recap > summary { display: inline-flex; align-items: center; gap: 6px; list-style: none; cursor: pointer; padding: 2px 9px; border-radius: 999px;
+    border: 1px solid var(--ht-line); color: var(--ht-mute); font-size: 0.82em; }
+.ht-recap > summary::-webkit-details-marker { display: none; }
+.ht-recap > summary > i:first-child { color: var(--ht-acc); }
+.ht-recap-chev { font-size: 0.8em; transition: transform 0.2s ease; }
+.ht-recap[open] > summary { color: var(--ht-fg); border-color: color-mix(in srgb, var(--ht-acc) 55%, transparent); }
+.ht-recap[open] .ht-recap-chev { transform: rotate(180deg); }
+.ht-recap > p { margin: 6px 0 0; color: var(--ht-fg); font-size: 0.9em; line-height: 1.4; }
+
+/* карточки людей — пониже */
+.ht-cc { padding: 7px 5px 4px; gap: 2px; }
+.ht-cc-top .ht-ava { width: 42px; height: 42px; }
+.ht-cc-name { font-size: 0.88em; }
+.ht-cc-role { font-size: 0.7em; line-height: 1.2; }
+.ht-cc-bars { gap: 2px; margin-top: 1px; }
+.ht-mini { gap: 1px; }
+.ht-mini > .ht-mini-bar { height: 5px; }
+.ht-cc-status { font-size: 0.68em; }
+.ht-ib .ht-cc-tools > button { padding: 1px 6px; font-size: 0.74em; }
+@media (max-width: 420px) { .ht-cc-top .ht-ava { width: 40px; height: 40px; } }

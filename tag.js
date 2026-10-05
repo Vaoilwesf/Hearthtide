@@ -10,6 +10,14 @@ const clean = (v, max = 400) => {
     const x = String(v ?? '').replace(/\s+/g, ' ').trim();
     return x && !/^(none|null|нет|-|—|n\/a)$/i.test(x) ? x.slice(0, max) : null;
 };
+// длинный текст режем по концу предложения, а не на полуслове
+const cleanSentences = (v, max) => {
+    const x = clean(v, 4000);
+    if (!x || x.length <= max) return x;
+    const cut = x.slice(0, max);
+    const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '), cut.lastIndexOf('… '));
+    return end > max * 0.4 ? cut.slice(0, end + 1) : `${cut.replace(/\s+\S*$/, '')}…`;
+};
 
 function fields(inner) {
     const out = {};
@@ -280,8 +288,8 @@ export function parseDateBlock(text) {
 export function parseRecap(text) {
     const inner = findBlock(text, 'HT-RECAP');
     if (inner == null) return null;
-    if (!/\btext\s*[=:]/i.test(inner)) return clean(inner, 300);      // старый вид — просто текст
-    return clean(fields(inner).text, 300);
+    if (!/\btext\s*[=:]/i.test(inner)) return cleanSentences(inner, 700);      // старый вид — просто текст
+    return cleanSentences(fields(inner).text, 700);
 }
 /** Короткий итог по пунктам: что сделали, подарки, лучший момент */
 export function parseRecapParts(text) {
