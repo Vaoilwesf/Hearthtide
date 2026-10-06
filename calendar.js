@@ -188,7 +188,13 @@ export function sideNeeds(state, phase) {
     // пара {{char}} и {{user}} ещё не ясна — начальные значения по карточке и персоне
     if (!state.pair) n.add('bond');
     // свидание: заметить, если история сама к нему пришла (предлагает его основная модель — прямо в ответе)
-    if (!state.dateRoll && (!state.date || state.date.status === 'ended')) n.add('datewatch');
+    const ds = state.date?.status;
+    if (!state.dateRoll && (!state.date || ds === 'ended' || ds === 'missed')) n.add('datewatch');
+    // идёт — судить шаги каждый ответ; намечено и срок близко — заметить, что началось
+    if (ds === 'active') n.add('date');
+    if (ds === 'scheduled' && dateHoursLeft(state) != null && dateHoursLeft(state) <= 30) n.add('date');
+    // кончилось без итога — дописать итог
+    if (state.dateRecapFor) n.add('daterecap');
     return n;
 }
 
@@ -201,7 +207,7 @@ export const CENSUS_DEPTH = 30;
 /** Отправлять ли отдельный запрос после этого ответа */
 export function sideDue(state, phase, needs) {
     // то, без чего инфоблок пустой или неверный, — сразу
-    if (['recap', 'cal', 'mean', 'day', 'replan', 'census'].some(k => needs.has(k))) return true;
+    if (['recap', 'cal', 'mean', 'day', 'replan', 'census', 'date', 'daterecap'].some(k => needs.has(k))) return true;
     // пара ещё не ясна — спросить сразу, но не чаще раза в 5 ответов, если помощник её не дал
     if (needs.has('bond') && (state.turn || 0) - (state.bondSide ?? -99) >= 5) return true;
     const since = (state.turn || 0) - (state.lastSideTurn ?? -99);
@@ -250,3 +256,11 @@ export function offeredEvent(state) {
 /** Шанс случайного ивента после ответа, в процентах: в праздник чаще, в подготовке реже */
 export const EVENT_CHANCE = { today: 35, prep: 15 };
 export const EVENT_COOLDOWN = 3;
+
+/** Сколько часов до намеченного свидания (отрицательное — срок прошёл); null — неизвестно */
+export function dateHoursLeft(state) {
+    const at = state.date?.at;
+    if (!at || state.today == null) return null;
+    const day = at.day ?? state.today;
+    return (day - state.today) * 24 + (at.clock ?? 18) - (state.clock ?? 12);
+}

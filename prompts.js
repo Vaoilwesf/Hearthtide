@@ -2,7 +2,8 @@
 // Весь инджект — на английском. Значения для инфоблока ИИ пишет на выбранном языке.
 
 import { isoOf, fromDayNum, easterJulian, easterGregorian } from './dates.js';
-import { hasGifts, charDue, isIntimate, openEvent } from './calendar.js';
+import { hasGifts, charDue, isIntimate, openEvent, dateHoursLeft } from './calendar.js';
+import { openSteps, goalOpen, DATE_OPEN } from './romance.js';
 
 const PART_EN = { morning: 'morning', day: 'daytime', evening: 'evening', night: 'night' };
 
@@ -105,12 +106,8 @@ export function buildStatePrompt(ctx) {
 
     // {{char}} и {{user}}: как они сейчас
     if (state.pair) lines.push(`${charName} and ${userName}: friendship ${state.pair.f}, romance ${state.pair.r} (both −100…100, 0 neutral)${state.pair.note ? ` — ${state.pair.note}` : ''}.`);
-    // Свидание
-    const dt = state.date;
-    if (dt?.status === 'active') {
-        const steps = dt.steps.map((s, i) => `${i + 1}. ${s.t} (${s.who === 'user' ? userName : charName})${s.done ? ' — done' : ''}`).join('; ');
-        lines.push(`${userName} and ${charName} are on a date: ${dt.title}${dt.goal ? ` — meant to ${dt.goal}` : ''}. ${dt.startTurn >= state.turn - 1 ? `${userName} said yes — the date begins now. ` : ''}Things that could happen: ${steps}. Going ${dt.score}% well so far. Play it out at its own pace — ${charName} does ${charName}'s part, ${userName} decides everything of ${userName}'s own.`);
-    }
+    // Свидание: намечено (понимание, что скоро; напомнить, только если {{char}} о нём забыл) или идёт (шаги {{char}} и общие)
+    lines.push(...dateStateLines(ctx));
 
     // Люди истории, которые сейчас рядом: кто кому кем приходится и как ладят (0 — вражда, 100 — близки)
     if (ctx.castSeen?.length) {
@@ -188,6 +185,7 @@ function castRule(ctx) {
     const known = (state.cast || []).map(c => c.name || `? (${[c.toU, c.toC].filter(Boolean).join(' / ')})`);
     const no = state.castNo || [];
     const hint = (ctx.castHint || []).map(x => `${x.name} (${x.n})`);
+    const bare = (state.cast || []).filter(c => c.name && !c.toU && !c.toC && !c.edited).map(c => c.name);
     return `<!-- HT-CAST
 C | NAME | GROUP | TO_USER | TO_CHAR | BIRTHDAY | WITH_USER | WITH_CHAR | HOW_USER | HOW_CHAR
 R | NAME | WITH_USER | WITH_CHAR | HOW_USER | HOW_CHAR
@@ -195,7 +193,78 @@ R | NAME | WITH_USER | WITH_CHAR | HOW_USER | HOW_CHAR
 C: people of the story not in the list yet (not ${userName}, not ${charName}), once each. NAME: the person's own name only — never a role as a name; if the story hasn't named them yet, write ?. GROUP: kin_user (${userName}'s own blood family) | kin_char (${charName}'s own blood family) | kin_both (children or grandchildren ${userName} and ${charName} share) | friend | acquaintance | other. TO_USER / TO_CHAR: who they are to ${userName} and to ${charName}, a word or two each, in ${langOf(ctx)}. Work out kinship from the card, persona, lore and story — never guess what they don't support. BIRTHDAY: DD.MM or DD.MM.YYYY only if stated, else empty. WITH_USER / WITH_CHAR: how they get on, −100 (enmity) … 0 (neutral) … 100 (very close). HOW_USER / HOW_CHAR: how they are with each, 2–4 words of your own, specific to these two people — not a generic label, in ${langOf(ctx)}.
 R: only someone whose relations clearly changed in the latest messages — the new numbers and words.${ctx.census ? `
 Census: go through the card, persona, world info and the whole story above and list everyone who matters and isn't listed yet, up to 10 C lines — kin of both sides first, then those the story names most often.` : ''}
-Leave the block out if there is nothing.${hint.length ? ` Often named in the story: ${hint.join(', ')} — add those who are people.` : ''}${known.length ? ` Already listed: ${known.join(', ')}.` : ''}${no.length ? ` Never add: ${no.join(', ')}.` : ''}`;
+${bare.length ? `Listed without roles yet: ${bare.join(', ')} — send C lines for them too, with what the story shows.\n` : ''}Leave the block out if there is nothing.${hint.length ? ` Often named in the story: ${hint.join(', ')} — add those who are people.` : ''}${known.length ? ` Already listed: ${known.join(', ')}.` : ''}${no.length ? ` Never add: ${no.join(', ')}.` : ''}`;
+}
+
+// ═══ Свидания ═══
+const whoName = (ctx, w) => (w === 'user' ? ctx.userName : w === 'char' ? ctx.charName : 'either of them');
+/** Когда назначено — словами для модели */
+export function dateAtText(state, at) {
+    if (!at) return 'soon';
+    if (at.now) return 'right now';
+    const day = at.day ?? state.today;
+    const d = state.today != null && day != null ? day - state.today : null;
+    const hh = at.clock != null ? `${String(Math.floor(at.clock)).padStart(2, '0')}:${String(Math.round((at.clock % 1) * 60)).padStart(2, '0')}` : '';
+    const dayTxt = d == null ? isoOf(day) : d === 0 ? 'today' : d === 1 ? 'tomorrow' : d < 0 ? 'earlier' : `in ${d} days (${isoOf(day)})`;
+    return `${dayTxt}${hh ? ` at ${hh}` : ''}`;
+}
+function dateStateLines(ctx) {
+    const { state, userName, charName } = ctx;
+    const d = state.date;
+    const out = [];
+    if (state.dateMissed?.turn >= state.turn) out.push(`The planned date (${state.dateMissed.title}) never happened — ${charName} notices it in ${charName}'s own way.`);
+    if (!d) return out;
+    if (d.status === 'scheduled') {
+        const left = dateHoursLeft(state);
+        if (left == null || left > 30) return out;
+        out.push(`Planned: ${charName} and ${userName} have a date — ${d.title}${d.where ? `, ${d.where}` : ''}, ${dateAtText(state, d.at)}${d.goal ? `; it is meant to ${d.goal}` : ''}. ${charName} knows it and gets ready in ${charName}'s own way; if the story brings it on earlier, it begins then.`);
+        // помним — не подталкиваем; забыл, а срок близко — напомнить
+        if (left <= 4 && !ctx.dateMentioned) out.push(`It is close and ${charName} hasn't given it a thought lately — let ${charName} remember it now and act on it.`);
+        return out;
+    }
+    if (d.status !== 'active') return out;
+    const open = openSteps(d);
+    const mine = open.filter(s => s.who === 'char').map(s => s.t);
+    const both = open.filter(s => s.who === 'both').map(s => s.t);
+    const goal = d.goal ? ` Its point: ${d.goal}${d.goalDone ? ' — reached.' : goalOpen(d, ctx.dateLevel) ? ' — within reach now; let it come when the moment is right.' : ' — not yet; first more closeness.'}` : '';
+    out.push(`${userName} and ${charName} are on a date: ${d.title}${d.where ? `, ${d.where}` : ''}.${d.startTurn >= state.turn - 1 ? ' It begins now.' : ''}${goal}${mine.length ? ` ${charName}'s next steps: ${mine.join('; ')} — gently, one at a time, as the scene allows.` : ''}${both.length ? ` Either may: ${both.join('; ')}.` : ''}${d.vibe ? ` So far: ${d.vibe}.` : ''}${d.thought ? ` ${charName} thinks: ${d.thought}` : ''} ${userName} decides everything of ${userName}'s own.`);
+    return out;
+}
+
+/** Ход свидания — для помощника (по [NEW]) и для основной модели без помощника (по этому ответу) */
+function dateUpRule(ctx, main = false) {
+    const { state, userName, charName } = ctx;
+    const d = state.date;
+    const lang = langOf(ctx);
+    const scope = main ? 'in this reply' : 'in the messages marked [NEW]';
+    if (d.status === 'scheduled') {
+        return `<!-- HT-DATE-UP\nSTART\n-->\nOnly if the date "${d.title}" (planned ${dateAtText(state, d.at)}) has actually begun ${scope}; otherwise leave it out.`;
+    }
+    const open = openSteps(d);
+    const list = open.map(s => `${s.n}. ${s.t} (${whoName(ctx, s.who)})`).join('; ');
+    const goal = d.goalDone ? 'reached' : goalOpen(d, ctx.dateLevel) ? 'within reach — GOAL once the story reaches it' : 'locked until more steps are done';
+    return `<!-- HT-DATE-UP
+DONE | N | NOTE
+FAIL | N | NOTE
+NEW | STEP | char|user|both
+MOOD | up|down
+VIBE | …
+THOUGHT | …
+GOAL
+END | RECAP
+-->
+The date: ${d.title}; goal: ${d.goal || '—'} (${goal}). Open steps: ${list || 'none yet'}. Judge only what happens ${scope}.
+- DONE: a step that clearly happened (a both-step — when either did it). NOTE: what came of it, past tense, one line, real names declined properly — who learned, felt or gave what.
+- FAIL: a step that was tried but met a refusal, coldness or a bad reaction; NOTE: what went wrong. Then a NEW step that grows out of it and softens the moment — never named as fixing it.
+- NEW: keep ${DATE_OPEN} steps open, one per freed place: small romantic things or moments of closeness that grow out of this date and what is happening now — getting to know each other, attention, tenderness, touch, shared moments, confessions; true to its goal and kind (a first meeting may end in asking to meet again, or for a way to reach each other in a modern setting; making up may bring a gift or an apology from ${charName}). Never chores, errands, children or anything off the date. Who: char — ${charName} only; user — ${userName}'s move; both — either. Weigh who leads and who is shy by the card, persona, lore and how they stand. Real names; never (user), (char) or {{…}}.
+- MOOD only if it clearly went better or worse beyond the steps. VIBE: how the date goes overall, 2–5 words. THOUGHT: ${charName}'s private thought about the date, in ${charName}'s own manner, under 15 words.
+- GOAL only when the story itself reaches the goal. END when the date is over in the story; RECAP: how it went, one or two sentences.
+Leave out lines with nothing to say. Text in ${lang}.`;
+}
+
+function dateRecapRule(ctx) {
+    const last = (ctx.state.datesDone || []).slice(-1)[0];
+    return `<!-- HT-DATE-UP\nRECAP | TEXT | BEST\n-->\nThe date "${last?.title || ''}" is over: TEXT — how it went for ${ctx.userName} and ${ctx.charName}, one or two sentences, only what the story showed; BEST — the moment worth remembering, a few words. In ${langOf(ctx)}.`;
 }
 
 // Свидание, которое {{char}} может предложить: игрок решает кнопками.
@@ -205,7 +274,7 @@ function dateOfferRule(ctx) {
     const p = state.pair || {};
     const past = (state.datesDone || []).slice(-3).map(d => d.title);
     const gift = state.charGift && !state.charGift.done && state.charGift.text ? ` ${charName}'s gift is ready (${state.charGift.text}) — it may be part of it.` : '';
-    return `${state.dateRollTry ? 'REQUIRED — your last reply skipped it. ' : ''}This reply ${charName} asks ${userName} on a date — the moment has come; the only question is how. In ${charName}'s own way, as fits who ${charName} is and how they stand now (friendship ${p.f ?? 0}, romance ${p.r ?? 0}${p.note ? `, ${p.note}` : ''}): openly, shyly, in passing or as a half-joke; after a quarrel — as a way to make up. Write only the asking; ${userName} answers. Then add after the HT line: <!-- HT-DATE title=… | goal=… | hook=… | steps=… --> — title: where and what, a few words; goal: what it is meant to mend, say or celebrate; hook: how ${charName} asked, one sentence; steps: 3–4 small things for it, each marked (char) or (user), separated by ;.${gift} True to the era and place; in ${langOf(ctx)}.${past.length ? ` Different from: ${past.join(' / ')}.` : ''} Skip it only if the scene is urgent or dangerous — then add nothing.`;
+    return `${state.dateRollTry ? 'REQUIRED — your last reply skipped it. ' : ''}This reply ${charName} asks ${userName} on a date — the moment has come; the only question is how. In ${charName}'s own way, as fits who ${charName} is and how they stand now (friendship ${p.f ?? 0}, romance ${p.r ?? 0}${p.note ? `, ${p.note}` : ''}): openly, shyly, in passing or as a half-joke; after a quarrel — as a way to make up. Write only the asking; ${userName} answers. Then add after the HT line: <!-- HT-DATE title=… | goal=… | hook=… | where=… | at=YYYY-MM-DD HH:MM --> — title: what it is, a few words; goal: what it is meant to mend, say, begin or celebrate; hook: how ${charName} asked, one sentence; where: the place; at: when ${charName} set it for, in the story's calendar (now — if right away).${gift} True to the era and place; in ${langOf(ctx)}.${past.length ? ` Different from: ${past.join(' / ')}.` : ''} Skip it only if the scene is urgent or dangerous — then add nothing.`;
 }
 
 // Случайный ивент: предлагается игроку кнопками, в историю входит, только если он принял
@@ -301,7 +370,10 @@ All text values in these comments: ${lang} only.`];
     // выпал шанс — ивент или приглашение на свидание начинаются прямо в этом ответе, игрок решает кнопками
     if (state.evRoll && h) out.push(eventOfferRule(ctx));
     if (state.dateRoll && !dt) out.push(dateOfferRule(ctx));
-    if (dt) out.push(`During the date add to the HT line: date_step=N when step N happens in this reply; date_mood=up or down when it clearly goes better or worse; date_end=yes when the date is over.`);
+    // без помощника ход свидания ведёт основная модель — по своему же ответу
+    const dateLive = state.date?.status === 'active' || (state.date?.status === 'scheduled' && (dateHoursLeft(state) ?? 99) <= 30);
+    if (!ctx.api && dateLive) out.push(`ALSO add after the HT line:\n${dateUpRule(ctx, true)}`);
+    if (!ctx.api && state.dateRecapFor && !dateLive) out.push(`ALSO add after the HT line: ${dateRecapRule(ctx)}`);
     if (charDue(state, phase)) {
         out.push(`Add char=… to the HT line: a short thought of ${charName}'s about the holiday right now, in ${charName}'s own voice, the way people speak in this era, setting and story, under 12 words — about the feast, the people in it or what is coming, never a description of what ${charName} is doing; a new thought each time, not echoing earlier ones.`);
     }
@@ -342,7 +414,7 @@ All text values in these comments: ${lang} only.`];
     if (request === 'day' && h) out.push(`ALSO add after the HT line: ${dayRule(ctx)}`);
     if (request === 'replan' && h) out.push(`ALSO add after the HT line: ${replanRule(ctx)}`);
     if (request === 'cast') out.push(`ALSO add after the HT line:\n${castRule(ctx)}`);
-    if (!dt && state.date?.status !== 'offered') out.push(`If in this reply ${userName} and ${charName} set off on a date, add after the HT line: <!-- HT-DATE title=… | goal=… | steps=… | started=yes --> (steps: 3–4 small things for it, each marked (char) or (user)).`);
+    if (!dt && !['offered', 'scheduled'].includes(state.date?.status)) out.push(`If in this reply ${userName} and ${charName} set off on a date, add after the HT line: <!-- HT-DATE title=… | goal=… | where=… | started=yes -->.`);
 
     if (request === 'moment' && h) {
         const ev = openEvent(state, h.id);
@@ -384,6 +456,7 @@ export function buildSideMessages(ctx, needs, src) {
     if (needs.has('day') && h) task.push(dayRule(ctx));
     if (needs.has('replan') && h) task.push(replanRule(ctx));
     else if (needs.has('plancheck') && h) task.push(`Only if the latest messages have moved away from today's plan (something happened earlier, later or differently): ${replanRule(ctx)} Leave this block out if the plan still holds.`);
+    if (needs.has('cast') || needs.has('census')) task.push(castRule({ ...ctx, census: needs.has('census') }));
     if (needs.has('people') && h) task.push(`${PEOPLE_BLOCK}\n${peopleRules(ctx)}`);
     if (needs.has('recap') && phase.ended) task.push(recapRule(ctx));
 
@@ -406,9 +479,10 @@ export function buildSideMessages(ctx, needs, src) {
         task.push(`<!-- HT-EV kind=moment | title=… -->
 Only if the latest messages show something new at "${ev?.title || 'the gathering'}" that ${userName} joined — a few words. Leave it out otherwise.${ev?.moments?.length ? ` Already: ${ev.moments.slice(-3).map(m => m.title).join(' / ')}.` : ''}`);
     }
-    if (needs.has('cast') || needs.has('census')) task.push(castRule({ ...ctx, census: needs.has('census') }));
-    if (needs.has('datewatch')) task.push(`<!-- HT-DATE title=… | goal=… | steps=… | started=yes -->
-Only if the latest messages show ${userName} and ${charName} setting off on a date that isn't tracked yet. steps: 3–4 small things for it, each marked (char) or (user). Leave it out otherwise.`);
+    if (needs.has('date') && state.date) task.push(dateUpRule(ctx));
+    if (needs.has('daterecap') && !(needs.has('date') && state.date?.status === 'active')) task.push(dateRecapRule(ctx));
+    if (needs.has('datewatch')) task.push(`<!-- HT-DATE title=… | goal=… | where=… | at=YYYY-MM-DD HH:MM | started=yes -->
+Only if the latest messages show ${userName} and ${charName} on a date that isn't tracked yet (started=yes), or agreeing on one for later (at — when, no started). Leave it out otherwise.`);
     if (needs.has('new')) {
         const known = [...(state.holidays || []).map(x => x.name), ...(ctx.offerNames || []), ...(ctx.passed || [])].filter(Boolean).slice(0, 14);
         task.push(`<!-- HT-NEW CAUSE | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP -->

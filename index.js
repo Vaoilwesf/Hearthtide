@@ -10,10 +10,10 @@ import {
 import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
-import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseRecapParts, stripBlocks } from './tag.js';
-import { PAIR_DEFAULT, newDate, trackDate, toggleStep, finishDate, dateChanceInfo } from './romance.js';
+import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseDateUp, parseRecapParts, stripBlocks } from './tag.js';
+import { PAIR_DEFAULT, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN } from './romance.js';
 import { CAST_GROUPS, KIN_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast, nameCandidates } from './cast.js';
-import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH } from './calendar.js';
+import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt, buildSideMessages, giftTarget } from './prompts.js';
 import { listProfiles, gatherSources, sendSide, reasonOf } from './side.js';
 import { strings } from './i18n.js';
@@ -35,6 +35,7 @@ const LS = {
     depth: 'hearthtide_depth',         // сколько последних сообщений читает отдельный запрос
     eraMap: 'hearthtide_era_map',      // эпоха и вера — отдельно для каждого персонажа или группы
     dateChance: 'hearthtide_date_chance', // шанс, что чар сам позовёт на свидание после ответа (%)
+    dateLevel: 'hearthtide_date_level',   // сложность свиданий: easy | hard
 };
 const lsGet = (k, d) => { const v = localStorage.getItem(k); return v === null ? d : v; };
 const isEnabled = () => lsGet(LS.enabled, 'true') !== 'false';
@@ -49,6 +50,7 @@ function apiProfile() {
 }
 const apiOn = () => isEnabled() && !!apiProfile();
 const sideDepth = () => Number(lsGet(LS.depth, '10')) || 10;
+const dateLevel = () => (lsGet(LS.dateLevel, 'easy') === 'hard' ? 'hard' : 'easy');
 const dateChanceSetting = () => { const n = Number(lsGet(LS.dateChance, '6')); return isNaN(n) ? 6 : Math.max(0, Math.min(30, n)); };
 
 // ─── Эпоха и вера запоминаются для каждого персонажа (и группы) ───
@@ -121,6 +123,10 @@ function defaultState() {
         bondMiss: 0,            // сколько ответов подряд без bond, пока пара не ясна
         bondSide: -99,          // когда помощника последний раз просили начальные значения пары
         dateRollTry: 0,         // выпавшее свидание модель пропустила — просим ещё раз, настойчивее
+        dateRecapFor: null,     // id закончившегося свидания, к которому ещё нужен итог
+        dateRecapTurn: null,
+        dateMissed: null,       // { title, turn } — намеченное свидание не состоялось (одна строка в промпт)
+        dateSeenMsg: null,      // до какого сообщения помощник уже судил ход свидания
         date: null,             // свидание: { id, title, goal, hook, steps [{t, who, done}], score, status offered|active|ended, … }
         dateRoll: false,        // выпал шанс: предложить свидание
         lastDateEnd: -99,
@@ -182,6 +188,8 @@ function loadState() {
     if (state.setting?.place) state.setting.place = tidyPlace(state.setting.place);
     // люди из старых версий: роли, родня по сторонам, романтика — кнопками
     migrateCast(state, getUserName(), getCharName());
+    // свидание из прошлой версии: шаги разом и шкала с 35 % → живые шаги
+    migrateDate(state);
 }
 
 // ИИ иногда пишет тип места словом из промпта на другом языке: «settlement Деревня Березовка» → «Деревня Березовка»
@@ -237,6 +245,9 @@ function ctxFor(request = null) {
         // пара: пока не ясна — сколько ответов подряд без bond; ясна — давно ли сверяли
         bondMiss: state.pair ? 0 : state.bondMiss || 0,
         bondStale: !!state.pair && (state.turn || 0) - (state.lastBondTurn ?? -99) >= BOND_STALE,
+        dateLevel: dateLevel(),
+        // {{char}} сам вспоминал свидание в последних ответах — не подталкивать
+        dateMentioned: dateMentioned(),
         // перепись в инджекте: кого часто называют в истории
         castHint: request === 'cast' ? castHint() : [],
         eraMode: eraMode(),
@@ -591,7 +602,10 @@ function processReply(N) {
     // ── Поводы из истории — ждут решения игрока ──
     if (takeOffers(offersIn)) slip = true;
     // ── Люди истории: новые — один раз, известные — только отношения ──
-    for (const c of castIn) if (mergeCast(state, c, langOk, state.turn)) slip = true;
+    const castLog = [];
+    for (const c of castIn) if (mergeCast(state, c, langOk, state.turn, castLog)) slip = true;
+    if (castIn.length) console.info(`[Hearthtide] люди истории: ${castLog.join('; ') || 'пустой блок'} · всего ${state.cast.length}`);
+    else if (sideAsked.includes('cast')) console.info('[Hearthtide] люди истории: помощник не прислал HT-CAST (если ответ обрезан — см. ответ выше)');
     if (asked === 'cast' || sideAsked.includes('cast')) state.lastCastTurn = state.turn;
     if (sideAsked.includes('census')) state.lastCensusTurn = state.turn;
     if (sideAsked.includes('bond')) state.bondSide = state.turn;
@@ -612,22 +626,46 @@ function processReply(N) {
         state.pair = clone(state.pairSet.pair);
         state.lastBondTurn = state.turn;
     }
-    // ── Свидание: идёт — считаем шаги и настроение; кончилось — итог и уведомление ──
+    // ── Свидание: намечено → началось → шаги (помощник или основная модель) → итог ──
     let dateEnded = null;
-    if (state.date?.status === 'active') {
-        const over = trackDate(state.date, sm, state.turn) || state.turn - (state.date.lastUpdate ?? state.date.turn) > 14;
-        if (over) {
-            dateEnded = finishDate(state, state.turn);
-            if (dateEnded) addFlashback(`${L().dateWord}: ${dateEnded.title}`, L().dateResult[dateEnded.result], 'date');
+    const lvl = dateLevel();
+    const upRaw = (sideText ? parseDateUp(sideText) : null) || parseDateUp(src);
+    const up = upRaw ? tidyDateUp(upRaw) : null;
+    if (sideAsked.includes('date')) state.dateSeenMsg = N;
+    const endNow = () => { const e = finishDate(state, state.turn); if (e) recordDate(state, e); return e; };
+    let dd = state.date;
+    // намеченное началось — в срок или раньше: только теперь шкала и шаги
+    if (dd?.status === 'scheduled' && (up?.start || dateIn?.started)) startDate(dd, state.turn);
+    if (dd?.status === 'scheduled') {
+        const left = dateHoursLeft(state);
+        if (left != null && left < -DATE_MISS_HOURS) {
+            dd.status = 'missed';
+            state.dateMissed = { title: dd.title, turn: state.turn };
+            state.lastDateEnd = state.turn;
+            recordDate(state, dd, true);
         }
     }
+    if (dd?.status === 'active' && up) {
+        const r = applyDateUp(dd, up, state.turn, lvl);
+        if (r.ignoredGoal) console.info('[Hearthtide] свидание: цель ещё закрыта — GOAL пропущен');
+        if (r.moved) console.info(`[Hearthtide] свидание: ${dd.score}% · шагов сделано ${doneCount(dd)} · открыто ${openSteps(dd).length}`);
+        if (r.ended) dateEnded = endNow();
+    }
+    if (dd?.status === 'active' && !dateEnded && state.turn - (dd.lastUpdate ?? dd.turn) > 14) dateEnded = endNow();
+    // итог, дописанный после конца свидания
+    if (up?.recap && state.dateRecapFor && !dateEnded) applyDateRecap(state, state.dateRecapFor, up.recap, up.best);
+    if (state.dateRecapFor && state.turn - (state.dateRecapTurn ?? state.turn) > 3) state.dateRecapFor = null;   // не дождались — без итога
     if (state.date?.status === 'offered' && state.turn - state.date.turn > 4) state.date = null;   // не ответили — забылось
-    if (dateIn && state.date?.status !== 'active' && state.date?.status !== 'offered'
-        && [dateIn.title, dateIn.goal, dateIn.hook, ...dateIn.steps.map(s => s.t)].every(langOk)) {
-        const d = newDate(dateIn, state.turn, dateIn.started);
+    if (dateIn && !['active', 'offered', 'scheduled'].includes(state.date?.status)
+        && [dateIn.title, dateIn.goal, dateIn.hook, dateIn.where].every(langOk)) {
+        const fixed = tidyDateUp({ add: dateIn.steps.map(x => ({ t: x.t, whoRaw: x.who })), done: [], fail: [] }).add;
+        const d = newDate({ ...dateIn, steps: fixed }, state.turn, dateIn.started);
+        if (d.at && !d.at.now && d.at.day == null) d.at.day = state.today;
         const dec = !dateIn.started && state.dateDecisions?.[String(d.title).toLowerCase()];
         if (dec === 'declined') d.status = 'declined';
-        else if (dec === 'accepted') { d.status = 'active'; d.startTurn = state.turn; }
+        else if (dec === 'accepted') acceptInto(state, d);
+        // история договорилась на потом — сразу намечено
+        else if (!dateIn.started && (state.dateDecisions?.[String(d.title).toLowerCase()] === undefined) && sideAsked.includes('datewatch') && d.at && !d.at.now) d.status = 'scheduled';
         if (d.status !== 'declined') state.date = d;
         state.dateRoll = false;
     }
@@ -838,6 +876,68 @@ function echoes(a, b) {
     return n >= 3 && n / Math.min(A.size, B.size) >= 0.4;
 }
 
+// ─── Свидание: служебное ───
+const hoursUntil = (st, at) => (!at || at.now || st.today == null ? null : ((at.day ?? st.today) - st.today) * 24 + (at.clock ?? 18) - (st.clock ?? 12));
+/** Игрок сказал «да»: назначено на потом — намечено (без шкалы и шагов), прямо сейчас — началось */
+function acceptInto(st, d) {
+    const left = hoursUntil(st, d.at);
+    if (left != null && left > 0.75) d.status = 'scheduled';
+    else startDate(d, st.turn);
+}
+/** Ответ модели о свидании: имена вместо {{user}} / (user), кто делает шаг, язык */
+function tidyDateUp(up) {
+    const u = getUserName(), c = getCharName();
+    const stem = (n) => String(n || '').toLowerCase().replace(/ё/g, 'е').slice(0, 4);
+    const fix = (t) => (t ? String(t).replace(/\{\{user\}\}/gi, u).replace(/\{\{char\}\}/gi, c)
+        .replace(/\s*\((?:user|char|both|юзер|чар|оба|вместе|игрок)\)\s*/gi, ' ').replace(/\s{2,}/g, ' ').trim() || null : null);
+    const ok = (t) => (t && langOk(t) ? t : null);
+    const who = (w) => {
+        const x = String(w || '').toLowerCase().replace(/ё/g, 'е');
+        if (/both|either|together|оба|вмест|обе/.test(x)) return 'both';
+        if (/user|юзер|игрок/.test(x) || (stem(u).length >= 3 && x.includes(stem(u)))) return 'user';
+        if (/char|чар/.test(x) || (stem(c).length >= 3 && x.includes(stem(c)))) return 'char';
+        return 'both';
+    };
+    up.add = (up.add || []).map(a => ({ t: ok(fix(a.t)), who: who(a.whoRaw) })).filter(a => a.t);
+    for (const x of [...(up.done || []), ...(up.fail || [])]) x.note = ok(fix(x.note));
+    for (const k of ['vibe', 'thought', 'recap', 'best']) up[k] = ok(fix(up[k]));
+    return up;
+}
+const dateParts = (d) => ({ done: (d.notes || []).filter(n => n.ok).map(n => n.t).slice(-5), gifts: [], best: d.best || null });
+/** Свидание кончилось (или не состоялось) — в «Текущий год», в итоги и воспоминания */
+function recordDate(st, d, missed = false) {
+    const name = `${L().dateWord}: ${d.title}`;
+    const result = missed ? 'missed' : d.result;
+    if (st === state) ensureYear();
+    const log = st.yearLog;
+    if (log && st.today != null && fromDayNum(st.today).y === log.y && !log.items.some(i => i.id === d.id)) {
+        log.items.push({ id: d.id, name, birthday: false, type: 'date', start: st.today, days: 1, kept: !missed, result });
+        log.items.sort((a, b) => a.start - b.start);
+    }
+    st.recaps = st.recaps || [];
+    if (!st.recaps.some(r => r.hid === d.id)) st.recaps.push({ hid: d.id, name, text: missed ? L().dateMissed : d.recap || null, parts: missed ? null : dateParts(d), result });
+    st.flashbacks = st.flashbacks || [];
+    if (!st.flashbacks.some(f => f.id === `fb-${d.id}`)) st.flashbacks.push({ id: `fb-${d.id}`, title: name, text: missed ? L().dateMissed : d.recap || L().dateResult[d.result], when: st.when, kind: 'date', parts: missed ? null : dateParts(d), result });
+    if (!missed && !d.recap) { st.dateRecapFor = d.id; st.dateRecapTurn = st.turn; }
+}
+function applyDateRecap(st, id, text, best) {
+    const r = (st.recaps || []).find(x => x.hid === id);
+    if (r) { r.text = text; r.parts = { ...(r.parts || { done: [], gifts: [] }), best: best || r.parts?.best || null }; }
+    const f = (st.flashbacks || []).find(x => x.id === `fb-${id}`);
+    if (f) { f.text = text; if (r) f.parts = r.parts; }
+    if (st.date?.id === id) { st.date.recap = text; if (best) st.date.best = best; }
+    st.dateRecapFor = null;
+}
+/** {{char}} думал о свидании в последних ответах? Тогда не подталкиваем */
+function dateMentioned() {
+    const d = state?.date;
+    if (!d || d.status !== 'scheduled') return false;
+    const bots = chat.filter(m => m && !m.is_user && !m.is_system && m.mes).slice(-2).map(m => String(m.mes).replace(/<!--[\s\S]*?-->/g, ' ')).join(' ').toLowerCase().replace(/ё/g, 'е');
+    if (/свидан|\bdate\b/.test(bots)) return true;
+    const words = String(d.title || '').toLowerCase().replace(/ё/g, 'е').split(/[^\p{L}]+/u).filter(w => w.length >= 5).map(w => w.slice(0, w.length - 2));
+    return words.some(w => bots.includes(w));
+}
+
 // ─── Текущий год: все прошедшие праздники, отмеченные и прошедшие мимо ───
 // Хранится только в состоянии; в инджект не идёт. Новый год — чистый лист.
 function ensureYear() {
@@ -855,7 +955,7 @@ function ensureYear() {
 function logItem(log, it) {
     if (fromDayNum(it.start).y !== log.y || it.start < log.from) return;
     const same = log.items.find(i => i.id === it.id
-        || (!i.birthday && !it.birthday && namesMatch(i.name, it.name) && Math.abs(i.start - it.start) <= 3)
+        || (!i.birthday && !it.birthday && i.type !== 'date' && it.type !== 'date' && namesMatch(i.name, it.name) && Math.abs(i.start - it.start) <= 3)
         || (i.birthday && it.birthday && i.who === it.who));
     if (same) { same.kept = same.kept || it.kept; return; }
     log.items.push(it);
@@ -868,6 +968,7 @@ function logPast() {
     if (!log) return;
     // Отмеченные раньше (до появления вкладки или до начала учёта) — по итогам этого года
     for (const r of state.recaps || []) {
+        if (String(r.hid || '').startsWith('d-')) continue;          // свидания вносятся сами, при завершении
         const m = String(r.hid || '').match(/(?:@|-)(-?\d+)$/);   // «название@день» или «bday-user-день»
         const start = m ? Number(m[1]) : NaN;
         if (!Number.isFinite(start) || start >= state.today || fromDayNum(start).y !== log.y) continue;
@@ -1240,12 +1341,14 @@ function viewSnapshot(phase) {
         recaps: state.recaps.slice(-3).reverse(),
         year: (state.yearLog?.items || []).map(i => ({
             id: i.id, name: i.birthday ? L().birthday(i.who === 'user' ? getUserName() : getCharName()) : i.name, raw: i.name,
-            type: i.birthday ? 'personal' : i.type, iso: isoOf(i.start), kept: i.kept,
-            recap: state.recaps.find(r => r.hid === i.id)?.text || null,
+            type: i.birthday ? 'personal' : i.type, iso: isoOf(i.start), kept: i.kept, result: i.result || null,
+            recap: state.recaps.find(r => r.hid === i.id)?.text || (i.type === 'date' && i.result && i.result !== 'missed' ? L().dateResult[i.result] : null),
             parts: state.recaps.find(r => r.hid === i.id)?.parts || null,
         })),
         flashbacks: clone(state.flashbacks.slice(-10).reverse()),
         pair: state.pair ? clone(state.pair) : null,
+        // намеченное свидание — в инфоблоке, праздник сейчас или нет
+        planned: state.date?.status === 'scheduled' ? { title: state.date.title, goal: state.date.goal, where: state.date.where, when: dateWhenText(state, state.date.at) } : null,
         cast: (state.cast || []).filter(c => !castBanned(state, c.name)).map(c => ({ ...clone(c), bdayIn: bdayIn(c, state.today), age: ageOf(c, state.today) })),
         recall: state.recall,
         ...(() => {
@@ -1344,7 +1447,9 @@ async function runSide(N, needs) {
         const ctx = ctxFor(null);
         ctx.castHint = castHint();
         // перепись людей читает больше сообщений, чем обычный запрос
-        const src = await gatherSources(N, needs.has('census') ? Math.max(sideDepth(), CENSUS_DEPTH) : sideDepth());
+        // ход свидания судим только по новым сообщениям — помечаем их [NEW]
+        const newFrom = needs.has('date') ? (state.dateSeenMsg != null && state.dateSeenMsg < N ? state.dateSeenMsg : Math.max(-1, N - 2)) : null;
+        const src = await gatherSources(N, needs.has('census') ? Math.max(sideDepth(), CENSUS_DEPTH) : sideDepth(), newFrom);
         const messages = buildSideMessages(ctx, needs, src);
         console.debug('[Hearthtide] отдельный запрос →', [...needs].join(', '), messages);
         const text = await sendSide(apiProfile(), messages, ctl.signal);
@@ -1407,11 +1512,11 @@ function onAfterCombinePrompts(data) {
 // ═══════════════════════════════════════════════════════════════
 // ИНФОБЛОК
 // ═══════════════════════════════════════════════════════════════
-const ui = { open: new Map(), tab: new Map(), confirmDel: null, editing: null, offerSeen: new Set() };
+const ui = { open: new Map(), tab: new Map(), confirmDel: null, editing: null, offerSeen: new Set(), firstSeen: new Map(), nodes: new Map() };
 
 const TYPE_ICON = {
     religious: 'fa-church', folk: 'fa-wheat-awn', seasonal: 'fa-leaf', state: 'fa-flag',
-    personal: 'fa-cake-candles', family: 'fa-house-chimney', supernatural: 'fa-ghost', fast: 'fa-hourglass-half', memorial: 'fa-feather',
+    personal: 'fa-cake-candles', family: 'fa-house-chimney', supernatural: 'fa-ghost', fast: 'fa-hourglass-half', memorial: 'fa-feather', date: 'fa-heart',
 };
 
 const EVENT_ICON = {
@@ -1435,7 +1540,7 @@ function scheduleRenderAll() {
     renderTimer = setTimeout(renderAll, 60);
 }
 function renderAll() {
-    if (!isEnabled()) { document.querySelectorAll('.ht-ib, .ht-cards').forEach(b => b.remove()); return; }
+    if (!isEnabled()) { document.querySelectorAll('.ht-ib, .ht-cards').forEach(b => b.remove()); ui.nodes.clear(); return; }
     if (!state && chat.length) loadState();
     document.querySelectorAll('#chat .mes[mesid]').forEach(el => renderBlock(Number(el.getAttribute('mesid'))));
     updateDateWhy();
@@ -1463,23 +1568,47 @@ function textEnd(text) {
 }
 const putAfter = (ref, el) => { if (ref.nextSibling !== el) ref.parentNode.insertBefore(el, ref.nextSibling); };
 
+// Уже стоит сразу после текста — не двигаем: иначе блок прыгает, пока картинки и чужие блоки дорисовываются
+function settled(node) {
+    if (!node.isConnected) return false;
+    let p = node.previousSibling;
+    while (p && (isOurs(p) || p.nodeType === 8 || (p.nodeType === 3 && !p.textContent.trim()))) p = p.previousSibling;
+    return !!p && hasText(p) && !foreignBox(p) && !p.classList?.contains('mes_text');
+}
+
+// Карточки решений (свидание, ивент, повод) всегда идут сразу за инфоблоком — где бы он ни стоял по настройкам
 function placeBlock(mesEl, block, cards = null) {
     const text = mesEl.querySelector('.mes_text');
     if (!text) return false;
-    const end = textEnd(text) || text;          // текста внутри нет — сразу после .mes_text
-    if (cards) putAfter(end, cards);
     const pos = position();
     if (pos === 'top') {
         if (text.previousSibling !== block) text.insertAdjacentElement('beforebegin', block);
     } else if (pos === 'middle') {
-        // Между абзацами посередине ответа
-        const parts = [...text.children].filter(el => !isOurs(el) && hasText(el));
-        if (parts.length >= 2) putAfter(parts[Math.ceil(parts.length / 2) - 1], block);
-        else putAfter(cards || end, block);
-    } else {
-        putAfter(cards || end, block);
+        if (!(block.parentNode === text && settled(block))) {
+            // между абзацами посередине ответа
+            const parts = [...text.children].filter(el => !isOurs(el) && hasText(el) && !foreignBox(el));
+            if (parts.length >= 2) putAfter(parts[Math.ceil(parts.length / 2) - 1], block);
+            else putAfter(textEnd(text) || text, block);
+        }
+    } else if (!(mesEl.contains(block) && settled(block))) {
+        putAfter(textEnd(text) || text, block);
     }
+    if (cards) putAfter(block, cards);
     return true;
+}
+
+// Таверна и другие расширения перерисовывают текст ответа и стирают наши блоки. Возвращаем их сразу,
+// в том же такте, до отрисовки — без мигания и прыжков (а не через таймер, как раньше)
+function reattach() {
+    if (!isEnabled()) return;
+    for (const [id, n] of ui.nodes) {
+        if (n.block.isConnected && (!n.cards || n.cards.isConnected) && (position() !== 'bottom' || settled(n.block))) continue;
+        const el = getMesEl(id);
+        if (!el) { if (!n.block.isConnected) ui.nodes.delete(id); continue; }
+        const old = el.querySelector('.ht-ib');
+        if (old && old !== n.block) { ui.nodes.delete(id); continue; }    // уже нарисован заново
+        placeBlock(el, n.block, n.cards);
+    }
 }
 
 /** Есть ли у последнего ответа карточки решений: свидание, ивент, повод из истории */
@@ -1501,7 +1630,7 @@ function renderBlock(id) {
     let cards = el.querySelector('.ht-cards');
     const view = sanitizeView(state && msg && !msg.is_user && !msg.is_system ? (live ? liveView() : msg.extra?.ht) : null);
     const show = isEnabled() && view && (live || showPrev());
-    if (!show) { block?.remove(); cards?.remove(); return; }
+    if (!show) { block?.remove(); cards?.remove(); ui.nodes.delete(id); return; }
 
     if (!block) {
         block = document.createElement('div');
@@ -1516,17 +1645,20 @@ function renderBlock(id) {
         bindBlock(cards);
     } else if (!cardsHtml && cards) { cards.remove(); cards = null; }
     if (!placeBlock(el, block, cards)) return;
+    ui.nodes.set(id, { block, cards });
     block.dataset.mesid = String(id);
     const open = ui.open.get(id) || false;
     block.classList.toggle('ht-open', open);
     // пока помощник читает историю — заставка: кольцо крутится, по шапке бежит блик, содержимое приглушено
     const loading = live && sideLoading();
     block.classList.toggle('ht-loading', loading);
-    block.innerHTML = headHtml(view, open, live ? sideMarkHtml() : '', loading) + (open ? bodyHtml(view, live, ui.tab.get(id) || 'now') : '');
+    const plannedMark = view.planned ? `<i class="fa-solid fa-heart ht-head-date" title="${esc(`${L().datePlanned}: ${view.planned.title}${view.planned.when ? ` · ${view.planned.when}` : ''}`)}"></i>` : '';
+    block.innerHTML = headHtml(view, open, (live ? sideMarkHtml() : '') + plannedMark, loading) + (open ? bodyHtml(view, live, ui.tab.get(id) || 'now') : '');
     if (cards) {
         cards.dataset.mesid = String(id);
         cards.classList.toggle('ht-loading', loading);
-        cards.innerHTML = cardsHtml;
+        // та же разметка — не трогаем: идущая анимация (смена шагов, появление) не обрывается
+        if (cards._html !== cardsHtml) { cards.innerHTML = cardsHtml; cards._html = cardsHtml; }
     }
 }
 
@@ -1641,16 +1773,36 @@ function editFormHtml(x, act = 'edit-save', label = L().save) {
 // ═══ Свидания ═══
 // Карточка под шапкой последнего инфоблока: предложение (принять / отклонить) или идущее свидание —
 // цель, шкала успеха, шаги (можно отмечать самому), «завершить».
+// цвет успеха: от серого к насыщенному розовому
+const romMix = (v) => `color-mix(in srgb, var(--ht-rom-hot) ${Math.max(6, Math.min(100, Math.round(v)))}%, #8d8792)`;
+// анимация показывается один раз: дальше та же разметка без смены (перерисовка не обрывает её)
+function freshFor(key, ms = 4000) {
+    const now = Date.now(), t = ui.firstSeen.get(key);
+    if (t == null) { ui.firstSeen.set(key, now); return true; }
+    return now - t < ms;
+}
+/** Когда назначено — для игрока */
+function dateWhenText(st, at) {
+    if (!at) return '';
+    if (at.now) return L().dateNow;
+    const d = st.today != null ? (at.day ?? st.today) - st.today : 0;
+    const hh = at.clock != null ? `${String(Math.floor(at.clock)).padStart(2, '0')}:${String(Math.round((at.clock % 1) * 60)).padStart(2, '0')}` : '';
+    return L().dateAt(d, hh);
+}
+
 function dateCardHtml() {
     const d = state?.date;
     if (!d || (d.status !== 'offered' && d.status !== 'active')) return '';
-    const fresh = !ui.offerSeen.has(d.id + d.status);
-    ui.offerSeen.add(d.id + d.status);
+    const fresh = freshFor(`date:${d.id}:${d.status}`);
     const u = getUserName(), c = getCharName();
+    const portrait = `<span class="ht-portrait">${avaHtml(charAvatarUrl(), c)}<span class="ht-ava-pin">${avaHtml(userAvatarUrl(), u, 'ht-ava-round')}</span></span>`;
     if (d.status === 'offered') {
+        const when = [d.where, dateWhenText(state, d.at)].filter(Boolean).join(' · ');
         return `<div class="ht-offer ht-date${fresh ? ' ht-offer-new' : ''}">
-            <div class="ht-offer-cause"><i class="fa-solid fa-heart"></i><span>${esc(L().dateInvite(c))}</span></div>
-            <div class="ht-offer-hol"><span><b>${esc(d.title)}</b>${d.goal ? ` · ${esc(d.goal)}` : ''}</span></div>
+            <div class="ht-dhead">${portrait}<div class="ht-dmain">
+                <span class="ht-dinvite"><i class="fa-solid fa-heart"></i>${esc(L().dateInvite(c))}</span>
+                <b class="ht-dtitle">${esc(d.title)}</b>${when ? `<span class="ht-dwhen">${esc(when)}</span>` : ''}</div></div>
+            ${d.goal ? `<p class="ht-offer-mean"><i class="fa-solid fa-bullseye"></i> ${esc(d.goal)}</p>` : ''}
             ${d.hook ? `<p class="ht-offer-mean">${esc(d.hook)}</p>` : ''}
             <div class="ht-offer-actions ht-two">
                 <button class="ht-btn ht-btn-main" data-act="date-yes" title="${esc(L().evGo)}"><i class="fa-solid fa-heart"></i><span>${L().evGo}</span></button>
@@ -1658,14 +1810,41 @@ function dateCardHtml() {
             </div>
         </div>`;
     }
-    const steps = d.steps.map((s, i) => `<button class="ht-date-step${s.done ? ' ht-done' : ''}" data-act="date-step" data-i="${i}" aria-pressed="${s.done}">
-        <i class="fa-${s.done ? 'solid fa-heart' : 'regular fa-heart'}"></i><span>${esc(s.t)}</span><em>${esc(s.who === 'user' ? u : c)}</em></button>`).join('');
-    return `<div class="ht-offer ht-date ht-date-on${fresh ? ' ht-offer-new' : ''}">
-        <div class="ht-offer-cause"><i class="fa-solid fa-heart"></i><span>${L().dateWord}</span><b class="ht-date-pct">${d.score}%</b></div>
-        <div class="ht-date-meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${d.score}"><i style="--v:${d.score}"></i></div>
-        <div class="ht-offer-hol"><span><b>${esc(d.title)}</b></span></div>
-        ${d.goal ? `<p class="ht-offer-mean"><i class="fa-solid fa-bullseye"></i> ${esc(d.goal)}</p>` : ''}
-        <div class="ht-date-steps">${steps}</div>
+    // идёт: портрет {{char}} с кружком {{user}}, рядом полоска «как идёт», шкала, цель, мысль, живые шаги
+    const lvl = dateLevel();
+    const g = d.goalDone ? 'done' : goalOpen(d, lvl) ? 'open' : 'locked';
+    const whoTxt = (w) => (w === 'user' ? u : w === 'char' ? c : L().dateBoth);
+    const open = openSteps(d);
+    const step = (x, cls = '') => `<button class="ht-date-step ht-who-${x.who} ${cls}" data-act="date-step" data-n="${x.n}"${x.state !== 'open' ? ' disabled tabindex="-1"' : ''}>
+        <i class="fa-${x.state === 'done' ? 'solid fa-heart' : x.state === 'failed' ? 'solid fa-heart-crack' : 'regular fa-heart'}"></i><span>${esc(x.t)}</span><em>${esc(whoTxt(x.who))}</em></button>`;
+    const slots = [];
+    for (let i = 0; i < DATE_OPEN; i++) {
+        const cur = open.find(x => x.slot === i);
+        // шаг закрылся в этом ответе — медленная смена: старый зачёркивается и уходит, новый въезжает на его место
+        const gone = d.steps.filter(x => x.slot === i && x.state !== 'open' && x.endTurn === state.turn).slice(-1)[0];
+        const swap = gone && freshFor(`step:${d.id}:${gone.n}`, 5000);
+        if (!cur && !swap) continue;
+        slots.push(`<div class="ht-slot">${swap ? step(gone, `ht-step-out ht-step-${gone.state}`) : ''}${cur ? step(cur, swap ? 'ht-step-in' : '') : ''}</div>`);
+    }
+    const hearts = Math.min(5, Math.floor(d.score / 18));
+    const notes = (d.notes || []).slice(-3).reverse().map(n => `<li class="${n.ok ? '' : 'ht-bad'}"><i class="fa-solid ${n.ok ? 'fa-check' : 'fa-xmark'}"></i><span>${esc(n.t)}</span></li>`).join('');
+    const tone = romMix(d.score);
+    return `<div class="ht-offer ht-date ht-date-on${fresh ? ' ht-offer-new' : ''}" style="--v:${d.score};--c:${tone}">
+        <span class="ht-dhearts" aria-hidden="true">${'<i class="fa-solid fa-heart"></i>'.repeat(hearts)}</span>
+        <div class="ht-dhead">${portrait}
+            <span class="ht-dstrip" title="${esc(d.vibe || L().dateVibeStart)}"><i></i></span>
+            <div class="ht-dmain">
+                <b class="ht-dtitle">${esc(d.title)}</b>
+                ${d.where ? `<span class="ht-dwhen">${esc(d.where)}</span>` : ''}
+                <span class="ht-dvibe">${esc(d.vibe || L().dateVibeStart)}</span>
+            </div>
+            <b class="ht-date-pct">${d.score}%</b>
+        </div>
+        <div class="ht-date-meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${d.score}"><i></i></div>
+        ${d.goal ? `<div class="ht-dgoal ht-goal-${g}"><i class="fa-solid ${g === 'done' ? 'fa-circle-check' : g === 'open' ? 'fa-bullseye' : 'fa-lock'}"></i><span><b>${L().dateGoal}:</b> ${esc(d.goal)}</span><em>${esc(L().goalState[g])}</em></div>` : ''}
+        ${d.thought ? `<p class="ht-dthought"><span>${L().dateThinks}</span>«${esc(d.thought.replace(/^[«"“]+|[»"”]+$/g, ''))}»</p>` : ''}
+        <div class="ht-date-steps">${slots.join('') || `<p class="ht-mute">${L().dateNoSteps}</p>`}</div>
+        ${notes ? `<ul class="ht-dnotes" aria-label="${esc(L().dateNotes)}">${notes}</ul>` : ''}
         <div class="ht-offer-actions ht-one"><button class="ht-btn ht-btn-quiet" data-act="date-end"><i class="fa-solid fa-flag-checkered"></i><span>${L().dateFinish}</span></button></div>
     </div>`;
 }
@@ -1685,7 +1864,8 @@ function decideDate(yes) {
     if (!d || d.status !== 'offered') return;
     state.dateDecisions = { ...(state.dateDecisions || {}), [String(d.title).toLowerCase()]: yes ? 'accepted' : 'declined' };
     changeDate(st => {
-        if (yes) { st.date.status = 'active'; st.date.startTurn = st.turn; st.date.lastUpdate = st.turn; }
+        // на потом — «намечено» в инфоблоке, без шкалы и шагов; прямо сейчас — начинается
+        if (yes) acceptInto(st, st.date);
         else { st.dateDeclined = { title: st.date.title, turn: st.turn }; st.date = null; st.lastDateEnd = st.turn; }
     });
 }
@@ -1694,13 +1874,14 @@ function endDateNow() {
     let done = null;
     changeDate(st => {
         const d = finishDate(st, st.turn);
+        if (d) recordDate(st, d);
         if (st === state) done = d;
     });
     if (done) {
-        addFlashback(`${L().dateWord}: ${done.title}`, L().dateResult[done.result], 'date');
         saveState();
         renderAll();
         showDateToast(done);
+        if (apiOn()) maybeSide(lastProcessedMsg(), true, ['daterecap']);   // итог допишет помощник
     }
 }
 
@@ -1794,9 +1975,10 @@ function castTabHtml(view, live) {
     const pr = view.pair || { ...PAIR_DEFAULT, unknown: true };
     const rl = romLevel(pr.r);
     const dateLine = live ? dateWhyText() : '';
+    // {{char}} — портрет в подсвеченной рамке; {{user}} — маленький круглый значок, прикреплённый сбоку
     const pair = tab === 'all' ? `<div class="ht-cc ht-cc-pair${pr.r > 0 ? ' ht-cc-love' : ''}${pr.unknown ? ' ht-cc-unknown' : ''}">
-        <div class="ht-pair-avas">${avaHtml(cA, c)}<i class="fa-solid ${pr.r > 0 ? 'fa-heart' : 'fa-handshake'} ht-pair-mid"></i>${avaHtml(uA, u)}</div>
-        <b class="ht-cc-name">${esc(L().pairTitle(c, u))}</b>
+        <span class="ht-portrait ht-portrait-lg">${avaHtml(cA, c)}<span class="ht-ava-pin" title="${esc(u)}">${avaHtml(uA, u, 'ht-ava-round')}</span>${pr.r > 0 ? '<i class="fa-solid fa-heart ht-pair-mid"></i>' : ''}</span>
+        <b class="ht-cc-name">${esc(c)}</b>
         ${pr.unknown ? `<span class="ht-cc-role ht-mute">${esc(L().pairUnknown)}</span>` : pr.note ? `<span class="ht-cc-role">${esc(pr.note)}</span>` : ''}
         <div class="ht-pair-bars">
             <div class="ht-mini" title="${esc(`${L().friendship}: ${signed(pr.f)} · ${L().rel[relLevel(pr.f)]}`)}"><span class="ht-mini-row"><i class="fa-solid fa-handshake ht-mini-ico"></i>${esc(L().friendship)}<b>${signed(pr.f)}</b></span>${barHtml(pr.f)}</div>
@@ -1838,7 +2020,11 @@ function castTabHtml(view, live) {
     const order = { kin_both: 0, kin_user: 1, kin_char: 2, friend: 3, acquaintance: 4, other: 5 };
     shown.sort((a, b) => (order[a.group] ?? 6) - (order[b.group] ?? 6));
     const cards = shown.map(card).join('');
-    return `${subtabs}<div class="ht-gallery">${pair}${cards || (pair ? '' : `<p class="ht-mute ht-gallery-empty">${L().castEmpty}</p>`)}</div>`;
+    // кого часто называют в истории, а в списке нет — добавить одним нажатием (роли допишет ИИ)
+    const hints = live && tab === 'all' ? castHint().slice(0, 6) : [];
+    const hintRow = hints.length ? `<div class="ht-hints"><span><i class="fa-solid fa-user-plus"></i>${L().hintTitle}</span>${hints.map(x =>
+        `<button data-act="cast-hint" data-name="${esc(x.name)}" title="${esc(L().hintAdd(x.name))}">${esc(x.name)}<em>${x.n}</em></button>`).join('')}</div>` : '';
+    return `${subtabs}<div class="ht-gallery">${pair}${cards || (pair ? '' : `<p class="ht-mute ht-gallery-empty">${L().castEmpty}</p>`)}</div>${hintRow}`;
 }
 
 // Итог праздника — под спойлером «Итог», чтобы список был коротким
@@ -1996,6 +2182,22 @@ function saveCast(cid, f) {
     return true;
 }
 
+// Человек из «часто упоминаются»: вносим с именем, роли и отношения ИИ допишет при следующей проверке людей
+function addCastByHand(name) {
+    const n = String(name || '').trim();
+    if (!n || findCast(state, n)) return;
+    state.castNo = (state.castNo || []).filter(x => !samePerson(x, n));
+    const c = { id: `c-${state.turn}-h-${Math.random().toString(36).slice(2, 6)}`, name: n, group: 'other', toU: null, toC: null, bday: null,
+        rel: { user: 0, char: 0 }, note: { user: null, char: null }, rom: { user: null, char: null }, scale: 2, turn: state.turn, byHand: true };
+    const apply = (st) => { st.cast = st.cast || []; if (!st.cast.some(x => samePerson(x.name, n))) st.cast.push(clone(c)); };
+    apply(state);
+    applyToSnapshots(apply);
+    state.lastCastTurn = -99;            // спросить о нём в ближайшем ответе
+    saveState();
+    injectPrompts();
+    renderAll();
+}
+
 // «Глазок»: выключенный человек не идёт в промпт, но остаётся в списке — ИИ не внесёт его заново
 function toggleCastOff(cid) {
     const x = (state.cast || []).find(c => c.id === cid);
@@ -2058,7 +2260,7 @@ function openPairEditorRaw() {
     wrap.innerHTML = `<div class="ht-modal-card">
         <div class="ht-modal-title"><i class="fa-solid fa-heart"></i>${esc(L().pairTitle(c, u))}<button type="button" data-act="edit-cancel" aria-label="${esc(L().cancel)}"><i class="fa-solid fa-xmark"></i></button></div>
         <div class="ht-edit ht-pair-edit">
-            <div class="ht-pair-avas">${avaHtml(charAvatarUrl(), c)}<i class="fa-solid fa-heart ht-pair-mid"></i>${avaHtml(userAvatarUrl(), u)}</div>
+            <span class="ht-portrait ht-portrait-lg">${avaHtml(charAvatarUrl(), c)}<span class="ht-ava-pin">${avaHtml(userAvatarUrl(), u, 'ht-ava-round')}</span></span>
             ${range('f', 'fa-handshake', L().friendship, pr.f)}
             ${range('r', 'fa-heart', L().romance, pr.r)}
             <label>${esc(L().pairNote)}<input class="text_pole" data-ed="note" value="${esc(pr.note || '')}" maxlength="60"></label>
@@ -2278,10 +2480,11 @@ function bodyHtml(view, live, tab = 'now') {
     // Текущий год: по порядку дат; отмеченные — с итогом, прошедшие мимо — приглушены
     const yearRows = (view.year || []).map(i => {
         const [, m, d] = i.iso.split('-');
-        return `<div class="ht-yr${i.kept ? '' : ' ht-yr-missed'}">
+        const res = i.type === 'date' && i.result ? i.result : null;
+        return `<div class="ht-yr${i.kept ? '' : ' ht-yr-missed'}${res ? ` ht-res-${res}` : ''}">
             <time>${d}.${m}</time><i class="fa-solid ${TYPE_ICON[i.type] || 'fa-star'}"></i>
             <div><b>${esc(i.name)}</b>${recapSpoiler(i.recap, i.parts)}</div>
-            <em>${i.kept ? L().yearKept : L().yearMissed}</em></div>`;
+            <em>${res ? (res === 'missed' ? L().yearMissed : L().dateResult[res]) : i.kept ? L().yearKept : L().yearMissed}</em></div>`;
     }).join('');
 
     // Воспоминания: в контекст только по кнопке «вспомнить»
@@ -2306,8 +2509,13 @@ function bodyHtml(view, live, tab = 'now') {
             ${section('memories', 'fa-clock-rotate-left', L().flashbacks, memories)}</div>`;
     }
 
+    const planned = view.planned ? `<div class="ht-planned"><i class="fa-solid fa-heart"></i><div>
+            <span>${L().datePlanned}${view.planned.when ? ` · ${esc(view.planned.when)}` : ''}</span>
+            <b>${esc(view.planned.title)}${view.planned.where ? ` · ${esc(view.planned.where)}` : ''}</b>
+            ${view.planned.goal ? `<em>${esc(view.planned.goal)}</em>` : ''}</div></div>` : '';
     return `<div class="ht-body">
         ${tabs}
+        ${planned}
         ${view.kind === 'today' ? (worldMini ? `<div class="ht-world-mini"><i class="fa-solid fa-location-dot"></i>${worldMini}</div>` : '') : (world ? `<div class="ht-world">${world}</div>` : '')}
         ${charCard}
         ${eventsSec}
@@ -2366,8 +2574,8 @@ function bindBlock(block) {
         } else if (t.dataset.act === 'date-yes' || t.dataset.act === 'date-no') {
             decideDate(t.dataset.act === 'date-yes');
         } else if (t.dataset.act === 'date-step') {
-            const i = Number(t.dataset.i);
-            changeDate(st => toggleStep(st.date, i));
+            const n = Number(t.dataset.n);
+            changeDate(st => toggleStep(st.date, n, st.turn, dateLevel()));
         } else if (t.dataset.act === 'date-end') {
             endDateNow();
         } else if (t.dataset.act === 'cast-tab') {
@@ -2382,6 +2590,8 @@ function bindBlock(block) {
             delete avatars()[t.dataset.cid];
             saveChatDebounced();
             renderBlock(id);
+        } else if (t.dataset.act === 'cast-hint') {
+            addCastByHand(t.dataset.name);
         } else if (t.dataset.act === 'pair-edit') {
             openPairEditor();
         } else if (t.dataset.act === 'cast-edit') {
@@ -2534,6 +2744,13 @@ function injectSettingsPanel() {
                         <b class="ht-set-val" id="ht-set-datechance-val">${dateChanceSetting() ? `${dateChanceSetting()}%` : 'выкл.'}</b>
                     </div>
                     <small class="ht-set-note"><i class="fa-solid fa-heart"></i><span>Сейчас: <span id="ht-date-why"></span></span></small>
+                    <div class="ht-set-row" title="Сколько дают шаги свидания и сколько их нужно, чтобы открылась главная цель">
+                        <span>Сложность свиданий</span>
+                        <select id="ht-set-datelevel" class="text_pole">
+                            <option value="easy" ${dateLevel() === 'easy' ? 'selected' : ''}>лёгкая</option>
+                            <option value="hard" ${dateLevel() === 'hard' ? 'selected' : ''}>сложная</option>
+                        </select>
+                    </div>
                 </section>
               </div>
             </div>
@@ -2552,6 +2769,7 @@ function injectSettingsPanel() {
                 x.setAttribute('aria-checked', String(x === b));
             });
             document.querySelectorAll('.ht-ib, .ht-cards').forEach(x => x.remove());
+            ui.nodes.clear();
             renderAll();
         });
         document.getElementById('ht-set-datechance')?.addEventListener('input', e => {
@@ -2560,6 +2778,11 @@ function injectSettingsPanel() {
             if (v) v.textContent = +e.target.value ? `${e.target.value}%` : 'выкл.';
             updateDateWhy();
             scheduleRenderAll();          // строка о свидании в карточке пары
+        });
+        document.getElementById('ht-set-datelevel')?.addEventListener('change', e => {
+            localStorage.setItem(LS.dateLevel, e.target.value);
+            injectPrompts();
+            renderAll();
         });
         document.getElementById('ht-set-lang')?.addEventListener('change', e => {
             localStorage.setItem(LS.lang, e.target.value);
@@ -2734,6 +2957,7 @@ function onMessageDeleted() {
 
 function onChatChanged() {
     closeCastEditor();
+    ui.nodes.clear();
     cancelSide();
     sideAfterGen = null;
     ui.open.clear();
@@ -2761,7 +2985,9 @@ function observeChat() {
             changed = true;
             break;
         }
-        if (changed) scheduleEnsure();
+        if (!changed) return;
+        reattach();
+        scheduleEnsure();
     });
     chatObserver.observe(target, { childList: true, subtree: true });
 }
@@ -2781,8 +3007,8 @@ function ensureBlocks() {
         // стёрли инфоблок или карточки под текстом (перерисовка .mes_text) — вернуть
         const lostCards = id === lastBotIndex() && cardsDue() && !el.querySelector('.ht-cards');
         if (shouldShow(id) && (!has || lostCards)) renderBlock(id);
-        // картинки дорисовались после нас — подвинуть инфоблок «снизу» и карточки обратно к тексту
-        else if (has && shouldShow(id) && (position() === 'bottom' || el.querySelector('.ht-cards'))) placeBlock(el, has, el.querySelector('.ht-cards'));
+        // что-то вклинилось между текстом и инфоблоком — вернуть к тексту (на месте — не трогаем)
+        else if (has && shouldShow(id)) placeBlock(el, has, el.querySelector('.ht-cards'));
     });
 }
 

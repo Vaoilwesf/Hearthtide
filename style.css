@@ -425,7 +425,10 @@
 @container (max-width: 300px) { .ht-ib .ht-tab > span { display: none; } }
 
 /* ═══ Романтика и свидания ═══ */
-.ht-ib, .ht-modal, .ht-date-toast, .ht-cards, .ht-invite-toast { --ht-rom: color-mix(in srgb, var(--ht-acc) 35%, #e0588c); }
+.ht-ib, .ht-modal, .ht-date-toast, .ht-cards, .ht-invite-toast {
+    --ht-rom: color-mix(in srgb, var(--ht-acc) 35%, #e0588c);
+    --ht-rom-hot: color-mix(in srgb, var(--ht-rom) 60%, #ff2f7d);   /* насыщенный розовый — вершина шкалы успеха */
+}
 /* карточка свидания */
 .ht-date { border-style: solid; border-color: color-mix(in srgb, var(--ht-rom) 60%, transparent); background: color-mix(in srgb, var(--ht-rom) 9%, transparent); }
 .ht-date .ht-offer-cause > i, .ht-date .ht-offer-mean > i { color: var(--ht-rom); }
@@ -706,3 +709,124 @@ dialog.ht-modal:not([open]) { display: none; }
 /* настройки: почему сейчас нет (или есть) шанса на свидание */
 .ht-set-note { display: flex; align-items: baseline; gap: 6px; opacity: 0.75; font-size: 0.85em; line-height: 1.3; }
 .ht-set-note > i { color: var(--SmartThemeQuoteColor); flex: none; }
+
+/* ═══ Аватарки: люди — прямоугольные портреты; {{user}} — круглый значок ═══ */
+:is(.ht-ib, .ht-modal, .ht-cards) .ht-ava { border-radius: 8px; }
+:is(.ht-ib, .ht-modal, .ht-cards) .ht-ava.ht-ava-xs, :is(.ht-ib, .ht-modal, .ht-cards) .ht-ava.ht-ava-round { border-radius: 50%; }
+.ht-cc-top .ht-ava { width: 42px; height: 54px; }
+.ht-modal .ht-cast-photo .ht-ava { width: 64px; height: 80px; }
+@media (max-width: 420px) { .ht-cc-top .ht-ava { width: 40px; height: 50px; } }
+
+/* портрет {{char}} в подсвеченной рамке и прикреплённый сбоку кружок {{user}} со своей подсветкой */
+.ht-portrait { position: relative; display: inline-block; flex: none; margin-right: 8px; }
+.ht-portrait > .ht-ava { width: 44px; height: 56px; border: 2px solid color-mix(in srgb, var(--ht-rom) 75%, transparent);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--ht-rom) 40%, transparent); }
+.ht-portrait-lg > .ht-ava { width: 60px; height: 76px; }
+.ht-ava-pin { position: absolute; right: -10px; bottom: -6px; line-height: 0; }
+.ht-ava-pin > .ht-ava { width: 24px; height: 24px; font-size: 0.55em; border: 2px solid var(--ht-acc);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--ht-acc) 60%, transparent); }
+.ht-portrait-lg .ht-ava-pin > .ht-ava { width: 30px; height: 30px; }
+.ht-portrait > .ht-pair-mid { position: absolute; top: -7px; right: -9px; font-size: 0.85em; }
+
+/* карточка {{char}} во «Людях»: рамка с подсветкой */
+.ht-cc.ht-cc-pair { border-color: color-mix(in srgb, var(--ht-acc) 65%, transparent);
+    box-shadow: 0 0 12px color-mix(in srgb, var(--ht-acc) 25%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--ht-acc) 20%, transparent); }
+.ht-cc.ht-cc-pair.ht-cc-love { border-color: color-mix(in srgb, var(--ht-rom) 70%, transparent);
+    box-shadow: 0 0 14px color-mix(in srgb, var(--ht-rom) 35%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--ht-rom) 22%, transparent); }
+.ht-cc-pair .ht-portrait { margin: 2px 10px 4px 0; }
+.ht-cc-pair > .ht-cc-name { font-size: 1em; }
+
+/* кого часто называют в истории — добавить одним нажатием */
+.ht-hints { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 10px; font-size: 0.82em; color: var(--ht-mute); }
+.ht-hints > span > i { margin-right: 5px; color: var(--ht-acc); }
+:is(.ht-ib) .ht-hints > button { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; border: 1px dashed var(--ht-line-strong); color: var(--ht-fg); cursor: pointer; }
+:is(.ht-ib) .ht-hints > button:hover { background: var(--ht-soft-2); }
+.ht-hints em { font-style: normal; font-size: 0.85em; color: var(--ht-mute); }
+
+/* ═══ Свидание: намечено (в инфоблоке) ═══ */
+.ht-planned { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 8px; padding: 7px 10px; border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--ht-rom) 45%, transparent); background: color-mix(in srgb, var(--ht-rom) 7%, transparent); }
+.ht-planned > i { color: var(--ht-rom); margin-top: 2px; }
+.ht-planned > div { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ht-planned span { font-size: 0.82em; color: var(--ht-mute); }
+.ht-planned b { font-weight: 600; overflow-wrap: anywhere; }
+.ht-planned em { font-style: normal; font-size: 0.86em; color: var(--ht-mute); }
+:is(.ht-ib) .ht-head-date { color: var(--ht-rom); margin-right: 4px; }
+
+/* ═══ Свидание: карточка ═══ */
+.ht-date { position: relative; }
+.ht-dhead { display: flex; align-items: center; gap: 4px; }
+.ht-dmain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; padding-left: 6px; }
+.ht-dinvite { color: var(--ht-mute); font-size: 0.9em; }
+.ht-dinvite > i { color: var(--ht-rom); margin-right: 5px; }
+.ht-dtitle { font-weight: 700; font-size: 1.04em; overflow-wrap: anywhere; }
+.ht-dwhen { color: var(--ht-mute); font-size: 0.86em; }
+/* идёт: всё окрашено цветом успеха — от серого к насыщенному розовому */
+.ht-date.ht-date-on { border-color: color-mix(in srgb, var(--c) 70%, transparent); background: color-mix(in srgb, var(--c) 9%, transparent); overflow: hidden; }
+.ht-date-on .ht-portrait > .ht-ava { border-color: var(--c); box-shadow: 0 0 calc(4px + var(--v) * 0.14px) color-mix(in srgb, var(--c) 55%, transparent); }
+/* полоска рядом с {{char}}: как в целом идёт свидание */
+.ht-dstrip { flex: none; width: 6px; height: 56px; border-radius: 999px; background: var(--ht-line); overflow: hidden; display: flex; align-items: flex-end; margin-left: 4px; }
+.ht-dstrip > i { display: block; width: 100%; height: 100%; border-radius: inherit; background: var(--c);
+    transform: scaleY(calc(0.04 + var(--v) / 104)); transform-origin: bottom; transition: transform 0.6s ease; }
+.ht-dvibe { font-size: 0.88em; font-style: italic; color: var(--c); }
+.ht-date-on .ht-date-pct { color: var(--c); font-size: 1.15em; margin-left: auto; align-self: flex-start; }
+.ht-date-on .ht-date-meter > i { background: var(--c); }
+.ht-dgoal { display: flex; align-items: baseline; gap: 7px; margin-top: 4px; font-size: 0.92em; }
+.ht-dgoal > span { flex: 1; min-width: 0; }
+.ht-dgoal > em { font-style: normal; font-size: 0.8em; color: var(--ht-mute); white-space: nowrap; }
+.ht-goal-locked > i { color: var(--ht-mute); }
+.ht-goal-locked > span { color: var(--ht-mute); }
+.ht-goal-open > i, .ht-goal-done > i { color: var(--c); }
+.ht-goal-done > span { color: var(--ht-fg); }
+.ht-dthought { margin: 2px 0 0; font-style: italic; font-size: 0.92em; }
+.ht-dthought > span { font-style: normal; color: var(--ht-mute); margin-right: 6px; font-size: 0.9em; }
+/* сердечки: чем лучше идёт, тем их больше */
+.ht-dhearts { position: absolute; inset: 0; pointer-events: none; }
+.ht-dhearts > i { position: absolute; color: var(--c); opacity: 0.32; animation: ht-float 3.4s ease-in-out infinite; }
+.ht-dhearts > i:nth-child(1) { top: 6px; right: 58px; font-size: 0.7em; }
+.ht-dhearts > i:nth-child(2) { top: 30px; right: 10px; font-size: 0.95em; animation-delay: 0.6s; }
+.ht-dhearts > i:nth-child(3) { bottom: 44px; right: 22px; font-size: 0.6em; animation-delay: 1.2s; }
+.ht-dhearts > i:nth-child(4) { top: 8px; left: 46%; font-size: 0.55em; animation-delay: 1.8s; }
+.ht-dhearts > i:nth-child(5) { bottom: 10px; left: 40%; font-size: 0.8em; animation-delay: 2.4s; }
+@keyframes ht-float { 50% { transform: translateY(-4px) rotate(-8deg) scale(1.1); } }
+/* шаги: кто делает — цветом подписи */
+.ht-who-char > em { color: var(--ht-rom); }
+.ht-who-user > em { color: var(--ht-acc); }
+:is(.ht-ib, .ht-cards) .ht-date-step[disabled] { cursor: default; }
+/* смена шага: старый зачёркивается и уходит, новый въезжает на его место */
+.ht-slot { display: grid; }
+.ht-slot > * { grid-area: 1 / 1; }
+.ht-step-out { position: relative; animation: ht-step-out 1.1s ease-in 0.3s both; }
+.ht-step-out > span { position: relative; }
+.ht-step-out > span::after { content: ''; position: absolute; left: 0; right: 0; top: 52%; height: 1.5px; background: currentColor;
+    transform: scaleX(0); transform-origin: left; animation: ht-strike 0.5s ease-out 0.3s both; }
+.ht-step-out.ht-step-failed > i { color: var(--ht-mute); }
+.ht-step-in { animation: ht-step-in 0.8s cubic-bezier(.2, .9, .3, 1) 1.3s both; }
+@keyframes ht-strike { to { transform: scaleX(1); } }
+@keyframes ht-step-out { 0%, 45% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateX(-22px); } }
+@keyframes ht-step-in { from { opacity: 0; transform: translateX(22px); } to { opacity: 1; transform: none; } }
+.ht-dnotes { list-style: none; margin: 4px 0 0; padding: 6px 0 0; border-top: 1px dashed var(--ht-line); display: flex; flex-direction: column; gap: 2px; font-size: 0.84em; color: var(--ht-mute); }
+.ht-dnotes > li { display: flex; gap: 6px; align-items: baseline; }
+.ht-dnotes > li > i { color: var(--c); flex: none; font-size: 0.85em; }
+.ht-dnotes > li.ht-bad > i { color: var(--ht-mute); }
+@media (prefers-reduced-motion: reduce) {
+    .ht-dhearts > i, .ht-step-out, .ht-step-out > span::after, .ht-step-in { animation: none; }
+    .ht-step-out { display: none; }
+    .ht-dstrip > i { transition: none; }
+}
+
+/* ═══ Итог свидания: цвет по успеху — от чёрного к насыщенному розовому ═══ */
+.ht-date-toast.ht-date-great .ht-date-toast-card { border-color: var(--ht-rom-hot); box-shadow: 0 10px 40px rgba(0,0,0,.45), 0 0 24px color-mix(in srgb, var(--ht-rom-hot) 45%, transparent); }
+.ht-date-great .ht-date-hearts, .ht-date-great .ht-date-toast-card > b { color: var(--ht-rom-hot); }
+.ht-date-awkward .ht-date-hearts, .ht-date-awkward .ht-date-toast-card > b { color: color-mix(in srgb, var(--ht-rom) 45%, #8d8792); }
+.ht-date-toast.ht-date-terrible .ht-date-toast-card { background: #0c0b0d; border-color: #2a2629; color: #cfc8cc; }
+.ht-date-terrible .ht-date-hearts, .ht-date-terrible .ht-date-toast-card > b { color: #57505a; }
+.ht-date-terrible .ht-date-hearts > i { animation: none; }
+/* в «Текущем году» */
+.ht-yr.ht-res-great > i, .ht-yr.ht-res-great > em { color: var(--ht-rom-hot); }
+.ht-yr.ht-res-good > i, .ht-yr.ht-res-good > em { color: var(--ht-rom); }
+.ht-yr.ht-res-awkward > i, .ht-yr.ht-res-awkward > em { color: color-mix(in srgb, var(--ht-rom) 45%, #8d8792); }
+.ht-yr.ht-res-bad > i, .ht-yr.ht-res-bad > em { color: #8d8792; }
+.ht-yr.ht-res-terrible > i, .ht-yr.ht-res-terrible > em { color: #3a3539; }
+.ht-yr.ht-res-terrible > i { text-shadow: 0 0 1px var(--ht-line-strong); }
+.ht-yr[class*="ht-res-"] > em { border-color: currentColor; }

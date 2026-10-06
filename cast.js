@@ -25,7 +25,8 @@ export function samePerson(a, b) {
 
 export const findCast = (state, name) => (state.cast || []).find(c => samePerson(c.name, name)) || null;
 // «Мать Алексея», «тёща», «старший брат» — это роль, а не имя
-const ROLE_WORD = /^(мать|мама|матушка|отец|папа|батюшка|тятя|брат|сестра|сын|дочь|дочка|жена|муж|тёща|теща|тесть|свекровь|свёкор|свекор|золовка|деверь|шурин|сноха|невестка|зять|дед|дедушка|бабка|бабушка|дядя|тётя|тетя|кум|кума|крёстн|крестн|старш|младш|mother|father|mom|dad|brother|sister|son|daughter|wife|husband|aunt|uncle|grand)/i;
+// целое слово (иначе «Братислав» и «Sonya» становились ролями), кроме основ «старш-», «крёстн-», «grand-»
+const ROLE_WORD = /^(?:(?:мать|мама|матушка|отец|папа|батюшка|тятя|брат|сестра|сын|дочь|дочка|жена|муж|тёща|теща|тесть|свекровь|свёкор|свекор|золовка|деверь|шурин|сноха|невестка|зять|дед|дедушка|бабка|бабушка|дядя|тётя|тетя|кум|кума|mother|father|mom|dad|brother|sister|son|daughter|wife|husband|aunt|uncle)(?![\p{L}])|старш|младш|крёстн|крестн|grand)/iu;
 export const roleName = (n) => !!n && ROLE_WORD.test(String(n).trim());
 
 // безымянный (имя история ещё не назвала) — узнаём по тому, кем он приходится обоим
@@ -81,14 +82,16 @@ export function romLevel(n) {
 }
 
 /** Разобранный HT-CAST → в состояние. Новых — добавить, известных — дополнить пустое и обновить отношения. */
-export function mergeCast(state, parsed, langOk, turn) {
+export function mergeCast(state, parsed, langOk, turn, log = null) {
     if (!parsed) return false;
     let slip = false;
     state.cast = state.cast || [];
+    const why = (c, w) => log?.push(`${c.name || c.toU || c.toC || '?'} — ${w}`);
     for (const c of parsed.add) {
-        if (![c.name, c.toU, c.toC, c.noteU, c.noteC].every(langOk)) { slip = true; continue; }
+        // имя бывает на любом языке; описания не на том языке — убираем, а человека всё равно вносим
+        for (const k of ['toU', 'toC', 'noteU', 'noteC']) if (c[k] && !langOk(c[k])) { c[k] = null; slip = true; }
         if (roleName(c.name)) c.name = null;          // роль вместо имени — считаем безымянным
-        if (c.name && castBanned(state, c.name)) continue;
+        if (c.name && castBanned(state, c.name)) { why(c, 'убран игроком'); continue; }
         // тот же человек: по имени — или безымянный с теми же ролями, которому теперь дали имя
         const ex = (c.name && findCast(state, c.name)) || state.cast.find(x => (!x.name || !c.name) && sameRoles(x, c));
         if (ex) {
@@ -101,8 +104,10 @@ export function mergeCast(state, parsed, langOk, turn) {
                 // общий ребёнок, которого раньше записали в родню одной стороны
                 else if (c.group === 'kin_both' && (ex.group === 'kin_user' || ex.group === 'kin_char')) ex.group = 'kin_both';
             }
+            why(c, `уже есть (${ex.name || ex.toU || '?'})`);
             continue;
         }
+        why(c, 'добавлен');
         state.cast.push({
             id: `c-${turn}-${state.cast.length}-${Math.random().toString(36).slice(2, 6)}`,
             name: c.name || null, group: c.group, toU: c.toU, toC: c.toC, bday: c.bday,

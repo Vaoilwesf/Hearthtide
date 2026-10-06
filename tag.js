@@ -269,7 +269,7 @@ export function parseCast(text) {
     const rel = (v) => { const n = parseInt(v); return isNaN(n) ? null : Math.max(-100, Math.min(100, n)); };
     for (const raw of inner.split(/\n+/)) {
         const cols = raw.split('|').map(x => x.trim());
-        const kind = (cols[0] || '').toUpperCase();
+        const kind = (cols[0] || '').replace(/^[\s\-*•]+/, '').replace(/[:.]+$/, '').toUpperCase();   // «- C», «C:» — тоже C
         const nm = clean(cols[1], 60);
         const name = nm && !/^[?？]+$/.test(nm) ? nm : null;
         if (kind === 'C') {
@@ -292,8 +292,8 @@ export function parseCast(text) {
 }
 
 /**
- * Свидание: <!-- HT-DATE title=… | goal=… | hook=… | steps=шаг (char); шаг (user); … | started=yes -->
- * started=yes — история уже его начала (не предложение)
+ * Свидание: <!-- HT-DATE title=… | goal=… | hook=… | where=… | at=YYYY-MM-DD HH:MM | started=yes -->
+ * at — на когда назначено (now — прямо сейчас); started=yes — история уже его начала (не предложение)
  */
 export function parseDateBlock(text) {
     const inner = findBlock(text, 'HT-DATE');
@@ -301,11 +301,58 @@ export function parseDateBlock(text) {
     const f = fields(inner);
     const title = clean(f.title, 120);
     if (!title) return null;
-    const steps = String(f.steps || '').split(/;|\n/).map(x => x.trim()).filter(Boolean).slice(0, 5).map(x => {
-        const who = /\((?:\s*)(user|юзер|игрок)/i.test(x) ? 'user' : 'char';
-        return { t: clean(x.replace(/\s*\([^)]*\)\s*$/, ''), 120), who, done: false };
+    const steps = String(f.steps || '').split(/;|\n/).map(x => x.trim()).filter(Boolean).slice(0, 3).map(x => {
+        const who = /\((?:\s*)(user|юзер|игрок)/i.test(x) ? 'user' : /\((?:\s*)(both|оба|вместе)/i.test(x) ? 'both' : 'char';
+        return { t: clean(x.replace(/\s*\([^)]*\)\s*$/, ''), 120), who };
     }).filter(s => s.t);
-    return { title, goal: clean(f.goal, 160), hook: clean(f.hook, 240), steps, started: /^(yes|true|1|да)/i.test(String(f.started || '').trim()) };
+    return { title, goal: clean(f.goal, 160), hook: clean(f.hook, 240), where: clean(f.where, 80), at: parseAt(f.at), steps,
+        started: /^(yes|true|1|да)/i.test(String(f.started || '').trim()) };
+}
+
+/** «1151-02-06 18:00», «06.02.1151 18:00», «18:00» (сегодня), «now» → { day, clock } | { now: true } | null */
+export function parseAt(v) {
+    const s = String(v ?? '').trim();
+    if (!s || /^(none|null|нет|-|—)$/i.test(s)) return null;
+    if (/^(now|right now|сейчас|прямо сейчас|сразу)/i.test(s)) return { now: true };
+    const day = parseDate(s);
+    const t = s.match(/(?:^|[\sT,])(\d{1,2})[:.](\d{2})(?![.\d])/) || s.match(/(?:^|\s)(\d{1,2})\s*ч/);
+    const clock = t && +t[1] <= 24 && +(t[2] || 0) < 60 ? (+t[1] % 24) + (+(t[2] || 0)) / 60 : null;
+    return day != null || clock != null ? { day, clock } : null;
+}
+
+/**
+ * Ход свидания (помощник или основная модель):
+ *   START                       — намеченное свидание началось
+ *   DONE | N | что вышло        — шаг N случился
+ *   FAIL | N | что не так       — шаг N попробовали, но вышло плохо
+ *   NEW | шаг | char|user|both  — новый шаг на освободившееся место
+ *   MOOD | up|down · VIBE | как идёт · THOUGHT | мысль {{char}} · GOAL · END · RECAP | итог | лучший момент
+ */
+export function parseDateUp(text) {
+    const inner = findBlock(text, 'HT-DATE-UP');
+    if (inner == null) return null;
+    const up = { start: false, done: [], fail: [], add: [], mood: 0, vibe: null, thought: null, goal: false, end: false, recap: null, best: null };
+    const num = (v) => { const m = String(v || '').match(/\d+/); return m ? +m[0] : null; };
+    for (const raw of inner.split(/\n+/)) {
+        const cols = raw.split('|').map(x => x.trim());
+        const k = (cols[0] || '').replace(/^[\s\-*•]+/, '').replace(/[:.]+$/, '').toUpperCase();
+        if (k === 'START') up.start = true;
+        else if (k === 'DONE' || k === 'FAIL') {
+            const n = num(cols[1]);
+            if (n != null) (k === 'DONE' ? up.done : up.fail).push({ n, note: clean(cols[2], 160) });
+        } else if (k === 'NEW') {
+            const t = clean(cols[1], 120);
+            if (t) up.add.push({ t, whoRaw: clean(cols[2], 40) });
+        } else if (k === 'MOOD') {
+            const v = String(cols[1] || '').trim();
+            up.mood = /^(up|better|лучш|\+)/i.test(v) ? 1 : /^(down|worse|хуж|-)/i.test(v) ? -1 : 0;
+        } else if (k === 'VIBE') up.vibe = clean(cols[1], 60);
+        else if (k === 'THOUGHT') up.thought = clean(cols[1], 160);
+        else if (k === 'GOAL') up.goal = !/^(no|нет|false)/i.test(String(cols[1] || ''));
+        else if (k === 'END') { up.end = true; if (cols[1]) up.recap = cleanSentences(cols[1], 400); }
+        else if (k === 'RECAP') { up.recap = cleanSentences(cols[1], 400); up.best = clean(cols[2], 120); }
+    }
+    return up;
 }
 
 /** Итог прошедшего праздника — одна строка */
@@ -333,8 +380,8 @@ export function parseRecapParts(text) {
 export function stripBlocks(text) {
     let t = String(text ?? '');
     t = t.replace(/```[a-z]*\s*(?:<!--\s*)?HT(?:-[A-Z]+)?\b[\s\S]*?```/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT|CAST|DATE)\b[\s\S]*?-->/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT|CAST|DATE)\b(?![\s\S]*-->)[\s\S]*$/i, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT|CAST|DATE-UP|DATE)\b[\s\S]*?-->/gi, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT|CAST|DATE-UP|DATE)\b(?![\s\S]*-->)[\s\S]*$/i, '');
     t = t.replace(/^\s*HT(?:-[A-Z]+)?\b[\s:]+[^\n]*$/gim, '');
     return t.replace(/\s+$/, '');
 }

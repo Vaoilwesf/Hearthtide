@@ -34,7 +34,8 @@ const cut = (t, n) => {
 const LIMIT = { card: 1400, persona: 600, lore: 1800, msg: 800, perMsg: 650 };
 
 /** Карточка, персона, сработавшие записи лорбука и последние сообщения */
-export async function gatherSources(upTo, depth = 10) {
+/** newFrom — сообщения после этого номера помечаются [NEW]: помощник судит ход свидания только по ним */
+export async function gatherSources(upTo, depth = 10, newFrom = null) {
     const c = ctxST();
     const sub = (t) => { try { return c?.substituteParams ? c.substituteParams(t) : t; } catch (e) { return t; } };
     let fields = {};
@@ -43,12 +44,13 @@ export async function gatherSources(upTo, depth = 10) {
     const card = cut(sub([fields.description ?? ch?.description, fields.personality ?? ch?.personality, fields.scenario ?? ch?.scenario].filter(Boolean).join('\n')), LIMIT.card);
     const persona = cut(sub(fields.persona ?? c?.powerUserSettings?.persona_description ?? ''), LIMIT.persona);
 
-    const msgs = chat.slice(0, upTo + 1).filter(m => m && m.mes && !m.is_system).slice(-depth);
+    const msgs = chat.slice(0, upTo + 1).map((m, i) => (m && m.mes && !m.is_system ? { ...m, ht_i: i } : null)).filter(Boolean).slice(-depth);
     // последние сообщения важнее: идём с конца, пока влезает
     const parts = [];
     let total = 0;
     for (let i = msgs.length - 1; i >= 0; i--) {
-        const line = `${msgs[i].name || (msgs[i].is_user ? 'User' : 'Character')}: ${cut(msgs[i].mes, LIMIT.msg)}`;
+        const mark = newFrom != null && msgs[i].ht_i > newFrom ? '[NEW] ' : '';
+        const line = `${mark}${msgs[i].name || (msgs[i].is_user ? 'User' : 'Character')}: ${cut(msgs[i].mes, LIMIT.msg)}`;
         if (total + line.length > depth * LIMIT.perMsg && parts.length) break;   // в среднем ~650 символов на сообщение
         parts.unshift(line);
         total += line.length;
@@ -68,7 +70,8 @@ export async function gatherSources(upTo, depth = 10) {
 }
 
 /** Один запрос. Ошибка — с понятной причиной (для уведомления и логов) */
-export async function sendSide(profileId, messages, signal, maxTokens = 2000) {
+// 4000: у моделей с рассуждениями 2000 не хватало — блоки в конце ответа (люди истории) обрезались
+export async function sendSide(profileId, messages, signal, maxTokens = 4000) {
     const svc = await service();
     if (!svc) throw new Error('Connection Manager недоступен (расширение выключено или таверна слишком старая)');
     const res = await svc.sendRequest(profileId, messages, maxTokens, {
