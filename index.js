@@ -1977,7 +1977,7 @@ function castTabHtml(view, live) {
     const dateLine = live ? dateWhyText() : '';
     // {{char}} — портрет в подсвеченной рамке; {{user}} — маленький круглый значок, прикреплённый сбоку
     const pair = tab === 'all' ? `<div class="ht-cc ht-cc-pair${pr.r > 0 ? ' ht-cc-love' : ''}${pr.unknown ? ' ht-cc-unknown' : ''}">
-        <span class="ht-portrait ht-portrait-lg">${avaHtml(cA, c)}<span class="ht-ava-pin" title="${esc(u)}">${avaHtml(uA, u, 'ht-ava-round')}</span>${pr.r > 0 ? '<i class="fa-solid fa-heart ht-pair-mid"></i>' : ''}</span>
+        <span class="ht-portrait">${avaHtml(cA, c)}<span class="ht-ava-pin" title="${esc(u)}">${avaHtml(uA, u, 'ht-ava-round')}</span>${pr.r > 0 ? '<i class="fa-regular fa-heart ht-pair-mid"></i>' : ''}</span>
         <b class="ht-cc-name">${esc(c)}</b>
         ${pr.unknown ? `<span class="ht-cc-role ht-mute">${esc(L().pairUnknown)}</span>` : pr.note ? `<span class="ht-cc-role">${esc(pr.note)}</span>` : ''}
         <div class="ht-pair-bars">

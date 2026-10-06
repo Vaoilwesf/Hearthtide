@@ -558,7 +558,7 @@
 .ht-cc.ht-bd-near { border-color: var(--ht-acc); background: color-mix(in srgb, var(--ht-acc) 8%, transparent); }
 .ht-cc.ht-bd-today { border-color: var(--ht-fire); background: color-mix(in srgb, var(--ht-fire) 12%, transparent); }
 /* {{char}} и {{user}}: шире, первые; романтика — розовая подсветка и бьющееся сердце */
-.ht-cc-pair { grid-column: span 2; }
+/* карточка {{char}} — того же размера, что у остальных людей */
 .ht-pair-avas { display: flex; align-items: center; gap: 6px; }
 :is(.ht-ib, .ht-cards, .ht-modal) .ht-pair-mid { color: var(--ht-mute); font-size: 0.95em; }
 .ht-cc-love { border-color: color-mix(in srgb, var(--ht-rom) 65%, transparent); background: color-mix(in srgb, var(--ht-rom) 10%, transparent);
@@ -733,8 +733,11 @@ dialog.ht-modal:not([open]) { display: none; }
     box-shadow: 0 0 12px color-mix(in srgb, var(--ht-acc) 25%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--ht-acc) 20%, transparent); }
 .ht-cc.ht-cc-pair.ht-cc-love { border-color: color-mix(in srgb, var(--ht-rom) 70%, transparent);
     box-shadow: 0 0 14px color-mix(in srgb, var(--ht-rom) 35%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--ht-rom) 22%, transparent); }
-.ht-cc-pair .ht-portrait { margin: 2px 10px 4px 0; }
-.ht-cc-pair > .ht-cc-name { font-size: 1em; }
+.ht-cc-pair .ht-portrait { margin: 2px 0 4px; }
+.ht-cc-pair .ht-portrait > .ht-ava { width: 42px; height: 54px; }
+.ht-cc-pair .ht-ava-pin > .ht-ava { width: 22px; height: 22px; }
+@media (max-width: 420px) { .ht-cc-pair .ht-portrait > .ht-ava { width: 40px; height: 50px; } }
+
 
 /* кого часто называют в истории — добавить одним нажатием */
 .ht-hints { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 10px; font-size: 0.82em; color: var(--ht-mute); }
