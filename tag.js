@@ -61,14 +61,38 @@ export function parseSmall(text, name = 'HT') {
         mean: clean(f.mean, 240),                                   // смысл праздника, который игрок переименовал
         giftDone: /^(true|yes|1|да)$/i.test(String(f.gift_done || '').trim()),
         giftTo: clean(f.gift_to, 60),
-        // {{char}} и {{user}}: дружба 0–100 / романтика −100…100 и коротко, как они сейчас
-        bond: (() => { const m = String(f.bond || '').match(/(-?\d{1,3})\s*[/|;,]\s*(-?\d{1,3})/); return m ? { f: Math.max(-100, Math.min(100, +m[1])), r: Math.max(-100, Math.min(100, +m[2])) } : null; })(),
+        // {{char}} и {{user}}: дружба / романтика −100…100 и коротко, как они сейчас
+        bond: parseBond(f.bond, inner),
         bondNote: clean(f.bond_note, 60),
         // свидание: какой шаг сделан, как идёт, кончилось ли
         dateStep: (String(f.date_step || '').match(/\d+/g) || []).map(Number).filter(n => n >= 1 && n <= 6),
         dateMood: /^up|^better|^лучш|^\+/i.test(String(f.date_mood || '').trim()) ? 1 : /^down|^worse|^хуж|^-/i.test(String(f.date_mood || '').trim()) ? -1 : 0,
         dateEnd: /^(yes|true|1|да|end)/i.test(String(f.date_end || '').trim()),
+        // один человек праздника: чего он хочет теперь — «Имя: желание»
+        who: (() => {
+            const m = String(f.who || '').match(/^\s*(.{2,60}?)\s*(?::|\s[—–-]\s)\s*(.+)$/);
+            const name = m && clean(m[1], 60), text = m && clean(m[2], 160);
+            return name && text ? { name, text } : null;
+        })(),
     };
+}
+
+/**
+ * Дружба и романтика: «40/20», «40 / −20», «F40 R20», «40, 20»; если второе число ушло за «|» — берём и его.
+ * Минусы бывают типографскими (−, –) — модель копирует их из промпта.
+ */
+function parseBond(v, inner) {
+    const norm = (x) => String(x ?? '').replace(/[−–—]/g, '-');
+    const nums = norm(v).match(/[+-]?\d{1,3}/g) || [];
+    if (nums.length === 1) {
+        const parts = String(inner || '').split('|');
+        const i = parts.findIndex(x => /^\s*bond\s*[=:]/i.test(x));
+        const next = i >= 0 ? norm(parts[i + 1]).trim() : '';
+        if (/^[+-]?\d{1,3}$/.test(next)) nums.push(next);
+    }
+    if (nums.length < 2) return null;
+    const c = (x) => Math.max(-100, Math.min(100, parseInt(x, 10)));
+    return { f: c(nums[0]), r: c(nums[1]) };
 }
 
 /** Календарь: S | эпоха | вера | место  ·  H | дата | дней | название | смысл | тип  ·  B | user/char | ММ-ДД  ·  X | дата | название | тип (прошёл во время скипа) */
@@ -235,7 +259,7 @@ export function parseBeat(text) {
 
 /**
  * Люди истории (по одному разу):
- *   C | ИМЯ (или ?) | kin_user|kin_char|friend|acquaintance|other | КЕМ ДЛЯ USER | КЕМ ДЛЯ CHAR | ДР | С USER −100…100 | С CHAR | КАК С USER | КАК С CHAR
+ *   C | ИМЯ (или ?) | kin_user|kin_char|kin_both|friend|acquaintance|other | КЕМ ДЛЯ USER | КЕМ ДЛЯ CHAR | ДР | С USER −100…100 | С CHAR | КАК С USER | КАК С CHAR
  *   R | ИМЯ | С USER | С CHAR | КАК С USER | КАК С CHAR   — отношения заметно изменились
  */
 export function parseCast(text) {
@@ -250,7 +274,7 @@ export function parseCast(text) {
         const name = nm && !/^[?？]+$/.test(nm) ? nm : null;
         if (kind === 'C') {
             const g = String(cols[2] || '').toLowerCase().replace(/[\s-]+/g, '_');
-            const group = /^kin_?c|char/.test(g) ? 'kin_char' : /^kin|^rel|род|сем|famil/.test(g) ? 'kin_user'
+            const group = /^kin_?b|both|общ|shared/.test(g) ? 'kin_both' : /^kin_?c|char/.test(g) ? 'kin_char' : /^kin|^rel|род|сем|famil/.test(g) ? 'kin_user'
                 : /^fri|друг|подруг/.test(g) ? 'friend' : /^acq|знак/.test(g) ? 'acquaintance' : 'other';
             const bd = String(cols[5] || '').trim().match(/^(\d{1,2})[./-](\d{1,2})(?:[./-](-?\d{1,5}))?$/);
             const toU = clean(cols[3], 60), toC = clean(cols[4], 60);

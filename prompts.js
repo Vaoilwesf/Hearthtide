@@ -187,22 +187,25 @@ function castRule(ctx) {
     const { state, userName, charName } = ctx;
     const known = (state.cast || []).map(c => c.name || `? (${[c.toU, c.toC].filter(Boolean).join(' / ')})`);
     const no = state.castNo || [];
+    const hint = (ctx.castHint || []).map(x => `${x.name} (${x.n})`);
     return `<!-- HT-CAST
 C | NAME | GROUP | TO_USER | TO_CHAR | BIRTHDAY | WITH_USER | WITH_CHAR | HOW_USER | HOW_CHAR
 R | NAME | WITH_USER | WITH_CHAR | HOW_USER | HOW_CHAR
 -->
-C: people of the story not in the list yet (not ${userName}, not ${charName}), once each. NAME: the person's own name only — never a role as a name; if the story hasn't named them yet, write ?. GROUP: kin_user (${userName}'s own blood family) | kin_char (${charName}'s own blood family) | friend | acquaintance | other. TO_USER / TO_CHAR: who they are to ${userName} and to ${charName}, a word or two each, in ${langOf(ctx)}. Work out kinship from the card, persona, lore and story — never guess what they don't support. BIRTHDAY: DD.MM or DD.MM.YYYY only if stated, else empty. WITH_USER / WITH_CHAR: how they get on, −100 (enmity) … 0 (neutral) … 100 (very close). HOW_USER / HOW_CHAR: how they are with each, 2–4 words of your own, specific to these two people — not a generic label, in ${langOf(ctx)}.
-R: only someone whose relations clearly changed in the latest messages — the new numbers and words.
-Leave the block out if there is nothing.${known.length ? ` Already listed: ${known.join(', ')}.` : ''}${no.length ? ` Never add: ${no.join(', ')}.` : ''}`;
+C: people of the story not in the list yet (not ${userName}, not ${charName}), once each. NAME: the person's own name only — never a role as a name; if the story hasn't named them yet, write ?. GROUP: kin_user (${userName}'s own blood family) | kin_char (${charName}'s own blood family) | kin_both (children or grandchildren ${userName} and ${charName} share) | friend | acquaintance | other. TO_USER / TO_CHAR: who they are to ${userName} and to ${charName}, a word or two each, in ${langOf(ctx)}. Work out kinship from the card, persona, lore and story — never guess what they don't support. BIRTHDAY: DD.MM or DD.MM.YYYY only if stated, else empty. WITH_USER / WITH_CHAR: how they get on, −100 (enmity) … 0 (neutral) … 100 (very close). HOW_USER / HOW_CHAR: how they are with each, 2–4 words of your own, specific to these two people — not a generic label, in ${langOf(ctx)}.
+R: only someone whose relations clearly changed in the latest messages — the new numbers and words.${ctx.census ? `
+Census: go through the card, persona, world info and the whole story above and list everyone who matters and isn't listed yet, up to 10 C lines — kin of both sides first, then those the story names most often.` : ''}
+Leave the block out if there is nothing.${hint.length ? ` Often named in the story: ${hint.join(', ')} — add those who are people.` : ''}${known.length ? ` Already listed: ${known.join(', ')}.` : ''}${no.length ? ` Never add: ${no.join(', ')}.` : ''}`;
 }
 
-// Свидание, которое {{char}} может предложить: игрок решает кнопками
+// Свидание, которое {{char}} может предложить: игрок решает кнопками.
+// Кубик уже выпал — модель не «решает», звать ли, а только как; пропустить можно лишь в срочной сцене
 function dateOfferRule(ctx) {
     const { state, userName, charName } = ctx;
     const p = state.pair || {};
     const past = (state.datesDone || []).slice(-3).map(d => d.title);
     const gift = state.charGift && !state.charGift.done && state.charGift.text ? ` ${charName}'s gift is ready (${state.charGift.text}) — it may be part of it.` : '';
-    return `This reply, if it fits ${charName}'s nature and how they stand now (friendship ${p.f ?? 0}, romance ${p.r ?? 0}${p.note ? `, ${p.note}` : ''}): ${charName} asks ${userName} on a date — after a quarrel it may be a way to make up. Write only the asking; ${userName} answers. Then add after the HT line: <!-- HT-DATE title=… | goal=… | hook=… | steps=… --> — title: where and what, a few words; goal: what it is meant to mend, say or celebrate; hook: how ${charName} asked, one sentence; steps: 3–4 small things for it, each marked (char) or (user), separated by ;.${gift} True to the era and place; in ${langOf(ctx)}.${past.length ? ` Different from: ${past.join(' / ')}.` : ''} If ${charName} wouldn't ask now (too proud, too hurt, the moment is wrong), don't — and add nothing.`;
+    return `${state.dateRollTry ? 'REQUIRED — your last reply skipped it. ' : ''}This reply ${charName} asks ${userName} on a date — the moment has come; the only question is how. In ${charName}'s own way, as fits who ${charName} is and how they stand now (friendship ${p.f ?? 0}, romance ${p.r ?? 0}${p.note ? `, ${p.note}` : ''}): openly, shyly, in passing or as a half-joke; after a quarrel — as a way to make up. Write only the asking; ${userName} answers. Then add after the HT line: <!-- HT-DATE title=… | goal=… | hook=… | steps=… --> — title: where and what, a few words; goal: what it is meant to mend, say or celebrate; hook: how ${charName} asked, one sentence; steps: 3–4 small things for it, each marked (char) or (user), separated by ;.${gift} True to the era and place; in ${langOf(ctx)}.${past.length ? ` Different from: ${past.join(' / ')}.` : ''} Skip it only if the scene is urgent or dangerous — then add nothing.`;
 }
 
 // Случайный ивент: предлагается игроку кнопками, в историю входит, только если он принял
@@ -279,9 +282,10 @@ export function buildTagPrompt(ctx) {
     const { state, phase, request, userName, charName } = ctx;
     const h = phase.h;
     const lang = langOf(ctx);
+    const pr = state.pair;
     const out = [`[Hearthtide tag — required]
 End every reply with one hidden line:
-<!-- HT date=YYYY-MM-DD | time=HH:MM | when=DATE_TEXT -->
+<!-- HT date=YYYY-MM-DD | time=HH:MM | when=DATE_TEXT${pr ? '' : ' | bond=F/R | bond_note=…'} -->
 date: in-world date, numeric, in the story's own calendar (fictional months → 1–12). time: in-world clock now. when: the day and month as the story says it, short. Add place=KIND NAME (the settlement or area: its kind word and name as the story says them, not a building) when ${userName} moves or it's wrong${ctx.placeUnnamed ? ` — and THIS reply, because the current place has no name yet: the name the story gives it, or a fitting one` : ''}.
 All text values in these comments: ${lang} only.`];
 
@@ -289,11 +293,10 @@ All text values in these comments: ${lang} only.`];
     if (ctx.fixPlace) out.push(`Add place=… to the HT line THIS reply: the current place rewritten in ${lang}.`);
     if (ctx.fixSetting) out.push(`ALSO add after the HT line: <!-- HT-CAL\nS | ERA_AND_YEAR | FAITH | PLACE\n--> — the current setting rewritten in ${lang}.`);
     if (state.missed > 0) out.push(`Your previous reply had no HT line — include it now.`);
-    // {{char}} и {{user}}: дружба / романтика — коротко в теге, только когда меняется
-    const pr = state.pair;
+    // {{char}} и {{user}}: дружба / романтика — пока не ясно, в каждом ответе; дальше — когда меняется (и изредка сверить)
     out.push(pr
-        ? `Add bond=FRIENDSHIP/ROMANCE and bond_note=… to the HT line only when this reply clearly changes how ${charName} and ${userName} stand (now ${pr.f}/${pr.r}${pr.note ? `, ${pr.note}` : ''}).`
-        : `Add bond=FRIENDSHIP/ROMANCE and bond_note=… to the HT line: how ${charName} and ${userName} stand now by the card and story — friendship −100 (enmity) … 0 (neutral) … 100 (very close); romance −100 (hatred, exes) … 0 (none) … 100 (deep love); bond_note: a few words of your own on how they are right now, in ${lang}.`);
+        ? `Add bond=F/R | bond_note=… to the HT line when this reply changes how ${charName} and ${userName} stand (now ${pr.f}/${pr.r}${pr.note ? `, ${pr.note}` : ''})${ctx.bondStale ? ' — and THIS reply even if unchanged' : ''}.`
+        : `${ctx.bondMiss ? 'REQUIRED — your last reply had no bond. ' : ''}bond=F/R: how ${charName} and ${userName} stand now by the card, persona and story, two numbers −100…100 — friendship (enmity … 0 … very close), romance (hatred or exes … 0 none … deep love); spouses, lovers, rivals and strangers all differ. bond_note: a few words of your own, in ${lang}.`);
     const dt = state.date?.status === 'active' ? state.date : null;
     // выпал шанс — ивент или приглашение на свидание начинаются прямо в этом ответе, игрок решает кнопками
     if (state.evRoll && h) out.push(eventOfferRule(ctx));
@@ -301,6 +304,12 @@ All text values in these comments: ${lang} only.`];
     if (dt) out.push(`During the date add to the HT line: date_step=N when step N happens in this reply; date_mood=up or down when it clearly goes better or worse; date_end=yes when the date is over.`);
     if (charDue(state, phase)) {
         out.push(`Add char=… to the HT line: a short thought of ${charName}'s about the holiday right now, in ${charName}'s own voice, the way people speak in this era, setting and story, under 12 words — about the feast, the people in it or what is coming, never a description of what ${charName} is doing; a new thought each time, not echoing earlier ones.`);
+    }
+    // один человек праздника за ответ: чего он хочет теперь — желания людей живут вместе с историей
+    const ppl = (phase.kind === 'prep' || phase.kind === 'today') && h ? (state.people || []).filter(p => p.name) : [];
+    if (ppl.length) {
+        const next = ppl[(state.whoIdx || 0) % ppl.length];
+        out.push(`Add who=NAME: WANT to the HT line — one holiday person (${next.name}${ppl.length > 1 ? `, or whoever of ${ppl.map(p => p.name).join(', ')} this reply touched` : ''}): what they want or plan around it now, a few words, moved on${next.now ? ` from "${next.now}"` : ''} — not a retelling.`);
     }
     if (charGiftActive(ctx)) {
         out.push(`Add gift=… to the HT line: ${charName}'s current step with a gift for ${giftTarget(state, h, userName, charName)}, under 8 words, no reason clause; it moves as the story does (idea → finding or making → ready and hidden → given). Add gift_done=true once it is given. Leave gift out until there is a real step — never write that it isn't decided.`);
@@ -388,14 +397,16 @@ export function buildSideMessages(ctx, needs, src) {
     if (evOpen?.status === 'invited') sf.push(`ev=joined if ${userName} accepted the invitation "${evOpen.title}", ev=declined if refused; leave out if not decided yet`);
     else if (evOpen) sf.push(`ev=done with ev_note=its outcome in one sentence once "${evOpen.title}" is over in the story${evOpen.kind === 'party' ? '' : `; ev=skipped if ${userName} turned away`}`);
     if (needs.has('mean') && ctx.meaningFor) sf.push(`mean=what "${ctx.meaningFor}" is and how it is kept in this era and place, one sentence`);
-    if (sf.length) task.push(`<!-- HT-S ${sf.map(x => x.split('=')[0] + '=…').join(' | ')} -->\n${sf.map(x => `- ${x}`).join('\n')}`);
+    if (needs.has('bond')) sf.push(`bond=FRIENDSHIP/ROMANCE: how ${charName} and ${userName} stand by the card, persona and story, two numbers −100…100 — friendship (enmity … 0 neutral … very close), romance (hatred or exes … 0 none … deep love); spouses, lovers, rivals and strangers all differ; bond_note=a few words on how they are now`);
+    const keys = (x) => (x.startsWith('bond=') ? 'bond=F/R | bond_note=…' : `${x.split('=')[0]}=…`);
+    if (sf.length) task.push(`<!-- HT-S ${sf.map(keys).join(' | ')} -->\n${sf.map(x => `- ${x}`).join('\n')}`);
 
     if (needs.has('moments') && h) {
         const ev = openEvent(state, h.id);
         task.push(`<!-- HT-EV kind=moment | title=… -->
 Only if the latest messages show something new at "${ev?.title || 'the gathering'}" that ${userName} joined — a few words. Leave it out otherwise.${ev?.moments?.length ? ` Already: ${ev.moments.slice(-3).map(m => m.title).join(' / ')}.` : ''}`);
     }
-    if (needs.has('cast')) task.push(castRule(ctx));
+    if (needs.has('cast') || needs.has('census')) task.push(castRule({ ...ctx, census: needs.has('census') }));
     if (needs.has('datewatch')) task.push(`<!-- HT-DATE title=… | goal=… | steps=… | started=yes -->
 Only if the latest messages show ${userName} and ${charName} setting off on a date that isn't tracked yet. steps: 3–4 small things for it, each marked (char) or (user). Leave it out otherwise.`);
     if (needs.has('new')) {

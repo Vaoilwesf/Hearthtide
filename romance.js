@@ -18,11 +18,13 @@ export const DATE_CHANCE = { base: 6 };   // по умолчанию; меняе
 export const DATE_COOLDOWN = 10;
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const idOf = (t) => { let h = 0; for (const ch of String(t || '')) h = (h * 31 + ch.codePointAt(0)) | 0; return (h >>> 0).toString(36); };
 
 /** Предложенное ИИ или начатое историей свидание → в состояние */
 export function newDate(d, turn, started) {
     return {
-        id: `d-${turn}-${Math.random().toString(36).slice(2, 6)}`,
+        // одно и то же свидание при повторной обработке ответа — тот же id (уведомление и анимация — один раз)
+        id: `d-${turn}-${idOf(d.title)}`,
         title: d.title, goal: d.goal || null, hook: d.hook || null,
         steps: (d.steps || []).slice(0, 5).map(s => ({ t: s.t, who: s.who, done: false })),
         score: DATE_SCORE.start, status: started ? 'active' : 'offered',
@@ -76,13 +78,26 @@ export function finishDate(state, turn) {
     return d;
 }
 
-/** Бросать ли кубик на свидание: есть романтика, нет идущего свидания, пауза прошла. Ссора — шанс выше */
-export function dateChance(state, turn, base = DATE_CHANCE.base) {
+/** Романтика пары, с которой {{char}} уже может позвать: любая искра выше нуля */
+export const DATE_ROM_MIN = 1;
+
+/**
+ * Шанс, что {{char}} позовёт на свидание после этого ответа, и почему он такой.
+ * why: off — выключено в настройках · nopair — пара ещё не ясна · norom — романтики нет ·
+ *      active / offered — свидание уже идёт или ждёт ответа · cooldown — пауза после прошлого (left — сколько ответов) ·
+ *      quarrel — после ссоры шанс выше · ok
+ */
+export function dateChanceInfo(state, turn, base = DATE_CHANCE.base) {
+    if (!base) return { chance: 0, why: 'off' };
     const p = state.pair;
-    if (!p || p.r <= 10 || state.date?.status === 'active' || state.date?.status === 'offered') return 0;
-    if (turn - (state.lastDateEnd ?? -99) < DATE_COOLDOWN) return 0;
-    const quarrel = (state.pairDrop ?? -99) >= turn - 6;      // дружба заметно упала за последние ответы
-    // базовый шанс — из настроек (0 — выключено); после ссоры в 2,5 раза выше. Свидания из самого ролплея от этого не зависят
-    if (!base) return 0;
-    return quarrel ? Math.min(100, Math.round(base * 2.5)) : base;
+    if (!p) return { chance: 0, why: 'nopair' };
+    if (p.r < DATE_ROM_MIN) return { chance: 0, why: 'norom', r: p.r };
+    if (state.date?.status === 'active') return { chance: 0, why: 'active' };
+    if (state.date?.status === 'offered') return { chance: 0, why: 'offered' };
+    const left = DATE_COOLDOWN - (turn - (state.lastDateEnd ?? -99));
+    if (left > 0) return { chance: 0, why: 'cooldown', left };
+    // дружба заметно упала за последние ответы — помириться: шанс в 2,5 раза выше
+    if ((state.pairDrop ?? -99) >= turn - 6) return { chance: Math.min(100, Math.round(base * 2.5)), why: 'quarrel' };
+    return { chance: base, why: 'ok' };
 }
+export const dateChance = (state, turn, base) => dateChanceInfo(state, turn, base).chance;

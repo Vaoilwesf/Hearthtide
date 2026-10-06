@@ -182,6 +182,11 @@ export function sideNeeds(state, phase) {
     if ((state.holidays || []).some(x => x.needMeaning && !isBanned(state, x.name))) n.add('mean');
     n.add('new');   // поводы из истории ищем при каждом запросе — это почти ничего не стоит
     n.add('cast');  // новые люди истории и перемены в отношениях — тоже
+    // перепись: изредка — по большому окну сообщений, сначала родня обеих сторон и те, кого чаще называют
+    const sinceCensus = turn - (state.lastCensusTurn ?? -99);
+    if (sinceCensus >= CENSUS_EVERY || ((state.cast || []).length < 3 && sinceCensus >= 6)) n.add('census');
+    // пара {{char}} и {{user}} ещё не ясна — начальные значения по карточке и персоне
+    if (!state.pair) n.add('bond');
     // свидание: заметить, если история сама к нему пришла (предлагает его основная модель — прямо в ответе)
     if (!state.dateRoll && (!state.date || state.date.status === 'ended')) n.add('datewatch');
     return n;
@@ -189,11 +194,16 @@ export function sideNeeds(state, phase) {
 
 /** Как часто ходит отдельный запрос (в ответах бота): в праздник чаще, издали реже */
 export const SIDE_EVERY = { prep: 3, today: 2, far: 5 };
+/** Перепись людей истории — раз в столько ответов; сколько сообщений она читает */
+export const CENSUS_EVERY = 15;
+export const CENSUS_DEPTH = 30;
 
 /** Отправлять ли отдельный запрос после этого ответа */
 export function sideDue(state, phase, needs) {
     // то, без чего инфоблок пустой или неверный, — сразу
-    if (['recap', 'cal', 'mean', 'day', 'replan'].some(k => needs.has(k))) return true;
+    if (['recap', 'cal', 'mean', 'day', 'replan', 'census'].some(k => needs.has(k))) return true;
+    // пара ещё не ясна — спросить сразу, но не чаще раза в 5 ответов, если помощник её не дал
+    if (needs.has('bond') && (state.turn || 0) - (state.bondSide ?? -99) >= 5) return true;
     const since = (state.turn || 0) - (state.lastSideTurn ?? -99);
     if (phase.kind === 'prep') return needs.has('prep') || since >= SIDE_EVERY.prep;   // новый день — тоже
     if (phase.kind === 'today') return since >= SIDE_EVERY.today;

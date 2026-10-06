@@ -3,7 +3,7 @@
    Все цвета — из текущей темы SillyTavern.
    ═══════════════════════════════════════════════════════════════ */
 
-.ht-ib, .ht-modal {
+.ht-ib, .ht-modal, .ht-cards, .ht-invite-toast {
     --ht-fg: var(--SmartThemeBodyColor, #dcdcd2);
     --ht-acc: var(--SmartThemeQuoteColor, #e1a35a);
     --ht-line: color-mix(in srgb, var(--ht-fg) 16%, transparent);
@@ -11,6 +11,10 @@
     --ht-soft: color-mix(in srgb, var(--ht-fg) 5%, transparent);
     --ht-soft-2: color-mix(in srgb, var(--ht-fg) 9%, transparent);
     --ht-mute: color-mix(in srgb, var(--ht-fg) 62%, transparent);
+}
+/* Внутри .mes_text таверна красит i и em своим цветом — у нас они наследуют цвет, если правило ниже не задаёт свой */
+:is(.ht-ib, .ht-cards) :is(i, em, q) { color: inherit; }
+.ht-ib, .ht-modal {
     --ht-fire: color-mix(in srgb, var(--ht-acc) 55%, #e8703a);
 
     margin: 10px 0;
@@ -28,9 +32,9 @@
     overflow: hidden;
 }
 .ht-ib.ht-open { background: var(--ht-soft-2); }
-:is(.ht-ib, .ht-modal) button { all: unset; box-sizing: border-box; cursor: pointer; }
-.ht-ib :focus-visible { outline: 2px solid var(--ht-acc); outline-offset: 2px; border-radius: 4px; }
-.ht-ib i.fa-solid, .ht-ib i.fa-regular { width: 1.1em; text-align: center; }
+:is(.ht-ib, .ht-modal, .ht-cards) button { all: unset; box-sizing: border-box; cursor: pointer; }
+:is(.ht-ib, .ht-cards) :focus-visible { outline: 2px solid var(--ht-acc); outline-offset: 2px; border-radius: 4px; }
+:is(.ht-ib, .ht-cards) i.fa-solid, :is(.ht-ib, .ht-cards) i.fa-regular { width: 1.1em; text-align: center; }
 
 /* ─── Шапка ─── */
 .ht-head {
@@ -59,7 +63,7 @@
     color: var(--ht-mute); font-size: 0.92em;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.ht-chev {
+:is(.ht-ib, .ht-cards, .ht-modal) .ht-chev {
     color: var(--ht-mute); transition: transform 0.2s ease;
     flex: none; width: 42px; text-align: center;
 }
@@ -99,7 +103,7 @@
 .ht-sec h5 > span { flex: 1; min-width: 0; }
 .ht-sec h5 { cursor: pointer; user-select: none; padding: 3px 0; border-radius: 4px; }
 .ht-sec h5:hover > span { color: var(--ht-acc); }
-.ht-sec-chev { color: var(--ht-mute); font-size: 0.85em; transition: transform 0.2s ease; }
+:is(.ht-ib, .ht-cards, .ht-modal) .ht-sec-chev { color: var(--ht-mute); font-size: 0.85em; transition: transform 0.2s ease; }
 .ht-sec-closed .ht-sec-chev { transform: rotate(-90deg); }
 .ht-sec-closed h5 { margin-bottom: 0 !important; }
 .ht-sec + .ht-sec { border-top: 1px solid var(--ht-line); padding-top: 8px; }
@@ -137,11 +141,11 @@
 .ht-up > b { font-weight: 600; white-space: nowrap; color: var(--ht-mute); }
 
 .ht-actions { display: flex; justify-content: flex-end; }
-:is(.ht-ib, .ht-modal) .ht-btn {
+:is(.ht-ib, .ht-modal, .ht-cards) .ht-btn {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 5px 11px; border: 1px solid var(--ht-line-strong); border-radius: 6px; font-size: 0.92em;
 }
-:is(.ht-ib, .ht-modal) .ht-btn:hover { background: var(--ht-soft-2); }
+:is(.ht-ib, .ht-modal, .ht-cards) .ht-btn:hover { background: var(--ht-soft-2); }
 
 @media (max-width: 600px) {
     .ht-head { padding: 8px; gap: 8px; }
@@ -243,13 +247,13 @@
 
 /* Близкие и знакомые */
 .ht-person { gap: 1px; }
-.ht-chip {
+:is(.ht-ib, .ht-cards, .ht-modal) .ht-chip {
     display: inline-flex; align-items: center; gap: 5px; align-self: flex-start;
     margin-top: 3px; padding: 1px 8px; border-radius: 999px;
     font-size: 0.85em; font-style: normal;
     background: color-mix(in srgb, var(--ht-acc) 14%, transparent);
 }
-.ht-chip i { color: var(--ht-acc); width: auto; }
+:is(.ht-ib, .ht-cards) .ht-chip i { color: var(--ht-acc); width: auto; }
 .ht-sec h5 > .ht-badge { flex: 0 0 24px; width: 24px; }
 .ht-sec h5 > span:not(.ht-badge) { flex: 1 1 auto; min-width: 0; }
 
@@ -258,7 +262,7 @@
 .ht-standout .ht-person { border-left-color: color-mix(in srgb, var(--ht-acc) 60%, transparent); }
 
 /* ─── События дня ─── */
-.ht-ib { --ht-party: color-mix(in srgb, var(--ht-acc) 35%, #a56bd6); }
+:is(.ht-ib, .ht-cards) { --ht-party: color-mix(in srgb, var(--ht-acc) 35%, #a56bd6); }
 .ht-ev { display: flex; gap: 9px; padding: 6px 8px; margin-bottom: 4px; border-radius: 6px; border-left: 3px solid var(--ht-line-strong); background: var(--ht-soft); }
 .ht-ev > i { color: var(--ht-mute); padding-top: 3px; }
 .ht-ev > div { min-width: 0; }
@@ -306,7 +310,7 @@
 .ht-edit label, .ht-kv-edit > div { display: flex; flex-direction: column; gap: 2px; font-size: 0.85em; color: var(--ht-mute); }
 .ht-edit .text_pole, .ht-kv-edit .text_pole { margin: 0; font-size: 1.1em; color: var(--ht-fg); }
 .ht-edit-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
-:is(.ht-ib, .ht-modal) .ht-btn-main { border-color: var(--ht-acc); color: var(--ht-acc); }
+:is(.ht-ib, .ht-modal, .ht-cards) .ht-btn-main { border-color: var(--ht-acc); color: var(--ht-acc); }
 
 /* ─── Повод из истории: предложение нового праздника ─── */
 .ht-offer {
@@ -334,8 +338,8 @@
     .ht-offer-actions .ht-btn > span { display: none; }
     .ht-offer-actions .ht-btn { padding: 7px 0; }
 }
-:is(.ht-ib, .ht-modal) .ht-btn-quiet { border-color: var(--ht-line); color: var(--ht-mute); }
-:is(.ht-ib, .ht-modal) .ht-btn-quiet:hover { color: var(--ht-fg); }
+:is(.ht-ib, .ht-modal, .ht-cards) .ht-btn-quiet { border-color: var(--ht-line); color: var(--ht-mute); }
+:is(.ht-ib, .ht-modal, .ht-cards) .ht-btn-quiet:hover { color: var(--ht-fg); }
 .ht-edit textarea.text_pole { resize: vertical; min-height: 2.6em; font-family: inherit; }
 
 /* Появляется один раз — лёгкий сдвиг, только transform */
@@ -347,7 +351,7 @@
 @media (max-width: 600px) { .ht-offer { margin: 0 8px 8px; } }
 
 /* ─── Текущий год ─── */
-.ht-count { font-style: normal; font-size: 0.78em; font-weight: 400; color: var(--ht-mute); padding: 0 7px; border-radius: 999px; border: 1px solid var(--ht-line); }
+:is(.ht-ib, .ht-cards, .ht-modal) .ht-count { font-style: normal; font-size: 0.78em; font-weight: 400; color: var(--ht-mute); padding: 0 7px; border-radius: 999px; border: 1px solid var(--ht-line); }
 .ht-yr { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--ht-line); }
 .ht-yr:last-child { border-bottom: 0; }
 .ht-yr > time { flex: none; width: 3.2em; color: var(--ht-mute); font-size: 0.88em; }
@@ -367,7 +371,7 @@
 .ht-busy { color: var(--ht-mute); font-size: 0.85em; margin-right: 4px; animation: ht-busy 1.4s ease-in-out infinite; }
 @keyframes ht-busy { 50% { transform: translateY(-2px) rotate(-12deg); } }
 @media (prefers-reduced-motion: reduce) { .ht-busy { animation: none; } }
-.ht-retry { color: var(--ht-acc); font-size: 0.85em; margin-right: 4px; cursor: pointer; padding: 4px; }
+:is(.ht-ib, .ht-cards, .ht-modal) .ht-retry { color: var(--ht-acc); font-size: 0.85em; margin-right: 4px; cursor: pointer; padding: 4px; }
 .ht-retry:hover { transform: rotate(60deg); transition: transform 0.25s ease; }
 
 /* ─── Вкладки «Праздник» / «Текущий год» ─── */
@@ -421,7 +425,7 @@
 @container (max-width: 300px) { .ht-ib .ht-tab > span { display: none; } }
 
 /* ═══ Романтика и свидания ═══ */
-.ht-ib, .ht-modal, .ht-date-toast { --ht-rom: color-mix(in srgb, var(--ht-acc) 35%, #e0588c); }
+.ht-ib, .ht-modal, .ht-date-toast, .ht-cards, .ht-invite-toast { --ht-rom: color-mix(in srgb, var(--ht-acc) 35%, #e0588c); }
 /* карточка свидания */
 .ht-date { border-style: solid; border-color: color-mix(in srgb, var(--ht-rom) 60%, transparent); background: color-mix(in srgb, var(--ht-rom) 9%, transparent); }
 .ht-date .ht-offer-cause > i, .ht-date .ht-offer-mean > i { color: var(--ht-rom); }
@@ -430,8 +434,8 @@
 .ht-date-meter { height: 7px; border-radius: 999px; background: var(--ht-line); overflow: hidden; }
 .ht-date-meter > i { display: block; height: 100%; width: calc(var(--v) * 1%); border-radius: inherit; background: var(--ht-rom); transition: width 0.4s ease; }
 .ht-date-steps { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
-.ht-ib .ht-date-step { display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 7px; padding: 4px 6px; border-radius: 6px; cursor: pointer; text-align: left; }
-.ht-ib .ht-date-step:hover { background: var(--ht-soft-2); }
+:is(.ht-ib, .ht-cards) .ht-date-step { display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 7px; padding: 4px 6px; border-radius: 6px; cursor: pointer; text-align: left; }
+:is(.ht-ib, .ht-cards) .ht-date-step:hover { background: var(--ht-soft-2); }
 .ht-date-step > i { color: var(--ht-rom); }
 .ht-date-step > em { font-style: normal; font-size: 0.78em; color: var(--ht-mute); white-space: nowrap; }
 .ht-date-step.ht-done > span { text-decoration: line-through; opacity: 0.7; }
@@ -510,7 +514,7 @@
     background: var(--ht-soft-2); border: 1px solid var(--ht-line); color: var(--ht-mute); font-weight: 600; font-size: 1.05em; }
 .ht-ava > img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
-.ht-cc-heart { position: absolute; right: -2px; bottom: 0; font-size: 0.8em; color: var(--ht-rom); filter: drop-shadow(0 0 2px rgba(0,0,0,.6)); }
+:is(.ht-ib, .ht-cards, .ht-modal) .ht-cc-heart { position: absolute; right: -2px; bottom: 0; font-size: 0.8em; color: var(--ht-rom); filter: drop-shadow(0 0 2px rgba(0,0,0,.6)); }
 .ht-cc-name { width: 100%; font-weight: 700; font-size: 0.92em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ht-cc-noname { font-weight: 400; font-style: italic; color: var(--ht-mute); }
 .ht-cc-role { width: 100%; color: var(--ht-mute); font-size: 0.74em; line-height: 1.25; overflow-wrap: anywhere; }
@@ -524,7 +528,7 @@
 .ht-mini > .ht-mini-bar { width: 100%; flex: none; height: 6px; }
 .ht-mini-row { display: flex; align-items: center; gap: 4px; width: 100%; font-size: 0.68em; color: var(--ht-mute); }
 .ht-mini-row > b { margin-left: auto; font-weight: 600; }
-.ht-mini-ico { width: 16px; text-align: center; font-size: 0.75em; color: var(--ht-mute); }
+:is(.ht-ib, .ht-cards, .ht-modal) .ht-mini-ico { width: 16px; text-align: center; font-size: 0.75em; color: var(--ht-mute); }
 .ht-mini-bar { flex: 1; height: 5px; border-radius: 999px; background: var(--ht-line); overflow: hidden; }
 /* от середины: вправо — хорошо (к зелёному), влево — плохо (к красному); черта посередине — ноль */
 .ht-mini-bar { position: relative; }
@@ -553,7 +557,7 @@
 /* {{char}} и {{user}}: шире, первые; романтика — розовая подсветка и бьющееся сердце */
 .ht-cc-pair { grid-column: span 2; }
 .ht-pair-avas { display: flex; align-items: center; gap: 6px; }
-.ht-pair-mid { color: var(--ht-mute); font-size: 0.95em; }
+:is(.ht-ib, .ht-cards, .ht-modal) .ht-pair-mid { color: var(--ht-mute); font-size: 0.95em; }
 .ht-cc-love { border-color: color-mix(in srgb, var(--ht-rom) 65%, transparent); background: color-mix(in srgb, var(--ht-rom) 10%, transparent);
     box-shadow: 0 0 10px color-mix(in srgb, var(--ht-rom) 30%, transparent); }
 .ht-cc-love .ht-pair-mid { color: var(--ht-rom); animation: ht-beat 1.6s ease-in-out infinite; will-change: transform; }
@@ -570,9 +574,9 @@
 .ht-rom-field > span { color: var(--ht-mute); }
 .ht-rom-field > span > i { color: var(--ht-rom); }
 .ht-rom-pick { display: flex; flex-wrap: wrap; gap: 4px; }
-:is(.ht-ib, .ht-modal) .ht-rom-pick > button { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--ht-line); color: var(--ht-mute); font-size: 0.9em; cursor: pointer; }
-:is(.ht-ib, .ht-modal) .ht-rom-pick > button > i { font-size: 0.8em; }
-:is(.ht-ib, .ht-modal) .ht-rom-pick > button.ht-on { color: var(--ht-rom); border-color: var(--ht-rom); background: color-mix(in srgb, var(--ht-rom) 10%, transparent); }
+:is(.ht-ib, .ht-modal, .ht-cards) .ht-rom-pick > button { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--ht-line); color: var(--ht-mute); font-size: 0.9em; cursor: pointer; }
+:is(.ht-ib, .ht-modal, .ht-cards) .ht-rom-pick > button > i { font-size: 0.8em; }
+:is(.ht-ib, .ht-modal, .ht-cards) .ht-rom-pick > button.ht-on { color: var(--ht-rom); border-color: var(--ht-rom); background: color-mix(in srgb, var(--ht-rom) 10%, transparent); }
 @media (max-width: 420px) { .ht-gallery { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; } .ht-cc-top .ht-ava { width: 46px; height: 46px; } }
 .ht-edit-two { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 
@@ -629,3 +633,76 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-cc-status { font-size: 0.68em; }
 .ht-ib .ht-cc-tools > button { padding: 1px 6px; font-size: 0.74em; }
 @media (max-width: 420px) { .ht-cc-top .ht-ava { width: 40px; height: 40px; } }
+
+/* ═══ Карточки решений — своей плашкой прямо под текстом ответа ═══ */
+.ht-cards {
+    display: flex; flex-direction: column; gap: 6px; margin: 8px 0;
+    color: var(--ht-fg); font-size: 0.86em; line-height: 1.35;
+    font-style: normal; font-weight: normal; white-space: normal; text-align: left; font-variant-numeric: tabular-nums;
+}
+.ht-cards .ht-offer { margin: 0; }
+.ht-cards .ht-offer-new { transform-origin: top center; }
+/* по нажатию на уведомление — карточка коротко «кивает» */
+.ht-pulse { animation: ht-pulse 0.7s ease-out 2; }
+@keyframes ht-pulse { 40% { transform: scale(1.025); } }
+@media (prefers-reduced-motion: reduce) { .ht-pulse { animation: none; } }
+
+/* ═══ Пара {{char}} и {{user}}: всегда первая; две шкалы — дружба и романтика ═══ */
+.ht-pair-bars { width: 100%; display: flex; flex-direction: column; gap: 3px; margin-top: 2px; }
+.ht-pair-bars .ht-mini-row { font-size: 0.72em; }
+.ht-pair-bars .ht-mini-ico { width: 1.1em; font-size: 1em; }
+.ht-mini-rom .ht-mini-ico { color: var(--ht-rom); }
+/* у романтики — розовая шкала вместо светофора */
+.ht-mini-rom .ht-mini-bar:not(.ht-neg) > i { background: var(--ht-rom); }
+.ht-cc-unknown .ht-pair-bars { opacity: 0.55; }
+.ht-cc-pair .ht-cc-name { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+.ht-pair-date { display: flex; align-items: baseline; justify-content: center; gap: 4px; width: 100%; font-size: 0.7em; color: var(--ht-mute); line-height: 1.25; overflow-wrap: anywhere; }
+.ht-pair-date > i { color: var(--ht-rom); flex: none; }
+
+/* правка пары: два ползунка −100…100 и пометка */
+.ht-pair-edit .ht-pair-avas { justify-content: center; margin-bottom: 2px; }
+.ht-pair-edit .ht-pair-mid { color: var(--ht-rom); }
+.ht-range > span { display: flex; align-items: center; gap: 6px; }
+.ht-range > span > i { color: var(--ht-acc); }
+.ht-range-rom > span > i { color: var(--ht-rom); }
+.ht-range > span > b { margin-left: auto; color: var(--ht-fg); font-weight: 600; }
+.ht-range input[type="range"] { width: 100%; margin: 4px 0 0; accent-color: var(--ht-acc); }
+.ht-range-rom input[type="range"] { accent-color: var(--ht-rom); }
+
+/* общая семья — своя подвкладка; в карточке ничего особого */
+
+/* ═══ {{char}} зовёт на свидание — уведомление сверху, коротко; по нажатию — к карточке ═══ */
+.ht-invite-toast {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+    display: flex; justify-content: center; padding: calc(10px + env(safe-area-inset-top, 0px)) 10px 0;
+    pointer-events: none;
+}
+.ht-invite-card {
+    all: unset; box-sizing: border-box; pointer-events: auto; cursor: pointer;
+    display: flex; align-items: center; gap: 12px; max-width: min(92vw, 380px); padding: 10px 16px 10px 12px;
+    border-radius: 14px; color: var(--ht-fg);
+    background: var(--SmartThemeBlurTintColor, rgba(20, 16, 18, 0.92)); backdrop-filter: blur(8px);
+    border: 1px solid color-mix(in srgb, var(--ht-rom) 70%, transparent);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4), 0 0 0 4px color-mix(in srgb, var(--ht-rom) 12%, transparent);
+    animation: ht-invite-in 0.45s cubic-bezier(.2, 1.3, .4, 1) both;
+}
+.ht-invite-card:focus-visible { outline: 2px solid var(--ht-rom); outline-offset: 2px; }
+.ht-invite-toast.ht-out .ht-invite-card { animation: ht-invite-out 0.3s ease-in both; }
+/* три сердца: большое в середине, два маленьких по бокам — покачиваются по очереди */
+.ht-invite-hearts { position: relative; flex: none; width: 46px; height: 40px; color: var(--ht-rom); }
+.ht-invite-hearts > i { position: absolute; animation: ht-invite-heart 1.4s ease-in-out infinite; }
+.ht-invite-hearts > i:nth-child(1) { left: 0; top: 16px; font-size: 0.8em; opacity: 0.75; --t: rotate(-18deg); animation-delay: 0.2s; }
+.ht-invite-hearts > i:nth-child(2) { left: 12px; top: 5px; font-size: 1.45em; --t: rotate(0deg); }
+.ht-invite-hearts > i:nth-child(3) { right: 0; top: 0; font-size: 0.7em; opacity: 0.6; --t: rotate(16deg); animation-delay: 0.4s; }
+.ht-invite-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; line-height: 1.3; }
+.ht-invite-text > b { font-size: 0.98em; }
+.ht-invite-text > span { font-size: 0.88em; overflow-wrap: anywhere; }
+.ht-invite-text > em { font-style: normal; font-size: 0.74em; color: var(--ht-mute); }
+@keyframes ht-invite-in { from { transform: translateY(-120%) scale(0.92); } to { transform: none; } }
+@keyframes ht-invite-out { to { transform: translateY(-140%); } }
+@keyframes ht-invite-heart { 0%, 100% { transform: var(--t) translateY(0) scale(1); } 50% { transform: var(--t) translateY(-3px) scale(1.12); } }
+@media (prefers-reduced-motion: reduce) { .ht-invite-card, .ht-invite-toast.ht-out .ht-invite-card, .ht-invite-hearts > i { animation: none; } }
+
+/* настройки: почему сейчас нет (или есть) шанса на свидание */
+.ht-set-note { display: flex; align-items: baseline; gap: 6px; opacity: 0.75; font-size: 0.85em; line-height: 1.3; }
+.ht-set-note > i { color: var(--SmartThemeQuoteColor); flex: none; }

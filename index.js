@@ -11,9 +11,9 @@ import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
 import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseRecapParts, stripBlocks } from './tag.js';
-import { PAIR_DEFAULT, newDate, trackDate, toggleStep, finishDate, dateChance } from './romance.js';
-import { CAST_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast } from './cast.js';
-import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue } from './calendar.js';
+import { PAIR_DEFAULT, newDate, trackDate, toggleStep, finishDate, dateChanceInfo } from './romance.js';
+import { CAST_GROUPS, KIN_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast, nameCandidates } from './cast.js';
+import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt, buildSideMessages, giftTarget } from './prompts.js';
 import { listProfiles, gatherSources, sendSide, reasonOf } from './side.js';
 import { strings } from './i18n.js';
@@ -114,8 +114,13 @@ function defaultState() {
         lastEventEnd: -99,
         evRoll: false,          // выпал шанс: в следующем ответе (или запросе помощника) предложить случайный ивент
         evDecisions: {},        // решения игрока по ивентам (по названию): accepted | declined — переживают свайпы
-        pair: null,             // {{char}} и {{user}}: { f: дружба 0–100, r: романтика −100…100, note }
+        pair: null,             // {{char}} и {{user}}: { f: дружба −100…100, r: романтика −100…100, note }; null — ещё не ясно
         pairDrop: -99,          // когда дружба заметно упала (ссора) — шанс свидания выше
+        pairSet: null,          // правка игрока: { pair, at } — ответы до at включительно её не перезаписывают
+        lastBondTurn: -99,      // когда основная модель (или помощник) последний раз прислали bond
+        bondMiss: 0,            // сколько ответов подряд без bond, пока пара не ясна
+        bondSide: -99,          // когда помощника последний раз просили начальные значения пары
+        dateRollTry: 0,         // выпавшее свидание модель пропустила — просим ещё раз, настойчивее
         date: null,             // свидание: { id, title, goal, hook, steps [{t, who, done}], score, status offered|active|ended, … }
         dateRoll: false,        // выпал шанс: предложить свидание
         lastDateEnd: -99,
@@ -124,6 +129,7 @@ function defaultState() {
         cast: [],               // люди истории: { id, name, group, who, bday {d,m,y}, rel {user, char}, edited, relLock }
         castNo: [],             // убранные игроком — ИИ их не вернёт
         lastCastTurn: -99,
+        lastCensusTurn: -99,    // перепись людей истории по большому окну сообщений
         flashbacks: [],         // воспоминания: { id, title, text, when, kind } — в контекст только по кнопке
         recall: null,           // id воспоминания, которое уйдёт в следующий ответ
         planPart: {},           // `${hid}#${день}` → часть дня, к которой распорядок уже подстроен
@@ -153,6 +159,7 @@ function defaultState() {
         lastSideTurn: -99,      // когда отдельный запрос последний раз дошёл
         nudge: null,            // кто из людей праздника может зайти в следующий ответ
         nudgeIdx: 0,
+        whoIdx: 0,              // чьё желание основная модель обновляет в этом ответе (по очереди)
         missed: 0,
         turn: 0,
         lastMention: -99,
@@ -197,6 +204,9 @@ function getCharName() {
     return c?.name || 'the characters';
 }
 
+// пару сверяем, если bond не приходил столько ответов
+const BOND_STALE = 12;
+
 // «деревня», «город», «village» без собственного имени — просим ИИ назвать место
 const GENERIC_PLACES = /^(деревня|село|сельцо|город|городок|посад|слобода|усадьба|двор|монастырь|лагерь|стан|дорога|лес|поле|village|town|city|court|monastery|camp|road|wilds|forest|hamlet|estate|castle|замок|крепость|острог)$/i;
 
@@ -224,6 +234,11 @@ function ctxFor(request = null) {
         offerNames: [...(state.offers || []).map(o => o.name), ...(state.offerNo || []).slice(-2)].slice(0, 4),
         peopleSeen: peopleSeen(),
         ...castForPrompt(),
+        // пара: пока не ясна — сколько ответов подряд без bond; ясна — давно ли сверяли
+        bondMiss: state.pair ? 0 : state.bondMiss || 0,
+        bondStale: !!state.pair && (state.turn || 0) - (state.lastBondTurn ?? -99) >= BOND_STALE,
+        // перепись в инджекте: кого часто называют в истории
+        castHint: request === 'cast' ? castHint() : [],
         eraMode: eraMode(),
         api: apiOn(),
         lang: L().promptLang,
@@ -239,7 +254,7 @@ function takeSnapshot(beforeMsg) {
     if (state.snapshots.length > 20) state.snapshots = state.snapshots.slice(-20);
 }
 // Решения игрока (удалённые праздники) переживают откаты
-const USER_FIELDS = ['banned', 'bannedNames', 'birthdayOff', 'calIgnore', 'offerNo', 'evDecisions', 'castNo', 'dateDecisions'];
+const USER_FIELDS = ['banned', 'bannedNames', 'birthdayOff', 'calIgnore', 'offerNo', 'evDecisions', 'castNo', 'dateDecisions', 'pairSet'];
 
 function restoreSnapshot(snap) {
     const keep = state.snapshots;
@@ -247,6 +262,8 @@ function restoreSnapshot(snap) {
     Object.assign(state, clone(snap.data));
     for (const [k, v] of Object.entries(user)) if (v != null) state[k] = v;
     state.snapshots = keep;
+    // пару, выставленную игроком, снимок из времени до правки не отменяет (более поздние уже ведут её дальше)
+    if (state.pairSet?.pair && snap.beforeMsg <= state.pairSet.at) state.pair = clone(state.pairSet.pair);
     // удалённые игроком праздники не возвращаются вместе со старым снимком
     state.holidays = (state.holidays || []).filter(h => !isBanned(state, h.name));
     // и решённые поводы тоже: отклонённые и уже принятые
@@ -303,6 +320,20 @@ function castForPrompt() {
     const castSeen = cast.filter(c => (c.name ? seenInStory(c.name, text) : [c.toU, c.toC].some(r => r && seenInStory(r, text)))
         || castBdays.some(b => b.name === (c.name || c.toU || c.toC))).slice(0, 8);
     return { castSeen, castBdays };
+}
+
+// ─── Кого часто называют в истории — подсказка для переписи людей (по всему чату, с кэшем) ───
+let hintCache = { key: null, list: [] };
+function castHint() {
+    const key = `${chat.length}|${hashText(chat[chat.length - 1]?.mes)}|${(state.cast || []).length}|${(state.castNo || []).length}`;
+    if (hintCache.key === key) return hintCache.list;
+    const texts = chat.slice(-400).filter(m => m?.mes && !m.is_system).map(m => m.mes);
+    const exclude = [getUserName(), getCharName(), ...(state.cast || []).map(c => c.name), ...(state.castNo || []),
+        ...(state.holidays || []).map(h => h.name), state.place, state.setting?.place].filter(Boolean);
+    let list = [];
+    try { list = nameCandidates(texts, exclude); } catch (e) { console.warn('[Hearthtide] частые имена:', e); }
+    hintCache = { key, list };
+    return list;
 }
 
 function peopleSeen() {
@@ -431,6 +462,7 @@ function processReply(N) {
     // какой запрос ИИ видел в промпте этого ответа — чтобы не повторять проигнорированный каждый ход
     // (с отдельным запросом основную модель ни о чём не просим)
     const asked = apiOn() ? null : requestFor(state, phaseOf(state));
+    const hadDateRoll = !!state.dateRoll;     // в промпте этого ответа была просьба позвать на свидание
     state.turn += 1;
     state.beat = null;      // подсказка ушла в этот ответ
 
@@ -464,11 +496,14 @@ function processReply(N) {
     const both = (fn) => fn(src) ?? (sideText ? fn(sideText) : null);
     const small = parseSmall(src);
     const sideSmall = sideText ? parseSmall(sideText, 'HT-S') : null;
-    // поля о персонаже, подарке, ивенте и смысле — из ответа или из отдельного запроса
-    const sm = small || sideSmall ? {
-        ...(small || {}),
-        ...Object.fromEntries(Object.entries(sideSmall || {}).filter(([k, v]) => v != null && v !== false && !['inner', 'date', 'clock', 'when', 'place'].includes(k))),
-    } : null;
+    // поля о персонаже, подарке, ивенте, смысле и паре — из ответа; чего в ответе нет — из отдельного запроса.
+    // Пустые значения помощника (0, [], false) не затирают отметки основной модели (шаги свидания, bond)
+    const has = (v) => v != null && v !== false && v !== 0 && !(Array.isArray(v) && !v.length);
+    const sm = small || sideSmall ? { ...(small || {}) } : null;
+    for (const [k, v] of Object.entries(sideSmall || {})) {
+        if (!['inner', 'date', 'clock', 'when', 'place'].includes(k) && has(v) && !has(sm[k])) sm[k] = v;
+    }
+    if (small?.bond && sideSmall?.bond) sm.bondNote = small.bondNote || null;   // пометка — от той же модели, что и числа
     const calRaw = (state.calIgnore || []).includes(hashText(src)) ? null : parseCalendar(src);
     const calSide = sideText && !(state.calIgnore || []).includes(hashText(sideText)) ? parseCalendar(sideText) : null;
     const cal = calRaw || calSide;
@@ -558,6 +593,8 @@ function processReply(N) {
     // ── Люди истории: новые — один раз, известные — только отношения ──
     for (const c of castIn) if (mergeCast(state, c, langOk, state.turn)) slip = true;
     if (asked === 'cast' || sideAsked.includes('cast')) state.lastCastTurn = state.turn;
+    if (sideAsked.includes('census')) state.lastCensusTurn = state.turn;
+    if (sideAsked.includes('bond')) state.bondSide = state.turn;
 
     // ── {{char}} и {{user}}: дружба и романтика ──
     if (sm?.bond) {
@@ -565,6 +602,15 @@ function processReply(N) {
         const prev = state.pair;
         if (prev && sm.bond.f <= prev.f - 15) state.pairDrop = state.turn;       // заметно поссорились
         state.pair = { scale: 2, f: sm.bond.f, r: sm.bond.r, note: sm.bondNote && langOk(sm.bondNote) ? sm.bondNote : prev?.note || null };
+        state.lastBondTurn = state.turn;
+        state.bondMiss = 0;
+    } else if (!state.pair && (small || sideRec)) {
+        state.bondMiss = (state.bondMiss || 0) + 1;                              // напомним в следующем ответе
+    }
+    // игрок поправил пару сам — ответы до его правки её не перезаписывают (свайп, повторная обработка)
+    if (state.pairSet && N <= state.pairSet.at) {
+        state.pair = clone(state.pairSet.pair);
+        state.lastBondTurn = state.turn;
     }
     // ── Свидание: идёт — считаем шаги и настроение; кончилось — итог и уведомление ──
     let dateEnded = null;
@@ -618,6 +664,16 @@ function processReply(N) {
         if (ok.length < active.length) slip = true;
         state.people = ok;
         state.lastPeopleTurn = state.turn;
+    }
+    // Один человек праздника за ответ: его желание теперь (по очереди, дёшево — прямо в маленьком теге)
+    if (sm?.who && phase.h && (phase.kind === 'prep' || phase.kind === 'today')) {
+        const p = (state.people || []).find(x => samePerson(x.name, sm.who.name));
+        if (p && langOk(sm.who.text)) {
+            if (!echoes(p.now, sm.who.text)) { p.now = sm.who.text; p.turn = state.turn; }
+        } else if (p) slip = true;
+        state.whoIdx = (state.whoIdx || 0) + 1;
+    } else if ((phase.kind === 'prep' || phase.kind === 'today') && (state.people || []).length) {
+        state.whoIdx = (state.whoIdx || 0) + 1;                                  // пропустил — следующий по очереди
     }
     // Мысль/действие персонажа и его подарок — из маленького тега
     if (sm && phase.h && (phase.kind === 'prep' || phase.kind === 'today')) {
@@ -720,7 +776,20 @@ function processReply(N) {
     }
 
     // ── Свидание: бросок после ответа (есть романтика; после ссоры шанс выше) ──
-    state.dateRoll = !state.date || state.date.status === 'ended' ? rollFor(text, state.turn + 7919) < dateChance(state, state.turn, dateChanceSetting()) : false;
+    // Выпало, а модель промолчала — просим ещё раз, настойчивее (один раз); потом — новый бросок
+    const free = !state.date || state.date.status === 'ended';
+    const di = dateChanceInfo(state, state.turn, dateChanceSetting());
+    if (free && hadDateRoll && !dateIn && !(state.dateRollTry > 0) && di.chance > 0) {
+        state.dateRoll = true;
+        state.dateRollTry = 1;
+        console.info('[Hearthtide] свидание: выпало, но модель не позвала — прошу ещё раз');
+    } else {
+        state.dateRollTry = 0;
+        const roll = free && di.chance > 0 ? rollFor(text, state.turn + 7919) : null;
+        state.dateRoll = roll != null && roll < di.chance;
+        if (roll != null) console.info(`[Hearthtide] свидание: бросок ${roll} ${state.dateRoll ? '<' : '≥'} ${di.chance}% — ${state.dateRoll ? 'выпало, позовёт в следующем ответе' : 'не выпало'}`);
+        else if (free) console.debug(`[Hearthtide] свидание: шанса нет (${di.why}${di.left ? `, ещё ${di.left}` : ''}${di.r != null ? `, романтика ${di.r}` : ''})`);
+    }
 
     // ── Упоминать ли подготовку в следующем ответе (чем ближе, тем чаще) ──
     state.mentionNow = false;
@@ -751,6 +820,8 @@ function processReply(N) {
     msg.extra.ht = viewSnapshot(phase);
     // свидание закончилось в этом ответе — уведомление посреди экрана (один раз)
     if (dateEnded) showDateToast(dateEnded);
+    // {{char}} зовёт на свидание — короткое уведомление сверху (один раз на приглашение)
+    if (state.date?.status === 'offered' && state.date.turn === state.turn && N === lastBotIndex()) showDateInvite(state.date);
 
     saveState();
     injectPrompts();
@@ -1239,13 +1310,14 @@ function cancelSide() {
 }
 
 /** Решить, нужен ли запрос после ответа N, и отправить */
-function maybeSide(N, force = false) {
+function maybeSide(N, force = false, extra = []) {
     if (!apiOn() || !state || generating) return;
     const msg = chat[N];
     if (!msg || msg.is_user || msg.is_system || N !== lastProcessedMsg()) return;
     if (msg.extra?.ht_side?.[hashText(msg.mes)] && !force) return;       // к этому тексту уже есть
     const phase = phaseOf(state);
     const needs = sideNeeds(state, phase);
+    for (const k of extra) needs.add(k);
     if (force) needs.add('new');
     else if (!sideDue(state, phase, needs)) return;
     // после сбоя издалека не долбим: подождём пару ответов (в праздник — пробуем каждый раз)
@@ -1270,7 +1342,9 @@ async function runSide(N, needs) {
             if (side !== me) return;
         }
         const ctx = ctxFor(null);
-        const src = await gatherSources(N, sideDepth());
+        ctx.castHint = castHint();
+        // перепись людей читает больше сообщений, чем обычный запрос
+        const src = await gatherSources(N, needs.has('census') ? Math.max(sideDepth(), CENSUS_DEPTH) : sideDepth());
         const messages = buildSideMessages(ctx, needs, src);
         console.debug('[Hearthtide] отдельный запрос →', [...needs].join(', '), messages);
         const text = await sendSide(apiProfile(), messages, ctl.signal);
@@ -1361,27 +1435,55 @@ function scheduleRenderAll() {
     renderTimer = setTimeout(renderAll, 60);
 }
 function renderAll() {
-    if (!isEnabled()) { document.querySelectorAll('.ht-ib').forEach(b => b.remove()); return; }
+    if (!isEnabled()) { document.querySelectorAll('.ht-ib, .ht-cards').forEach(b => b.remove()); return; }
     if (!state && chat.length) loadState();
     document.querySelectorAll('#chat .mes[mesid]').forEach(el => renderBlock(Number(el.getAttribute('mesid'))));
+    updateDateWhy();
 }
 
-function placeBlock(mesEl, block) {
+// ─── Где кончается текст ответа ───
+// Расширения картинок и другие кладут свои изображения и блоки в конец .mes_text. «Снизу» — это сразу
+// после последнего куска текста, до этого хвоста; карточки решений — там же, независимо от положения инфоблока
+const TAIL_TAGS = /^(IMG|VIDEO|AUDIO|IFRAME|PICTURE|FIGURE|CANVAS|SVG|OBJECT|EMBED|BR|HR|STYLE|SCRIPT|TEMPLATE|LINK|META|BUTTON|INPUT|TEXTAREA|SELECT)$/;
+const BOX_TAGS = /^(DIV|SECTION|ASIDE|DETAILS|FORM|NAV)$/;
+const isOurs = (n) => n.nodeType === 1 && (n.classList.contains('ht-ib') || n.classList.contains('ht-cards'));
+function hasText(n) {
+    if (n.nodeType === 3) return !!n.textContent.trim();
+    if (n.nodeType !== 1 || isOurs(n) || TAIL_TAGS.test(String(n.tagName).toUpperCase())) return false;
+    return !!n.textContent.trim();                         // пустой абзац или абзац из одних картинок — не текст
+}
+// чужой блок: контейнер с классом или id — разметка самого ответа их не ставит
+const foreignBox = (n) => n.nodeType === 1 && BOX_TAGS.test(String(n.tagName).toUpperCase()) && !!(n.className || n.id);
+function textEnd(text) {
+    const nodes = [...text.childNodes];
+    for (let i = nodes.length - 1; i >= 0; i--) if (hasText(nodes[i]) && !foreignBox(nodes[i])) return nodes[i];
+    // весь ответ в чужой обёртке — тогда хотя бы после последнего текста
+    for (let i = nodes.length - 1; i >= 0; i--) if (hasText(nodes[i])) return nodes[i];
+    return null;
+}
+const putAfter = (ref, el) => { if (ref.nextSibling !== el) ref.parentNode.insertBefore(el, ref.nextSibling); };
+
+function placeBlock(mesEl, block, cards = null) {
     const text = mesEl.querySelector('.mes_text');
     if (!text) return false;
+    const end = textEnd(text) || text;          // текста внутри нет — сразу после .mes_text
+    if (cards) putAfter(end, cards);
     const pos = position();
     if (pos === 'top') {
-        text.insertAdjacentElement('beforebegin', block);
+        if (text.previousSibling !== block) text.insertAdjacentElement('beforebegin', block);
     } else if (pos === 'middle') {
         // Между абзацами посередине ответа
-        const parts = [...text.children].filter(el => el !== block && !el.classList.contains('ht-ib'));
-        if (parts.length >= 2) parts[Math.ceil(parts.length / 2) - 1].insertAdjacentElement('afterend', block);
-        else text.insertAdjacentElement('afterend', block);
+        const parts = [...text.children].filter(el => !isOurs(el) && hasText(el));
+        if (parts.length >= 2) putAfter(parts[Math.ceil(parts.length / 2) - 1], block);
+        else putAfter(cards || end, block);
     } else {
-        text.insertAdjacentElement('afterend', block);
+        putAfter(cards || end, block);
     }
     return true;
 }
+
+/** Есть ли у последнего ответа карточки решений: свидание, ивент, повод из истории */
+const cardsDue = () => !!state && (['offered', 'active'].includes(state.date?.status) || !!offeredEvent(state) || !!(state.offers || []).length);
 
 function shouldShow(id) {
     const msg = chat[id];
@@ -1396,23 +1498,36 @@ function renderBlock(id) {
     const msg = chat[id];
     const live = id === lastBotIndex();
     let block = el.querySelector('.ht-ib');
+    let cards = el.querySelector('.ht-cards');
     const view = sanitizeView(state && msg && !msg.is_user && !msg.is_system ? (live ? liveView() : msg.extra?.ht) : null);
     const show = isEnabled() && view && (live || showPrev());
-    if (!show) { block?.remove(); return; }
+    if (!show) { block?.remove(); cards?.remove(); return; }
 
     if (!block) {
         block = document.createElement('div');
         block.className = 'ht-ib';
         bindBlock(block);
     }
-    if (!placeBlock(el, block)) return;
+    // карточки решений — только у последнего ответа, своей плашкой прямо под текстом
+    const cardsHtml = live ? dateCardHtml() + eventCardHtml() + offerHtml() : '';
+    if (cardsHtml && !cards) {
+        cards = document.createElement('div');
+        cards.className = 'ht-cards';
+        bindBlock(cards);
+    } else if (!cardsHtml && cards) { cards.remove(); cards = null; }
+    if (!placeBlock(el, block, cards)) return;
     block.dataset.mesid = String(id);
     const open = ui.open.get(id) || false;
     block.classList.toggle('ht-open', open);
     // пока помощник читает историю — заставка: кольцо крутится, по шапке бежит блик, содержимое приглушено
     const loading = live && sideLoading();
     block.classList.toggle('ht-loading', loading);
-    block.innerHTML = headHtml(view, open, live ? sideMarkHtml() : '', loading) + (live ? dateCardHtml() + eventCardHtml() + offerHtml() : '') + (open ? bodyHtml(view, live, ui.tab.get(id) || 'now') : '');
+    block.innerHTML = headHtml(view, open, live ? sideMarkHtml() : '', loading) + (open ? bodyHtml(view, live, ui.tab.get(id) || 'now') : '');
+    if (cards) {
+        cards.dataset.mesid = String(id);
+        cards.classList.toggle('ht-loading', loading);
+        cards.innerHTML = cardsHtml;
+    }
 }
 
 // ─── Кольцо: сколько дней осталось (из 30), в день праздника — полное ───
@@ -1659,29 +1774,37 @@ function miniBar(src, who, n, note) {
         <span class="ht-mini-row">${avaHtml(src, who, 'ht-ava-xs')}<b>${signed(n ?? 0)}</b></span>${barHtml(n)}</div>`;
 }
 
-const CAST_TABS = ['all', 'kin_user', 'kin_char', 'others'];
-const inCastTab = (p, t) => t === 'all' || (t === 'others' ? !['kin_user', 'kin_char'].includes(p.group) : p.group === t);
+const CAST_TABS = ['all', 'kin_user', 'kin_char', 'kin_both', 'others'];
+const inCastTab = (p, t) => t === 'all' || (t === 'others' ? !KIN_GROUPS.includes(p.group) : p.group === t);
 
 function castTabHtml(view, live) {
     const list = view.cast || [];
     const u = getUserName(), c = getCharName();
     const uA = userAvatarUrl(), cA = charAvatarUrl();
     const tab = CAST_TABS.includes(ui.castTab) ? ui.castTab : 'all';
-    const tabLabel = { all: L().castAll, kin_user: L().kinOf(u), kin_char: L().kinOf(c), others: L().castOthers };
+    const tabLabel = { all: L().castAll, kin_user: L().kinOf(u), kin_char: L().kinOf(c), kin_both: L().kinBoth, others: L().castOthers };
     const subtabs = `<div class="ht-subtabs" role="tablist">${CAST_TABS.map(t => {
         const n = list.filter(p => inCastTab(p, t)).length;
+        if (t === 'kin_both' && !n && tab !== t) return '';          // общей семьи нет — и подвкладки нет
         return `<button role="tab" class="${t === tab ? 'ht-on' : ''}" data-act="cast-tab" data-tab="${t}" aria-selected="${t === tab}">${esc(tabLabel[t])}${n ? `<em>${n}</em>` : ''}</button>`;
     }).join('')}</div>`;
 
-    // {{char}} и {{user}} — первая карточка, шире остальных; романтика — розовая подсветка и бьющееся сердце
-    const pr = view.pair;
-    const rl = pr ? romLevel(pr.r) : null;
-    const pair = pr && tab === 'all' ? `<div class="ht-cc ht-cc-pair${pr.r > 0 ? ' ht-cc-love' : ''}">
+    // {{char}} и {{user}} — первая карточка, шире остальных, видна всегда; романтика — розовая подсветка и бьющееся сердце.
+    // Пока модель не прислала bond — нули и «пока не ясно»; игрок может выставить сам
+    const pr = view.pair || { ...PAIR_DEFAULT, unknown: true };
+    const rl = romLevel(pr.r);
+    const dateLine = live ? dateWhyText() : '';
+    const pair = tab === 'all' ? `<div class="ht-cc ht-cc-pair${pr.r > 0 ? ' ht-cc-love' : ''}${pr.unknown ? ' ht-cc-unknown' : ''}">
         <div class="ht-pair-avas">${avaHtml(cA, c)}<i class="fa-solid ${pr.r > 0 ? 'fa-heart' : 'fa-handshake'} ht-pair-mid"></i>${avaHtml(uA, u)}</div>
-        <b class="ht-cc-name">${esc(c)} · ${esc(u)}</b>
-        ${pr.note ? `<span class="ht-cc-role">${esc(pr.note)}</span>` : ''}
-        <div class="ht-mini" title="${esc(`${L().friendship}: ${signed(pr.f)} · ${L().rel[relLevel(pr.f)]}`)}"><i class="fa-solid fa-handshake ht-mini-ico"></i>${barHtml(pr.f)}</div>
+        <b class="ht-cc-name">${esc(L().pairTitle(c, u))}</b>
+        ${pr.unknown ? `<span class="ht-cc-role ht-mute">${esc(L().pairUnknown)}</span>` : pr.note ? `<span class="ht-cc-role">${esc(pr.note)}</span>` : ''}
+        <div class="ht-pair-bars">
+            <div class="ht-mini" title="${esc(`${L().friendship}: ${signed(pr.f)} · ${L().rel[relLevel(pr.f)]}`)}"><span class="ht-mini-row"><i class="fa-solid fa-handshake ht-mini-ico"></i>${esc(L().friendship)}<b>${signed(pr.f)}</b></span>${barHtml(pr.f)}</div>
+            <div class="ht-mini ht-mini-rom" title="${esc(`${L().romance}: ${signed(pr.r)} · ${L().rom[rl]}`)}"><span class="ht-mini-row"><i class="fa-solid fa-heart ht-mini-ico"></i>${esc(L().romance)}<b>${signed(pr.r)}</b></span>${barHtml(pr.r)}</div>
+        </div>
         ${pr.r !== 0 ? `<span class="ht-rom-chip${pr.r < 0 ? ' ht-rom-neg' : ''}"><i class="fa-solid fa-heart"></i>${esc(L().rom[rl])}</span>` : ''}
+        ${dateLine ? `<span class="ht-pair-date"><i class="fa-solid fa-heart"></i>${esc(L().dateWord)}: ${esc(dateLine)}</span>` : ''}
+        ${live ? `<div class="ht-cc-tools"><button data-act="pair-edit" title="${esc(L().pairEdit)}" aria-label="${esc(L().pairEdit)}"><i class="fa-solid fa-pen"></i></button></div>` : ''}
     </div>` : '';
 
     const ava = avatars();
@@ -1711,9 +1834,9 @@ function castTabHtml(view, live) {
         </div>`;
     };
     const shown = list.filter(p => inCastTab(p, tab));
-    // в «Все» — родня {{user}}, потом родня {{char}}, потом остальные
-    const order = { kin_user: 0, kin_char: 1, friend: 2, acquaintance: 3, other: 4 };
-    shown.sort((a, b) => (order[a.group] ?? 5) - (order[b.group] ?? 5));
+    // в «Все» — общая семья, родня {{user}}, родня {{char}}, потом остальные
+    const order = { kin_both: 0, kin_user: 1, kin_char: 2, friend: 3, acquaintance: 4, other: 5 };
+    shown.sort((a, b) => (order[a.group] ?? 6) - (order[b.group] ?? 6));
     const cards = shown.map(card).join('');
     return `${subtabs}<div class="ht-gallery">${pair}${cards || (pair ? '' : `<p class="ht-mute ht-gallery-empty">${L().castEmpty}</p>`)}</div>`;
 }
@@ -1898,6 +2021,113 @@ function removeCast(cid) {
     saveState();
     injectPrompts();
     renderAll();
+}
+
+// ─── Пара {{char}} и {{user}}: правка игроком ───
+// Ответы до правки её не перезаписывают (свайп, повторная обработка); дальше модель ведёт пару от новых значений
+function savePair(f, r, note) {
+    const pair = { scale: 2, f: clampRel(f) ?? 0, r: clampRel(r) ?? 0, note: String(note || '').trim().slice(0, 60) || null };
+    state.pairSet = { pair, at: lastProcessedMsg() };
+    state.pair = clone(pair);
+    state.lastBondTurn = state.turn;
+    state.bondMiss = 0;
+    saveState();
+    injectPrompts();
+    window.toastr?.success?.(L().saved, 'Hearthtide');
+    renderAll();
+}
+
+function openPairEditor() {
+    try { openPairEditorRaw(); } catch (e) {
+        console.error('[Hearthtide] окно правки пары:', e);
+        window.toastr?.error?.(`${L().editFail}: ${e?.message || e}`, 'Hearthtide');
+    }
+}
+function openPairEditorRaw() {
+    closeCastEditor();
+    const pr = state.pair || { ...PAIR_DEFAULT };
+    const u = getUserName(), c = getCharName();
+    const native = typeof HTMLDialogElement === 'function' && 'showModal' in HTMLDialogElement.prototype;
+    const wrap = document.createElement(native ? 'dialog' : 'div');
+    wrap.className = 'ht-modal';
+    if (!native) { wrap.setAttribute('role', 'dialog'); wrap.setAttribute('aria-modal', 'true'); }
+    const word = (k, v) => (k === 'f' ? L().rel[relLevel(v)] : L().rom[romLevel(v)]);
+    const range = (k, icon, label, v) => `<label class="ht-range${k === 'r' ? ' ht-range-rom' : ''}">
+        <span><i class="fa-solid ${icon}"></i>${esc(label)}<b data-out="${k}">${signed(v)} · ${esc(word(k, v))}</b></span>
+        <input type="range" min="-100" max="100" step="1" data-ed="${k}" value="${v}" aria-label="${esc(label)}"></label>`;
+    wrap.innerHTML = `<div class="ht-modal-card">
+        <div class="ht-modal-title"><i class="fa-solid fa-heart"></i>${esc(L().pairTitle(c, u))}<button type="button" data-act="edit-cancel" aria-label="${esc(L().cancel)}"><i class="fa-solid fa-xmark"></i></button></div>
+        <div class="ht-edit ht-pair-edit">
+            <div class="ht-pair-avas">${avaHtml(charAvatarUrl(), c)}<i class="fa-solid fa-heart ht-pair-mid"></i>${avaHtml(userAvatarUrl(), u)}</div>
+            ${range('f', 'fa-handshake', L().friendship, pr.f)}
+            ${range('r', 'fa-heart', L().romance, pr.r)}
+            <label>${esc(L().pairNote)}<input class="text_pole" data-ed="note" value="${esc(pr.note || '')}" maxlength="60"></label>
+            <div class="ht-edit-actions">
+                <button type="button" class="ht-btn" data-act="edit-cancel">${L().cancel}</button>
+                <button type="button" class="ht-btn ht-btn-main" data-act="pair-save"><i class="fa-solid fa-check"></i>${L().save}</button>
+            </div>
+        </div></div>`;
+    const val = (k) => wrap.querySelector(`[data-ed="${k}"]`)?.value ?? '';
+    wrap.addEventListener('input', (e) => {
+        const k = e.target?.dataset?.ed;
+        if (k !== 'f' && k !== 'r') return;
+        const out = wrap.querySelector(`[data-out="${k}"]`);
+        if (out) out.textContent = `${signed(+e.target.value)} · ${word(k, +e.target.value)}`;
+    });
+    wrap.addEventListener('click', (e) => {
+        if (e.target === wrap) { closeCastEditor(); return; }
+        const t = e.target.closest('[data-act]');
+        if (!t) return;
+        if (t.dataset.act === 'edit-cancel') closeCastEditor();
+        else if (t.dataset.act === 'pair-save') { savePair(val('f'), val('r'), val('note')); closeCastEditor(); }
+    });
+    wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); closeCastEditor(); } });
+    wrap.addEventListener('cancel', (e) => { e.preventDefault(); closeCastEditor(); });
+    document.body.appendChild(wrap);
+    if (native) wrap.showModal();
+}
+
+/** Будет ли свидание после ответа и почему нет — для карточки пары и настроек */
+function dateWhyText() {
+    if (!state) return '';
+    const di = dateChanceInfo(state, state.turn || 0, dateChanceSetting());
+    const w = L().dateWhy;
+    if (di.why === 'norom') return w.norom(di.r);
+    if (di.why === 'cooldown') return w.cooldown(di.left, plural);
+    if (di.why === 'ok' || di.why === 'quarrel') return w[di.why](di.chance);
+    return w[di.why] || '';
+}
+function updateDateWhy() {
+    const el = document.getElementById('ht-date-why');
+    if (el) el.textContent = state ? dateWhyText() : '';
+}
+
+// ─── {{char}} зовёт на свидание: короткое уведомление сверху, по нажатию — к карточке ───
+const inviteToasted = new Set();
+function showDateInvite(d) {
+    if (!d || inviteToasted.has(d.id) || typeof document?.createElement !== 'function') return;
+    inviteToasted.add(d.id);
+    document.querySelector('.ht-invite-toast')?.remove();
+    const el = document.createElement('div');
+    el.className = 'ht-invite-toast';
+    el.setAttribute('role', 'status');
+    el.innerHTML = `<button type="button" class="ht-invite-card">
+        <span class="ht-invite-hearts" aria-hidden="true"><i class="fa-solid fa-heart"></i><i class="fa-solid fa-heart"></i><i class="fa-solid fa-heart"></i></span>
+        <span class="ht-invite-text"><b>${esc(L().dateInvite(getCharName()))}</b><span>${esc(d.title)}</span><em>${esc(L().dateTap)}</em></span>
+    </button>`;
+    let gone = false;
+    const close = () => { if (gone) return; gone = true; el.classList.add('ht-out'); setTimeout(() => el.remove(), 320); };
+    el.querySelector('button').addEventListener('click', () => {
+        close();
+        const card = document.querySelector('.ht-cards .ht-date');
+        if (!card) return;
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.classList.remove('ht-pulse');
+        void card.offsetWidth;                       // перезапуск анимации
+        card.classList.add('ht-pulse');
+    });
+    document.body.appendChild(el);
+    setTimeout(close, 8000);
 }
 
 // ─── Случайный ивент: карточка под шапкой последнего инфоблока, видна и в свёрнутом ───
@@ -2152,6 +2382,8 @@ function bindBlock(block) {
             delete avatars()[t.dataset.cid];
             saveChatDebounced();
             renderBlock(id);
+        } else if (t.dataset.act === 'pair-edit') {
+            openPairEditor();
         } else if (t.dataset.act === 'cast-edit') {
             ui.confirmDel = null;
             openCastEditor(t.dataset.cid);
@@ -2301,6 +2533,7 @@ function injectSettingsPanel() {
                         <input type="range" id="ht-set-datechance" min="0" max="30" step="1" value="${dateChanceSetting()}">
                         <b class="ht-set-val" id="ht-set-datechance-val">${dateChanceSetting() ? `${dateChanceSetting()}%` : 'выкл.'}</b>
                     </div>
+                    <small class="ht-set-note"><i class="fa-solid fa-heart"></i><span>Сейчас: <span id="ht-date-why"></span></span></small>
                 </section>
               </div>
             </div>
@@ -2318,13 +2551,15 @@ function injectSettingsPanel() {
                 x.classList.toggle('ht-on', x === b);
                 x.setAttribute('aria-checked', String(x === b));
             });
-            document.querySelectorAll('.ht-ib').forEach(x => x.remove());
+            document.querySelectorAll('.ht-ib, .ht-cards').forEach(x => x.remove());
             renderAll();
         });
         document.getElementById('ht-set-datechance')?.addEventListener('input', e => {
             localStorage.setItem(LS.dateChance, e.target.value);
             const v = document.getElementById('ht-set-datechance-val');
             if (v) v.textContent = +e.target.value ? `${e.target.value}%` : 'выкл.';
+            updateDateWhy();
+            scheduleRenderAll();          // строка о свидании в карточке пары
         });
         document.getElementById('ht-set-lang')?.addEventListener('change', e => {
             localStorage.setItem(LS.lang, e.target.value);
@@ -2350,9 +2585,10 @@ function injectSettingsPanel() {
             if (!apiOn()) { window.toastr?.info?.(L().noProfile, 'Hearthtide'); return; }
             if (!state || lastProcessedMsg() < 0) { window.toastr?.info?.(L().scanNothing, 'Hearthtide'); return; }
             window.toastr?.info?.(L().scanToast, 'Hearthtide');
-            maybeSide(lastProcessedMsg(), true);
+            maybeSide(lastProcessedMsg(), true, ['census']);     // заодно — перепись людей истории
         });
         syncCharSettings();
+        updateDateWhy();
         document.getElementById('ht-set-era')?.addEventListener('change', e => {
             setCharSetting('era', e.target.value);
             const row = document.getElementById('ht-row-faith');
@@ -2519,9 +2755,9 @@ function observeChat() {
         let changed = false;
         for (const m of muts) {
             const t = m.target;
-            if (t.nodeType === 1 && t.closest?.('.ht-ib')) continue;          // наши собственные изменения
+            if (t.nodeType === 1 && t.closest?.('.ht-ib, .ht-cards')) continue;          // наши собственные изменения
             const nodes = [...m.addedNodes, ...m.removedNodes];
-            if (nodes.length && nodes.every(n => n.nodeType === 1 && n.classList?.contains('ht-ib'))) continue;
+            if (nodes.length && nodes.every(n => n.nodeType === 1 && (n.classList?.contains('ht-ib') || n.classList?.contains('ht-cards')))) continue;
             changed = true;
             break;
         }
@@ -2542,7 +2778,11 @@ function ensureBlocks() {
     document.querySelectorAll('#chat .mes[mesid]').forEach(el => {
         const id = Number(el.getAttribute('mesid'));
         const has = el.querySelector('.ht-ib');
-        if (shouldShow(id) && !has) renderBlock(id);
+        // стёрли инфоблок или карточки под текстом (перерисовка .mes_text) — вернуть
+        const lostCards = id === lastBotIndex() && cardsDue() && !el.querySelector('.ht-cards');
+        if (shouldShow(id) && (!has || lostCards)) renderBlock(id);
+        // картинки дорисовались после нас — подвинуть инфоблок «снизу» и карточки обратно к тексту
+        else if (has && shouldShow(id) && (position() === 'bottom' || el.querySelector('.ht-cards'))) placeBlock(el, has, el.querySelector('.ht-cards'));
     });
 }
 

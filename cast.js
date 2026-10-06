@@ -4,9 +4,10 @@
 
 import { dayNum, fromDayNum, nextOccurrence } from './dates.js';
 
-// родня {{user}} · родня {{char}} · друзья · знакомые · прочие
-export const CAST_GROUPS = ['kin_user', 'kin_char', 'friend', 'acquaintance', 'other'];
-export const isKin = (g) => g === 'kin_user' || g === 'kin_char' || g === 'relative';
+// родня {{user}} · родня {{char}} · общая семья (их дети, внуки) · друзья · знакомые · прочие
+export const CAST_GROUPS = ['kin_user', 'kin_char', 'kin_both', 'friend', 'acquaintance', 'other'];
+export const KIN_GROUPS = ['kin_user', 'kin_char', 'kin_both'];
+export const isKin = (g) => KIN_GROUPS.includes(g) || g === 'relative';
 // романтика у людей — только вручную, кнопками
 export const ROM_KEYS = ['spark', 'love', 'deep', 'ex', 'hate'];
 
@@ -97,6 +98,8 @@ export function mergeCast(state, parsed, langOk, turn) {
                 if (!ex.toC && c.toC) ex.toC = c.toC;
                 if (!ex.bday && c.bday) ex.bday = c.bday;
                 if (c.group && (ex.group === 'other' || ex.group === 'relative')) ex.group = c.group;
+                // общий ребёнок, которого раньше записали в родню одной стороны
+                else if (c.group === 'kin_both' && (ex.group === 'kin_user' || ex.group === 'kin_char')) ex.group = 'kin_both';
             }
             continue;
         }
@@ -141,5 +144,44 @@ export function migrateCast(state, userName, charName) {
         if (!c.note) c.note = { user: null, char: null };
         if (c.rom && typeof c.rom.user === 'number') c.rom = { user: null, char: null };
         if (!c.rom) c.rom = { user: null, char: null };
+        // общие дети и внуки (сын или дочь обоим) раньше попадали в родню одной стороны
+        if (state.castVer !== 3 && !c.edited && (c.group === 'kin_user' || c.group === 'kin_char') && sharedChild(c)) c.group = 'kin_both';
     }
+    state.castVer = 3;
+}
+
+// ребёнок или внук и для {{user}}, и для {{char}}
+const CHILD_WORD = /(сын|доч|ребен|ребён|дитя|дети|внук|внучк|son|daughter|child|kid|grand(son|daughter|child))/i;
+const sharedChild = (c) => CHILD_WORD.test(c.toU || '') && CHILD_WORD.test(c.toC || '');
+
+// ─── Кого часто называют в истории: подсказка для переписи людей ───
+// Слово с заглавной буквы посреди предложения — почти всегда имя (или место). Падежи сводим к общей основе.
+const NAME_STOP = new Set(['вы', 'вас', 'вам', 'вами', 'ваш', 'ваша', 'ваше', 'ваши', 'вашего', 'вашей', 'бог', 'бога', 'богу', 'господь', 'господи', 'боже', 'христос', 'христа',
+    'god', 'lord', 'sir', 'madam', 'miss', 'mister', 'lady', 'king', 'queen',
+    'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+    'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']);
+const stemOf = (w) => {
+    const x = String(w || '').toLowerCase().replace(/ё/g, 'е');
+    return x.length <= 4 ? x : x.slice(0, Math.min(5, x.length - 1));
+};
+/** Часто называемые имена: [{ name, n }], самые частые первыми. exclude — уже известные имена (любые слова из них) */
+export function nameCandidates(texts, exclude = [], max = 8, min = 3) {
+    const skip = new Set(exclude.flatMap(n => String(n || '').split(/[^\p{L}]+/u)).filter(w => w.length >= 3).map(stemOf));
+    const seen = new Map();
+    const re = /(?<=[\p{Ll}\d,;)]\s{1,3})(\p{Lu}\p{Ll}{2,})(?![\p{L}])/gu;
+    for (const t of texts) {
+        const s = String(t || '').replace(/<!--[\s\S]*?-->/g, ' ').replace(/<[^>]+>/g, ' ');
+        for (const m of s.matchAll(re)) {
+            const w = m[1];
+            if (NAME_STOP.has(w.toLowerCase())) continue;
+            const st = stemOf(w);
+            if (skip.has(st)) continue;
+            const e = seen.get(st) || { n: 0, forms: new Map() };
+            e.n++;
+            e.forms.set(w, (e.forms.get(w) || 0) + 1);
+            seen.set(st, e);
+        }
+    }
+    return [...seen.values()].filter(e => e.n >= min).sort((a, b) => b.n - a.n).slice(0, max)
+        .map(e => ({ name: [...e.forms.entries()].sort((a, b) => b[1] - a[1])[0][0], n: e.n }));
 }
