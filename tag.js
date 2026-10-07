@@ -68,6 +68,8 @@ export function parseSmall(text, name = 'HT') {
         dateStep: (String(f.date_step || '').match(/\d+/g) || []).map(Number).filter(n => n >= 1 && n <= 6),
         dateMood: /^up|^better|^лучш|^\+/i.test(String(f.date_mood || '').trim()) ? 1 : /^down|^worse|^хуж|^-/i.test(String(f.date_mood || '').trim()) ? -1 : 0,
         dateEnd: /^(yes|true|1|да|end)/i.test(String(f.date_end || '').trim()),
+        // {{char}} в этом ответе позвал на свидание, задуманное помощником
+        dateAsked: /^(yes|true|1|да)/i.test(String(f.date_asked || '').trim()),
         // один человек праздника: чего он хочет теперь — «Имя: желание»
         who: (() => {
             const m = String(f.who || '').match(/^\s*(.{2,60}?)\s*(?::|\s[—–-]\s)\s*(.+)$/);

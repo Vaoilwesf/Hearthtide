@@ -14,8 +14,8 @@ import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople
 import { PAIR_DEFAULT, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN } from './romance.js';
 import { CAST_GROUPS, KIN_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast, nameCandidates } from './cast.js';
 import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft } from './calendar.js';
-import { buildStatePrompt, buildTagPrompt, buildSideMessages, giftTarget } from './prompts.js';
-import { listProfiles, gatherSources, sendSide, reasonOf } from './side.js';
+import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, giftTarget } from './prompts.js';
+import { listProfiles, gatherSources, loreFor, sendSide, reasonOf } from './side.js';
 import { strings } from './i18n.js';
 
 // ═══════════════════════════════════════════════════════════════
@@ -123,6 +123,7 @@ function defaultState() {
         bondMiss: 0,            // сколько ответов подряд без bond, пока пара не ясна
         bondSide: -99,          // когда помощника последний раз просили начальные значения пары
         dateRollTry: 0,         // выпавшее свидание модель пропустила — просим ещё раз, настойчивее
+        datePlan: null,         // план свидания от помощника: { title, goal, hook, where, at } — основная модель зовёт по нему
         dateRecapFor: null,     // id закончившегося свидания, к которому ещё нужен итог
         dateRecapTurn: null,
         dateMissed: null,       // { title, turn } — намеченное свидание не состоялось (одна строка в промпт)
@@ -297,6 +298,20 @@ function hashText(t) {
     for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
     return h;
 }
+/**
+ * Отпечаток самого текста ответа — без картинок, разметки и пробелов. Расширения картинок дописывают <img> прямо
+ * в сообщение; раньше от этого менялся отпечаток, и ответ помощника молча выбрасывался (людей не добавлялось,
+ * шаги свидания не засчитывались). Теперь картинка отпечаток не меняет.
+ */
+function coreHash(t) {
+    return hashText(String(t || '')
+        .replace(/<!--[\s\S]*?-->/g, ' ')
+        .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/\s+/g, ' ').trim());
+}
+// записи прошлых версий хранятся под старым отпечатком
+const sideOf = (msg, text) => msg?.extra?.ht_side?.[coreHash(text)] || msg?.extra?.ht_side?.[hashText(text)] || null;
 
 // ─── Был ли человек в ролплее: имя в последних сообщениях (с учётом падежей) ───
 function recentStoryText(n = 8) {
@@ -481,7 +496,7 @@ function processReply(N) {
     // при свайпе назад или повторной обработке берём их оттуда
     let text = msg.mes;
     const saved = msg.extra?.ht_raw;
-    const source = saved && saved.hash === hashText(text) ? saved.raw : text;
+    const source = saved && (saved.hash === coreHash(text) || saved.hash === hashText(text)) ? saved.raw : text;
 
     // Модели с «думалкой» иногда пишут теги в рассуждениях, а в ответ не переносят — тогда берём оттуда
     const think = String(msg.extra?.reasoning || '');
@@ -497,10 +512,10 @@ function processReply(N) {
         try { stModule?.updateMessageBlock?.(N, msg); } catch (e) { /* пусто */ }
     }
     msg.extra = msg.extra || {};
-    if (source !== text || !saved) msg.extra.ht_raw = { raw: source, hash: hashText(text) };
+    if (source !== text || !saved) msg.extra.ht_raw = { raw: source, hash: coreHash(text) };
 
     // Ответ отдельного запроса к этому тексту (если уже пришёл): те же блоки, читаем вместе с ответом
-    const sideRec = apiOn() ? msg.extra.ht_side?.[hashText(text)] || null : null;
+    const sideRec = apiOn() ? sideOf(msg, text) : null;
     const sideText = sideRec?.text || '';
     const sideAsked = sideRec?.asked || [];
     const askedCal = asked === 'cal' || sideAsked.includes('cal');
@@ -526,7 +541,13 @@ function processReply(N) {
     const evs = [...parseEvents(src), ...(sideText ? parseEvents(sideText) : [])];
     const offersIn = [...parseOffers(src), ...(sideText ? parseOffers(sideText) : [])];
     const castIn = [parseCast(src), sideText ? parseCast(sideText) : null].filter(Boolean);
-    const dateIn = parseDateBlock(src) || (sideText ? parseDateBlock(sideText) : null);
+    const planIn = sideText && sideAsked.includes('dateplan') ? parseDateBlock(sideText) : null;
+    let dateIn = parseDateBlock(src) || (sideText && sideAsked.includes('datewatch') ? parseDateBlock(sideText) : null);
+    // {{char}} позвал по плану помощника (date_asked=yes) — приглашение из плана; место и время — тоже из плана
+    const plan = hadDateRoll ? state.datePlan : null;
+    if (plan && !dateIn?.started && (dateIn || small?.dateAsked)) {
+        dateIn = { ...plan, steps: [], started: false, ...(dateIn ? { title: dateIn.title || plan.title, hook: dateIn.hook || plan.hook } : {}) };
+    }
     const beat = sideText ? parseBeat(sideText) : null;
     // Строки H, пришедшие без запроса календаря, — тоже повод из истории: решает игрок
     if (cal && !askedCal && !cal.setting && cal.holidays.length) {
@@ -815,7 +836,8 @@ function processReply(N) {
 
     // ── Свидание: бросок после ответа (есть романтика; после ссоры шанс выше) ──
     // Выпало, а модель промолчала — просим ещё раз, настойчивее (один раз); потом — новый бросок
-    const free = !state.date || state.date.status === 'ended';
+    // свободно — всё, кроме идущего, предложенного и намеченного (раньше «не состоялось» навсегда блокировало броски)
+    const free = !['active', 'offered', 'scheduled'].includes(state.date?.status);
     const di = dateChanceInfo(state, state.turn, dateChanceSetting());
     if (free && hadDateRoll && !dateIn && !(state.dateRollTry > 0) && di.chance > 0) {
         state.dateRoll = true;
@@ -825,9 +847,17 @@ function processReply(N) {
         state.dateRollTry = 0;
         const roll = free && di.chance > 0 ? rollFor(text, state.turn + 7919) : null;
         state.dateRoll = roll != null && roll < di.chance;
+        state.datePlan = null;
         if (roll != null) console.info(`[Hearthtide] свидание: бросок ${roll} ${state.dateRoll ? '<' : '≥'} ${di.chance}% — ${state.dateRoll ? 'выпало, позовёт в следующем ответе' : 'не выпало'}`);
         else if (free) console.debug(`[Hearthtide] свидание: шанса нет (${di.why}${di.left ? `, ещё ${di.left}` : ''}${di.r != null ? `, романтика ${di.r}` : ''})`);
     }
+
+    // план от помощника — к выпавшему свиданию (при повторе просьбы старый план остаётся)
+    if (state.dateRoll && planIn && [planIn.title, planIn.goal, planIn.hook, planIn.where].every(langOk)) {
+        state.datePlan = { title: planIn.title, goal: planIn.goal, hook: planIn.hook, where: planIn.where, at: planIn.at, turn: state.turn };
+        console.info('[Hearthtide] свидание: план помощника —', state.datePlan.title, '·', state.datePlan.where || '', '·', JSON.stringify(state.datePlan.at));
+    }
+    if (!state.dateRoll || !free) state.datePlan = null;
 
     // ── Упоминать ли подготовку в следующем ответе (чем ближе, тем чаще) ──
     state.mentionNow = false;
@@ -1417,7 +1447,7 @@ function maybeSide(N, force = false, extra = []) {
     if (!apiOn() || !state || generating) return;
     const msg = chat[N];
     if (!msg || msg.is_user || msg.is_system || N !== lastProcessedMsg()) return;
-    if (msg.extra?.ht_side?.[hashText(msg.mes)] && !force) return;       // к этому тексту уже есть
+    if (sideOf(msg, msg.mes) && !force) return;       // к этому тексту уже есть
     const phase = phaseOf(state);
     const needs = sideNeeds(state, phase);
     for (const k of extra) needs.add(k);
@@ -1431,7 +1461,7 @@ function maybeSide(N, force = false, extra = []) {
 async function runSide(N, needs) {
     cancelSide();
     const ctl = new AbortController();
-    const hash = hashText(chat[N].mes);
+    const hash = coreHash(chat[N].mes);
     const me = { N, hash, ctl };
     side = me;
     sideErr = null;
@@ -1449,13 +1479,43 @@ async function runSide(N, needs) {
         // перепись людей читает больше сообщений, чем обычный запрос
         // ход свидания судим только по новым сообщениям — помечаем их [NEW]
         const newFrom = needs.has('date') ? (state.dateSeenMsg != null && state.dateSeenMsg < N ? state.dateSeenMsg : Math.max(-1, N - 2)) : null;
-        const src = await gatherSources(N, needs.has('census') ? Math.max(sideDepth(), CENSUS_DEPTH) : sideDepth(), newFrom);
+        // план свидания — по большему окну истории и с бóльшим куском лорбука
+        const depth = Math.max(sideDepth(), needs.has('census') ? CENSUS_DEPTH : 0, needs.has('dateplan') ? 20 : 0);
+        const src = await gatherSources(N, depth, newFrom, needs.has('dateplan') ? 3600 : undefined);
         const messages = buildSideMessages(ctx, needs, src);
         console.debug('[Hearthtide] отдельный запрос →', [...needs].join(', '), messages);
-        const text = await sendSide(apiProfile(), messages, ctl.signal);
+        let text = await sendSide(apiProfile(), messages, ctl.signal);
         if (side !== me) return;                                        // отменён или заменён новым
+        // План свидания: записи лорбука о выбранном месте могли не сработать на историю — достаём их по самому плану
+        // и, если нашлось новое, просим помощника сверить план (опасное место, не тот час, не по состоянию героев)
+        if (needs.has('dateplan')) {
+            const m = text.match(/<!--\s*HT-DATE(?![\w-])[\s\S]*?-->/i);
+            const pl = m && parseDateBlock(m[0]);
+            if (pl) {
+                const lore = await loreFor([pl.title, pl.where, pl.goal, pl.hook].filter(Boolean).join('\n'));
+                const fresh = String(lore || '').split(/\n{2,}|\n(?=\S)/).map(x => x.trim()).filter(x => x.length > 20 && !String(src.lore || '').includes(x.slice(0, 60)));
+                if (fresh.length && side === me) {
+                    try {
+                        const rev = await sendSide(apiProfile(), buildDateReview(ctx, m[0], fresh.join('\n'), src), ctl.signal, 800);
+                        if (side !== me) return;
+                        const fixed = rev.match(/<!--\s*HT-DATE(?![\w-])[\s\S]*?-->/i);
+                        if (fixed && parseDateBlock(fixed[0])) {
+                            text = text.replace(m[0], fixed[0]);
+                            console.info('[Hearthtide] свидание: план поправлен по лорбуку →', fixed[0]);
+                        } else console.info('[Hearthtide] свидание: план сверен с лорбуком — в порядке');
+                    } catch (e) {
+                        if (ctl.signal.aborted || side !== me) return;
+                        console.warn('[Hearthtide] свидание: сверка плана не прошла —', reasonOf(e));
+                    }
+                }
+            } else console.info('[Hearthtide] свидание: помощник не прислал план — основная модель придумает сама');
+        }
         const msg = chat[N];
-        if (!msg || hashText(msg.mes) !== hash || N !== lastProcessedMsg()) return;   // текст уже другой
+        // текст ответа уже другой (свайп, правка) или ушли дальше — ответ помощника не к месту
+        if (!msg || coreHash(msg.mes) !== hash || N !== lastProcessedMsg()) {
+            console.info(`[Hearthtide] ответ помощника отброшен: ${!msg ? 'сообщения нет' : coreHash(msg.mes) !== hash ? 'текст ответа изменился' : 'чат ушёл дальше'}`);
+            return;
+        }
         console.debug(`[Hearthtide] ответ за ${((Date.now() - t0) / 1000).toFixed(1)} с:\n${text}`);
         msg.extra = msg.extra || {};
         const map = msg.extra.ht_side || {};

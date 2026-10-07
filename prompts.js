@@ -267,14 +267,57 @@ function dateRecapRule(ctx) {
     return `<!-- HT-DATE-UP\nRECAP | TEXT | BEST\n-->\nThe date "${last?.title || ''}" is over: TEXT — how it went for ${ctx.userName} and ${ctx.charName}, one or two sentences, only what the story showed; BEST — the moment worth remembering, a few words. In ${langOf(ctx)}.`;
 }
 
-// Свидание, которое {{char}} может предложить: игрок решает кнопками.
-// Кубик уже выпал — модель не «решает», звать ли, а только как; пропустить можно лишь в срочной сцене
+// ─── Приглашение на свидание ───
+// Кубик выпал → помощник составляет план (место, время, цель) по карточке, персоне, лорбуку и истории и сверяет
+// его с записями лорбука о выбранном месте → основная модель только произносит приглашение по плану.
+// Без помощника (или если он не успел) — основная модель придумывает сама, по тем же правилам здравого смысла.
+const hhmm = (c) => `${String(Math.floor(c)).padStart(2, '0')}:${String(Math.round((c % 1) * 60)).padStart(2, '0')}`;
+function dateSense(ctx) {
+    const { state, userName, charName } = ctx;
+    const now = `${state.today != null ? isoOf(state.today) : 'today'}${state.clock != null ? ` ${hhmm(state.clock)}` : ''}`;
+    return `It must make sense right here and now:
+- where: a place that exists in this world (card, world info, story) or is ordinary for this era and place; never one the world info or the story marks as dangerous, forbidden, cursed or hostile, nor one the story has just made unsafe;
+- who: fits both of them as they are now — body and health (pregnancy, injury, illness, tiredness), mood, what just happened between them and around them, duties and threats in the story; ${charName} cares about ${userName} and would not lead ${userName} into harm;
+- when: ahead of now (${now}), at a sensible hour for this kind of outing, the season, the weather and daylight; not at night or at dawn unless the story itself points there;
+- what: true to ${charName}'s character and means and to the customs of the era — something ${charName} would really think of for ${userName}.`;
+}
+const DATE_FORMAT = '<!-- HT-DATE title=… | goal=… | hook=… | where=… | at=YYYY-MM-DD HH:MM -->';
+const dateFields = (ctx) => `title: what it is, a few words; goal: what it is meant to mend, say, begin or celebrate, from the story; hook: how ${ctx.charName} will ask, one sentence; where: the place; at: when, in the story's calendar (now — if right away).`;
+
+/** Помощнику: составить план свидания */
+function datePlanRule(ctx) {
+    const { state, userName, charName } = ctx;
+    const past = (state.datesDone || []).slice(-3).map(d => d.title);
+    return `${DATE_FORMAT}
+Plan the date ${charName} will ask ${userName} on in the next reply. ${dateSense(ctx)}
+${dateFields(ctx)}${past.length ? ` Different from: ${past.join(' / ')}.` : ''} In ${langOf(ctx)}.`;
+}
+
+/** Помощнику, второй проход: сверить план с записями лорбука о выбранном месте */
+export function buildDateReview(ctx, planBlock, lore, src) {
+    const { userName, charName } = ctx;
+    return [
+        { role: 'system', content: `You check a planned date in a roleplay between ${charName} and ${userName} against the world's lore. Answer with a single line.` },
+        { role: 'user', content: `[World info about the planned date]\n${lore}\n\n[${charName}]\n${src.card || '—'}\n\n[${userName}]\n${src.persona || '—'}\n\n[Story — latest messages]\n${String(src.story || '').slice(-2500)}\n\n[The plan]\n${planBlock}\n\n${dateSense(ctx)}\nIf the plan clashes with the world info or the story (a dangerous or forbidden place, a wrong hour, it doesn't suit someone's state), answer with a corrected ${DATE_FORMAT} — same format, in ${langOf(ctx)}. Otherwise answer OK.` },
+    ];
+}
+
+/** Основной модели: позвать по готовому плану */
+function dateAskRule(ctx) {
+    const { state, userName, charName } = ctx;
+    const pl = state.datePlan;
+    const p = state.pair || {};
+    return `${state.dateRollTry ? 'REQUIRED — your last reply skipped it. ' : ''}This reply ${charName} asks ${userName} on a date ${charName} has in mind: ${pl.title}${pl.where ? ` — ${pl.where}` : ''}, ${dateAtText(state, pl.at)}${pl.goal ? `; meant to ${pl.goal}` : ''}.${pl.hook ? ` How: ${pl.hook}` : ''} Ask in ${charName}'s own way, as fits who ${charName} is and how they stand (friendship ${p.f ?? 0}, romance ${p.r ?? 0}): openly, shyly, in passing or as a half-joke, at a moment that fits the scene. Write only the asking; ${userName} answers. Then add date_asked=yes to the HT line. If the scene is urgent or dangerous, don't ask yet and add nothing.`;
+}
+
+/** Основной модели без плана: придумать и позвать самой */
 function dateOfferRule(ctx) {
     const { state, userName, charName } = ctx;
     const p = state.pair || {};
     const past = (state.datesDone || []).slice(-3).map(d => d.title);
     const gift = state.charGift && !state.charGift.done && state.charGift.text ? ` ${charName}'s gift is ready (${state.charGift.text}) — it may be part of it.` : '';
-    return `${state.dateRollTry ? 'REQUIRED — your last reply skipped it. ' : ''}This reply ${charName} asks ${userName} on a date — the moment has come; the only question is how. In ${charName}'s own way, as fits who ${charName} is and how they stand now (friendship ${p.f ?? 0}, romance ${p.r ?? 0}${p.note ? `, ${p.note}` : ''}): openly, shyly, in passing or as a half-joke; after a quarrel — as a way to make up. Write only the asking; ${userName} answers. Then add after the HT line: <!-- HT-DATE title=… | goal=… | hook=… | where=… | at=YYYY-MM-DD HH:MM --> — title: what it is, a few words; goal: what it is meant to mend, say, begin or celebrate; hook: how ${charName} asked, one sentence; where: the place; at: when ${charName} set it for, in the story's calendar (now — if right away).${gift} True to the era and place; in ${langOf(ctx)}.${past.length ? ` Different from: ${past.join(' / ')}.` : ''} Skip it only if the scene is urgent or dangerous — then add nothing.`;
+    return `${state.dateRollTry ? 'REQUIRED — your last reply skipped it. ' : ''}This reply ${charName} asks ${userName} on a date, in ${charName}'s own way, as fits who ${charName} is and how they stand (friendship ${p.f ?? 0}, romance ${p.r ?? 0}${p.note ? `, ${p.note}` : ''}): openly, shyly, in passing or as a half-joke; after a quarrel — as a way to make up. ${dateSense(ctx)}
+Write only the asking; ${userName} answers. Then add after the HT line: ${DATE_FORMAT} — ${dateFields(ctx)}${gift} In ${langOf(ctx)}.${past.length ? ` Different from: ${past.join(' / ')}.` : ''} If the scene is urgent or dangerous, don't ask yet and add nothing.`;
 }
 
 // Случайный ивент: предлагается игроку кнопками, в историю входит, только если он принял
@@ -369,7 +412,7 @@ All text values in these comments: ${lang} only.`];
     const dt = state.date?.status === 'active' ? state.date : null;
     // выпал шанс — ивент или приглашение на свидание начинаются прямо в этом ответе, игрок решает кнопками
     if (state.evRoll && h) out.push(eventOfferRule(ctx));
-    if (state.dateRoll && !dt) out.push(dateOfferRule(ctx));
+    if (state.dateRoll && !dt) out.push(state.datePlan ? dateAskRule(ctx) : dateOfferRule(ctx));
     // без помощника ход свидания ведёт основная модель — по своему же ответу
     const dateLive = state.date?.status === 'active' || (state.date?.status === 'scheduled' && (dateHoursLeft(state) ?? 99) <= 30);
     if (!ctx.api && dateLive) out.push(`ALSO add after the HT line:\n${dateUpRule(ctx, true)}`);
@@ -480,6 +523,7 @@ export function buildSideMessages(ctx, needs, src) {
 Only if the latest messages show something new at "${ev?.title || 'the gathering'}" that ${userName} joined — a few words. Leave it out otherwise.${ev?.moments?.length ? ` Already: ${ev.moments.slice(-3).map(m => m.title).join(' / ')}.` : ''}`);
     }
     if (needs.has('date') && state.date) task.push(dateUpRule(ctx));
+    if (needs.has('dateplan')) task.push(datePlanRule(ctx));
     if (needs.has('daterecap') && !(needs.has('date') && state.date?.status === 'active')) task.push(dateRecapRule(ctx));
     if (needs.has('datewatch')) task.push(`<!-- HT-DATE title=… | goal=… | where=… | at=YYYY-MM-DD HH:MM | started=yes -->
 Only if the latest messages show ${userName} and ${charName} on a date that isn't tracked yet (started=yes), or agreeing on one for later (at — when, no started). Leave it out otherwise.`);

@@ -35,7 +35,7 @@ const LIMIT = { card: 1400, persona: 600, lore: 1800, msg: 800, perMsg: 650 };
 
 /** Карточка, персона, сработавшие записи лорбука и последние сообщения */
 /** newFrom — сообщения после этого номера помечаются [NEW]: помощник судит ход свидания только по ним */
-export async function gatherSources(upTo, depth = 10, newFrom = null) {
+export async function gatherSources(upTo, depth = 10, newFrom = null, loreLimit = LIMIT.lore) {
     const c = ctxST();
     const sub = (t) => { try { return c?.substituteParams ? c.substituteParams(t) : t; } catch (e) { return t; } };
     let fields = {};
@@ -62,7 +62,7 @@ export async function gatherSources(upTo, depth = 10, newFrom = null) {
         if (c?.getWorldInfoPrompt) {
             const scan = msgs.map(m => `${m.name}: ${m.mes}`).reverse();
             const wi = await c.getWorldInfoPrompt(scan, 8192, true);
-            lore = cut(sub(wi?.worldInfoString || `${wi?.worldInfoBefore || ''}\n${wi?.worldInfoAfter || ''}`), LIMIT.lore);
+            lore = cut(sub(wi?.worldInfoString || `${wi?.worldInfoBefore || ''}\n${wi?.worldInfoAfter || ''}`), loreLimit);
         }
     } catch (e) { lore = ''; }
 
@@ -90,4 +90,19 @@ export function reasonOf(e) {
         if (m && !chain.includes(m)) chain.push(m);
     }
     return chain.join(' → ') || 'неизвестная ошибка';
+}
+
+/**
+ * Записи лорбука, которые сработали бы на этот текст (например, на место и цель задуманного свидания).
+ * Пробный проход, без побочных эффектов. Пусто, если ничего не сработало.
+ */
+export async function loreFor(text, limit = 2400) {
+    const c = ctxST();
+    try {
+        if (!c?.getWorldInfoPrompt || !String(text || '').trim()) return '';
+        const wi = await c.getWorldInfoPrompt([String(text)], 8192, true);
+        const raw = wi?.worldInfoString || `${wi?.worldInfoBefore || ''}\n${wi?.worldInfoAfter || ''}`;
+        const sub = (t) => { try { return c.substituteParams ? c.substituteParams(t) : t; } catch (e) { return t; } };
+        return cut(sub(raw), limit);
+    } catch (e) { return ''; }
 }
