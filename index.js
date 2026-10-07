@@ -2016,7 +2016,9 @@ function miniBar(src, who, n, note) {
 }
 
 const CAST_TABS = ['all', 'kin_user', 'kin_char', 'kin_both', 'others'];
-const inCastTab = (p, t) => t === 'all' || (t === 'others' ? !KIN_GROUPS.includes(p.group) : p.group === t);
+// общая семья видна и в родне {{user}}, и в родне {{char}}
+const inCastTab = (p, t) => t === 'all' || (t === 'others' ? !KIN_GROUPS.includes(p.group)
+    : (t === 'kin_user' || t === 'kin_char') ? p.group === t || p.group === 'kin_both' : p.group === t);
 
 function castTabHtml(view, live) {
     const list = view.cast || [];
@@ -2156,13 +2158,20 @@ function openCastEditorRaw(cid) {
             renderAll();
         } else if (t.dataset.act === 'cast-save') {
             const rom = (w) => f?.querySelector(`.ht-rom-pick[data-who="${w}"] .ht-on`)?.dataset.key || '';
-            if (saveCast(cid, { name: val('name'), toU: val('toU'), toC: val('toC'), group: val('group'), bday: val('bday'), relU: val('relU'), relC: val('relC'), noteU: val('noteU'), noteC: val('noteC'), romU: rom('user'), romC: rom('char') })) {
+            if (saveCast(cid, { name: val('name'), toU: val('toU'), toC: val('toC'), group: groupOf(f), bday: val('bday'), relU: val('relU'), relC: val('relC'), noteU: val('noteU'), noteC: val('noteC'), romU: rom('user'), romC: rom('char') })) {
                 closeCastEditor();
                 renderAll();
             }
         }
     });
     wrap.addEventListener('change', async (e) => {
+        // родня — список «друзья / знакомые / прочие» не нужен
+        if (e.target?.dataset?.ed === 'kinU' || e.target?.dataset?.ed === 'kinC') {
+            const any = ['kinU', 'kinC'].some(k => wrap.querySelector(`[data-ed="${k}"]`)?.checked);
+            const sel = wrap.querySelector('.ht-notkin');
+            if (sel) sel.hidden = any;
+            return;
+        }
         const inp = e.target.closest?.('input[data-act="cast-photo"]');
         if (!inp?.files?.[0]) return;
         try {
@@ -2184,8 +2193,21 @@ function openCastEditorRaw(cid) {
     if (native) wrap.showModal();
 }
 
+/** Группа из формы: галочки «родня» (обе — общая семья), иначе — выбор из списка */
+function groupOf(f) {
+    const on = (k) => !!f?.querySelector(`[data-ed="${k}"]`)?.checked;
+    const u = on('kinU'), c = on('kinC');
+    if (u && c) return 'kin_both';
+    if (u) return 'kin_user';
+    if (c) return 'kin_char';
+    return f?.querySelector('[data-ed="group"]')?.value || 'other';
+}
+
 function castFormHtml(p, photo) {
-    const groups = CAST_GROUPS.map(g => `<option value="${g}" ${p.group === g ? 'selected' : ''}>${esc(L().castGroup(g, getUserName(), getCharName()))}</option>`).join('');
+    const u = getUserName(), c = getCharName();
+    const kinU = p.group === 'kin_user' || p.group === 'kin_both', kinC = p.group === 'kin_char' || p.group === 'kin_both';
+    const other = ['friend', 'acquaintance', 'other'];
+    const groups = other.map(g => `<option value="${g}" ${p.group === g ? 'selected' : ''}>${esc(L().castGroup(g, u, c))}</option>`).join('');
     const romRow = (who, cur) => `<div class="ht-rom-pick" data-who="${who}">${['', ...ROM_KEYS].map(k =>
         `<button type="button" data-act="cast-rom" data-who="${who}" data-key="${k}" class="${(cur || '') === k ? 'ht-on' : ''}" aria-pressed="${(cur || '') === k}">${k ? '<i class="fa-solid fa-heart"></i>' : ''}${esc(k ? L().rom[k] : L().rom.none)}</button>`).join('')}</div>`;
     return `<div class="ht-edit ht-cast-edit" data-cid="${esc(p.id)}">
@@ -2198,7 +2220,11 @@ function castFormHtml(p, photo) {
             <label>${esc(L().toWhom(getUserName()))}<input class="text_pole" data-ed="toU" value="${esc(p.toU || '')}"></label>
             <label>${esc(L().toWhom(getCharName()))}<input class="text_pole" data-ed="toC" value="${esc(p.toC || '')}"></label>
         </div>
-        <label>${L().fGroup}<select class="text_pole" data-ed="group">${groups}</select></label>
+        <div class="ht-kin-pick"><span>${L().kinWhose}</span>
+            <label><input type="checkbox" data-ed="kinU" ${kinU ? 'checked' : ''}>${esc(L().kinOf(u))}</label>
+            <label><input type="checkbox" data-ed="kinC" ${kinC ? 'checked' : ''}>${esc(L().kinOf(c))}</label>
+        </div>
+        <label class="ht-notkin"${kinU || kinC ? ' hidden' : ''}>${L().fGroup}<select class="text_pole" data-ed="group">${groups}</select></label>
         <label>${L().fBday}<input class="text_pole" data-ed="bday" value="${esc(bdayText(p.bday))}" inputmode="numeric" placeholder="${esc(L().unknown)}"></label>
         <div class="ht-edit-two">
             <label>${esc(getUserName())} −100…100<input class="text_pole" data-ed="relU" type="number" min="-100" max="100" value="${p.rel?.user ?? 0}"></label>
@@ -2686,7 +2712,7 @@ function bindBlock(block) {
             const f = t.closest('.ht-edit');
             const val = (k) => f?.querySelector(`[data-ed="${k}"]`)?.value ?? '';
             const rom = (w) => f?.querySelector(`.ht-rom-pick[data-who="${w}"] .ht-on`)?.dataset.key || '';
-            if (saveCast(t.dataset.cid, { name: val('name'), toU: val('toU'), toC: val('toC'), group: val('group'), bday: val('bday'), relU: val('relU'), relC: val('relC'), noteU: val('noteU'), noteC: val('noteC'), romU: rom('user'), romC: rom('char') })) {
+            if (saveCast(t.dataset.cid, { name: val('name'), toU: val('toU'), toC: val('toC'), group: groupOf(f), bday: val('bday'), relU: val('relU'), relC: val('relC'), noteU: val('noteU'), noteC: val('noteC'), romU: rom('user'), romC: rom('char') })) {
                 ui.editing = null;
                 renderAll();
             }

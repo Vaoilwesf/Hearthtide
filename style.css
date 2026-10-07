@@ -842,3 +842,10 @@ dialog.ht-modal:not([open]) { display: none; }
 }
 :is(.ht-ib) .ht-cc.ht-cc-add:hover { background: var(--ht-soft-2); color: var(--ht-fg); }
 :is(.ht-ib) .ht-cc.ht-cc-add > i { font-size: 1.4em; color: var(--ht-acc); }
+
+/* правка человека: «чья родня» — две галочки */
+.ht-kin-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
+.ht-kin-pick > span { flex-basis: 100%; font-size: 0.9em; color: var(--ht-mute); }
+.ht-kin-pick > label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.ht-kin-pick input { accent-color: var(--ht-acc); margin: 0; }
+.ht-notkin[hidden] { display: none; }

@@ -150,14 +150,19 @@ export function migrateCast(state, userName, charName) {
         if (c.rom && typeof c.rom.user === 'number') c.rom = { user: null, char: null };
         if (!c.rom) c.rom = { user: null, char: null };
         // общие дети и внуки (сын или дочь обоим) раньше попадали в родню одной стороны
-        if (state.castVer !== 3 && !c.edited && (c.group === 'kin_user' || c.group === 'kin_char') && sharedChild(c)) c.group = 'kin_both';
+        if ((state.castVer ?? 0) < 4 && !c.edited && (c.group === 'kin_user' || c.group === 'kin_char') && sharedChild(c)) c.group = 'kin_both';
     }
-    state.castVer = 3;
+    state.castVer = 4;
 }
 
 // ребёнок или внук и для {{user}}, и для {{char}}
 const CHILD_WORD = /(сын|доч|ребен|ребён|дитя|дети|внук|внучк|son|daughter|child|kid|grand(son|daughter|child))/i;
-const sharedChild = (c) => CHILD_WORD.test(c.toU || '') && CHILD_WORD.test(c.toC || '');
+// пасынок или падчерица для одного — тоже общая семья, если для другого это ребёнок
+const STEP_WORD = /(пасын|падчер|приемн|приёмн|step|foster|adopt)/i;
+const sharedChild = (c) => {
+    const u = c.toU || '', ch = c.toC || '';
+    return (CHILD_WORD.test(u) || STEP_WORD.test(u)) && (CHILD_WORD.test(ch) || STEP_WORD.test(ch));
+};
 
 // ─── Кого часто называют в истории: подсказка для переписи людей ───
 // Слово с заглавной буквы посреди предложения — почти всегда имя (или место). Падежи сводим к общей основе.
