@@ -7,8 +7,8 @@ export const PAIR_DEFAULT = { f: 0, r: 0, note: null, scale: 2 };   // друж�
 
 // Сложность свиданий: сколько дают шаг, срыв, «лучше/хуже» и цель; сколько шагов и успеха нужно, чтобы цель открылась
 export const DATE_LEVELS = {
-    easy: { step: 8, fail: -7, up: 3, down: -5, goal: 12, goalSteps: 3, goalScore: 40 },
-    hard: { step: 6, fail: -10, up: 2, down: -7, goal: 10, goalSteps: 5, goalScore: 55 },
+    easy: { step: 12, fail: -6, up: 4, down: -4, goal: 15, moment: 6, goalSteps: 3, goalScore: 35 },
+    hard: { step: 7, fail: -10, up: 3, down: -6, goal: 10, moment: 4, goalSteps: 5, goalScore: 55 },
 };
 export const levelOf = (k) => DATE_LEVELS[k] || DATE_LEVELS.easy;
 /** Сколько шагов открыто одновременно */
@@ -38,7 +38,7 @@ export function newDate(d, turn, started) {
         // одно и то же свидание при повторной обработке ответа — тот же id (уведомление и анимация — один раз)
         id: `d-${turn}-${idOf(d.title)}`,
         title: d.title, goal: d.goal || null, hook: d.hook || null, where: d.where || null, at: d.at || null,
-        steps: [], nextN: 1, score: 0, goalDone: false, thought: null, vibe: null, notes: [],
+        steps: [], nextN: 1, score: 0, goalDone: false, thought: null, vibe: null, notes: [], log: [],
         status: started ? 'active' : 'offered',
         turn, startTurn: started ? turn : null, lastUpdate: turn, result: null,
     };
@@ -70,7 +70,8 @@ function addStep(d, t, who, turn) {
     const slot = freeSlot(d);
     if (slot < 0) return false;
     if (d.steps.some(s => s.state === 'open' && normT(s.t) === normT(t))) return false;
-    d.steps.push({ n: d.nextN++, t, who: who || 'both', state: 'open', slot, turn, note: null });
+    // шаги — только {{char}} и общие: что делает {{user}}, решает игрок
+    d.steps.push({ n: d.nextN++, t, who: who === 'char' ? 'char' : 'both', state: 'open', slot, turn, note: null });
     return true;
 }
 
@@ -83,24 +84,35 @@ export function applyDateUp(d, up, turn, level) {
     if (!d || d.status !== 'active' || !up) return { moved: false, ended: false };
     const L = levelOf(level);
     let moved = false, ignoredGoal = false;
+    d.log = d.log || [];
+    // журнал хода — для памяти: что было и сколько это дало
+    const note = (kind, t, delta) => { d.log.push({ kind, t, delta, turn }); };
     const close = (x, st, delta) => {
-        const s = d.steps.find(y => y.n === x.n && y.state === 'open');
+        // по номеру, а если модель написала текст шага вместо номера — по тексту
+        const s = x.n != null ? d.steps.find(y => y.n === x.n && y.state === 'open')
+            : d.steps.find(y => y.state === 'open' && x.byText && (normT(y.t).includes(normT(x.byText)) || normT(x.byText).includes(normT(y.t))));
         if (!s) return;
         s.state = st; s.note = x.note || null; s.endTurn = turn;
         d.score += delta;
         if (x.note) d.notes.push({ t: x.note, ok: st === 'done', turn });
+        note(st, x.note || s.t, delta);
         moved = true;
     };
     for (const x of up.done || []) close(x, 'done', L.step);
     for (const x of up.fail || []) close(x, 'failed', L.fail);
     for (const a of up.add || []) if (addStep(d, a.t, a.who, turn)) moved = true;
-    if (up.mood > 0) { d.score += L.up; moved = true; }
-    if (up.mood < 0) { d.score += L.down; moved = true; }
+    // значимое вне шагов (подарок, признание, поцелуй) — тоже засчитывается, не больше двух за ответ
+    for (const m of (up.moments || []).slice(0, 2)) {
+        if (d.log.some(x => x.kind === 'moment' && normT(x.t) === normT(m))) continue;
+        d.score += L.moment; note('moment', m, L.moment); moved = true;
+    }
+    if (up.mood > 0) { d.score += L.up; note('up', up.vibe || null, L.up); moved = true; }
+    if (up.mood < 0) { d.score += L.down; note('down', up.vibe || null, L.down); moved = true; }
     if (up.vibe) d.vibe = up.vibe;
     if (up.thought) d.thought = up.thought;
     if (up.goal && !d.goalDone) {
         // цель достигается только после нескольких шагов и при неплохом ходе свидания
-        if (goalOpen(d, level)) { d.goalDone = true; d.goalTurn = turn; d.score += L.goal; moved = true; }
+        if (goalOpen(d, level)) { d.goalDone = true; d.goalTurn = turn; d.score += L.goal; note('goal', d.goal, L.goal); moved = true; }
         else ignoredGoal = true;
     }
     if (up.recap) d.recap = up.recap;
@@ -108,6 +120,7 @@ export function applyDateUp(d, up, turn, level) {
     d.score = clamp(d.score, 0, 100);
     if (moved) d.lastUpdate = turn;
     if (d.notes.length > 10) d.notes = d.notes.slice(-10);
+    if (d.log.length > 30) d.log = d.log.slice(-30);
     // старые закрытые шаги не копим
     const closed = d.steps.filter(s => s.state !== 'open');
     if (closed.length > 16) d.steps = [...closed.slice(-16), ...openSteps(d)];
@@ -120,6 +133,7 @@ export function toggleStep(date, n, turn, level) {
     if (!s || date.status !== 'active' || s.state !== 'open') return;
     s.state = 'done'; s.endTurn = turn; s.manual = true;
     date.score = clamp(date.score + levelOf(level).step, 0, 100);
+    (date.log = date.log || []).push({ kind: 'done', t: s.t, delta: levelOf(level).step, turn });
     date.lastUpdate = turn;
 }
 
@@ -127,6 +141,8 @@ export function toggleStep(date, n, turn, level) {
 export function resultOf(d) {
     const score = typeof d === 'number' ? d : d.score;
     if (typeof d === 'object' && failCount(d) >= 2 && failCount(d) > doneCount(d) && score < 25) return DATE_RESULTS[DATE_RESULTS.length - 1];
+    // короткое, но тёплое свидание без срывов — не «не задалось»
+    if (typeof d === 'object' && !failCount(d) && doneCount(d) >= 2 && score < 25) return DATE_RESULTS.find(r => r.key === 'awkward');
     return DATE_RESULTS.find(r => score >= r.min) || DATE_RESULTS[DATE_RESULTS.length - 1];
 }
 
@@ -160,7 +176,7 @@ export function dateChanceInfo(state, turn, base = DATE_CHANCE.base) {
     const p = state.pair;
     if (!p) return { chance: 0, why: 'nopair' };
     if (p.r < DATE_ROM_MIN) return { chance: 0, why: 'norom', r: p.r };
-    if (['active', 'offered', 'scheduled'].includes(state.date?.status)) return { chance: 0, why: state.date.status };
+    if (['active', 'offered', 'scheduled', 'pending'].includes(state.date?.status)) return { chance: 0, why: state.date.status };
     const left = DATE_COOLDOWN - (turn - (state.lastDateEnd ?? -99));
     if (left > 0) return { chance: 0, why: 'cooldown', left };
     // дружба заметно упала за последние ответы — помириться: шанс в 2,5 раза выше

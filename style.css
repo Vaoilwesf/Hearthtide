@@ -797,25 +797,34 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-who-char > em { color: var(--ht-rom); }
 .ht-who-user > em { color: var(--ht-acc); }
 :is(.ht-ib, .ht-cards) .ht-date-step[disabled] { cursor: default; }
-/* смена шага: старый зачёркивается и уходит, новый въезжает на его место */
-.ht-slot { display: grid; }
-.ht-slot > * { grid-area: 1 / 1; }
-.ht-step-out { position: relative; animation: ht-step-out 1.1s ease-in 0.3s both; }
-.ht-step-out > span { position: relative; }
-.ht-step-out > span::after { content: ''; position: absolute; left: 0; right: 0; top: 52%; height: 1.5px; background: currentColor;
-    transform: scaleX(0); transform-origin: left; animation: ht-strike 0.5s ease-out 0.3s both; }
-.ht-step-out.ht-step-failed > i { color: var(--ht-mute); }
-.ht-step-in { animation: ht-step-in 0.8s cubic-bezier(.2, .9, .3, 1) 1.3s both; }
+/* смена шага: закрытый остаётся зачёркнутым до следующего ответа, новый въезжает под ним */
+.ht-slot { display: flex; flex-direction: column; gap: 3px; }
+.ht-step-gone { opacity: 0.62; }
+.ht-step-gone > span { position: relative; text-decoration: line-through; text-decoration-thickness: 1.5px; }
+.ht-step-gone.ht-step-failed > i { color: var(--ht-mute); }
+/* один раз: черта прочерчивается слева направо, потом шаг гаснет */
+.ht-slot-anim .ht-step-gone > span { text-decoration: none; }
+.ht-slot-anim .ht-step-gone > span::after { content: ''; position: absolute; left: 0; right: 0; top: 52%; height: 1.5px; background: currentColor;
+    transform: scaleX(0); transform-origin: left; animation: ht-strike 0.7s ease-out 0.3s forwards; }
+.ht-slot-anim .ht-step-gone { animation: ht-gone 0.6s ease-in 1s both; }
+.ht-step-new { animation: ht-step-in 0.8s cubic-bezier(.2, .9, .3, 1) 1.2s both; }
 @keyframes ht-strike { to { transform: scaleX(1); } }
-@keyframes ht-step-out { 0%, 45% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateX(-22px); } }
+@keyframes ht-gone { from { opacity: 1; } to { opacity: 0.62; } }
 @keyframes ht-step-in { from { opacity: 0; transform: translateX(22px); } to { opacity: 1; transform: none; } }
+/* помощник читает ответ — карточка чуть приглушена, по полоске бежит блик */
+.ht-date-busy .ht-date-meter { position: relative; overflow: hidden; }
+.ht-date-busy .ht-date-meter::after { content: ''; position: absolute; inset: 0; width: 40%;
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--ht-fg) 35%, transparent), transparent);
+    animation: ht-busy 1.2s linear infinite; }
+@keyframes ht-busy { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 .ht-dnotes { list-style: none; margin: 4px 0 0; padding: 6px 0 0; border-top: 1px dashed var(--ht-line); display: flex; flex-direction: column; gap: 2px; font-size: 0.84em; color: var(--ht-mute); }
 .ht-dnotes > li { display: flex; gap: 6px; align-items: baseline; }
 .ht-dnotes > li > i { color: var(--c); flex: none; font-size: 0.85em; }
 .ht-dnotes > li.ht-bad > i { color: var(--ht-mute); }
 @media (prefers-reduced-motion: reduce) {
-    .ht-dhearts > i, .ht-step-out, .ht-step-out > span::after, .ht-step-in { animation: none; }
-    .ht-step-out { display: none; }
+    .ht-dhearts > i, .ht-slot-anim .ht-step-gone, .ht-step-new, .ht-date-busy .ht-date-meter::after { animation: none; }
+    .ht-slot-anim .ht-step-gone > span { text-decoration: line-through; }
+    .ht-slot-anim .ht-step-gone > span::after { display: none; }
     .ht-dstrip > i { transition: none; }
 }
 
@@ -849,3 +858,83 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-kin-pick > label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .ht-kin-pick input { accent-color: var(--ht-acc); margin: 0; }
 .ht-notkin[hidden] { display: none; }
+
+/* «показать ещё» под галереей людей */
+:is(.ht-ib) .ht-cc-more { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; margin-top: 8px; padding: 5px 10px;
+    border-radius: 8px; border: 1px dashed var(--ht-line-strong); color: var(--ht-mute); font-size: 0.86em; cursor: pointer; }
+:is(.ht-ib) .ht-cc-more:hover { background: var(--ht-soft-2); color: var(--ht-fg); }
+/* приглашение на день рождения — в цветах праздника, не свидания */
+.ht-bdinv { border-color: color-mix(in srgb, var(--ht-acc) 60%, transparent); background: color-mix(in srgb, var(--ht-acc) 7%, transparent); }
+.ht-bdinv .ht-dinvite > i, .ht-planned-bd > i { color: var(--ht-acc); }
+.ht-bdinv .ht-portrait > .ht-ava { border-color: color-mix(in srgb, var(--ht-acc) 75%, transparent); box-shadow: 0 0 10px color-mix(in srgb, var(--ht-acc) 40%, transparent); }
+.ht-planned.ht-planned-bd { border-color: color-mix(in srgb, var(--ht-acc) 45%, transparent); background: color-mix(in srgb, var(--ht-acc) 7%, transparent); }
+
+/* ═══ Карточка идущего свидания — ровная сетка ═══ */
+.ht-date.ht-date-on { gap: 8px; padding: 10px 12px 10px; }
+/* шапка: портрет · полоска «как идёт» · название · успех */
+.ht-date-on .ht-dhead { display: grid; grid-template-columns: auto 6px minmax(0, 1fr) auto; align-items: center; gap: 0 10px; }
+.ht-date-on .ht-portrait { margin-right: 4px; }
+.ht-date-on .ht-dstrip { margin: 0; height: 50px; }
+.ht-date-on .ht-dmain { padding: 0; gap: 2px; }
+.ht-date-on .ht-dtitle { font-size: 1.05em; line-height: 1.25; }
+.ht-date-on .ht-dwhen { display: flex; align-items: baseline; gap: 5px; }
+.ht-date-on .ht-dwhen > i { color: var(--c); font-size: 0.85em; }
+.ht-date-on .ht-dvibe { font-size: 0.86em; line-height: 1.3; }
+.ht-dscore { display: flex; flex-direction: column; align-items: flex-end; align-self: start; line-height: 1.1; }
+.ht-dscore > b { font-size: 1.3em; font-weight: 700; color: var(--c); font-variant-numeric: tabular-nums; }
+.ht-dscore > small { font-size: 0.72em; color: var(--ht-mute); text-transform: lowercase; }
+.ht-date-on .ht-date-meter { height: 8px; }
+
+/* главная цель — отдельный подсвеченный блок */
+.ht-date-on .ht-dgoal { display: block; margin: 0; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--c) 55%, transparent); background: color-mix(in srgb, var(--c) 10%, transparent); }
+.ht-dgoal-head { display: flex; align-items: center; gap: 7px; font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.06em; color: var(--c); font-weight: 700; }
+.ht-dgoal-head > em { margin-left: auto; font-style: normal; text-transform: none; letter-spacing: 0; font-weight: 600;
+    padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; font-size: 1em; }
+.ht-dgoal-text { margin: 4px 0 0; font-size: 1em; font-weight: 600; line-height: 1.35; color: var(--ht-fg); overflow-wrap: anywhere; }
+.ht-dgoal-how { display: flex; align-items: baseline; gap: 6px; margin: 4px 0 0; font-size: 0.8em; color: var(--ht-mute); line-height: 1.35; }
+.ht-dgoal-how > i { flex: none; }
+.ht-date-on .ht-goal-locked { border-style: dashed; }
+.ht-date-on .ht-goal-locked .ht-dgoal-head { color: var(--ht-mute); }
+.ht-date-on .ht-goal-locked .ht-dgoal-text { color: color-mix(in srgb, var(--ht-fg) 80%, transparent); }
+.ht-date-on .ht-goal-done { box-shadow: 0 0 12px color-mix(in srgb, var(--c) 35%, transparent); }
+.ht-date-on .ht-goal-done .ht-dgoal-how > i, .ht-date-on .ht-goal-open .ht-dgoal-how > i { color: var(--c); }
+
+/* мысль {{char}} */
+.ht-date-on .ht-dthought { display: flex; align-items: baseline; gap: 8px; margin: 0; font-style: italic; font-size: 0.9em; line-height: 1.4; }
+.ht-date-on .ht-dthought > i { color: var(--c); flex: none; font-style: normal; }
+.ht-date-on .ht-dthought b { font-style: normal; font-weight: 600; color: var(--ht-mute); margin-right: 6px; font-size: 0.9em; }
+
+/* шаги: подзаголовок и ровные строки — значок · текст · кто */
+.ht-dsec { display: flex; align-items: center; gap: 7px; margin-top: 2px; font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ht-mute); font-weight: 700; }
+.ht-dsec > i { color: var(--c); }
+.ht-date-on .ht-date-steps { margin: 0; gap: 4px; }
+:is(.ht-ib, .ht-cards) .ht-date-on .ht-date-step { grid-template-columns: 1.1em minmax(0, 1fr) auto; align-items: start; gap: 8px; padding: 5px 8px;
+    border-radius: 7px; background: var(--ht-soft); line-height: 1.35; }
+.ht-date-on .ht-date-step > i { margin-top: 0.15em; color: var(--c); }
+.ht-date-on .ht-date-step > span { overflow-wrap: anywhere; }
+.ht-date-on .ht-date-step > em { align-self: center; padding: 1px 8px; border-radius: 999px; font-size: 0.74em; border: 1px solid currentColor; }
+
+/* ход свидания — свёрнут, для памяти */
+.ht-dlog { font-size: 0.86em; }
+.ht-dlog > summary { display: flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; color: var(--ht-mute); padding: 2px 0; }
+.ht-dlog > summary::-webkit-details-marker { display: none; }
+.ht-dlog > summary > i:first-child { color: var(--c); }
+.ht-dlog > summary > em { font-style: normal; font-size: 0.85em; padding: 0 6px; border-radius: 999px; border: 1px solid var(--ht-line); }
+.ht-dlog-chev { margin-left: auto; font-size: 0.8em; transition: transform 0.2s ease; }
+.ht-dlog[open] .ht-dlog-chev { transform: rotate(180deg); }
+.ht-dlog > ol { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ht-dlog li { display: grid; grid-template-columns: 1.1em minmax(0, 1fr) auto; gap: 7px; align-items: baseline; line-height: 1.35; }
+.ht-dlog li > i { color: var(--c); }
+.ht-dlog li > b { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--c); }
+.ht-dlog li.ht-log-failed > i, .ht-dlog li.ht-log-failed > b, .ht-dlog li.ht-log-down > i, .ht-dlog li.ht-log-down > b { color: var(--ht-mute); }
+.ht-dlog li.ht-log-moment > i { color: var(--ht-acc); }
+@media (prefers-reduced-motion: reduce) { .ht-dlog-chev { transition: none; } }
+
+/* в «Отмеченных праздниках»: свидание — с итогом и цветом */
+.ht-res-chip { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; padding: 0 7px; border-radius: 999px; font-style: normal;
+    font-size: 0.78em; border: 1px solid currentColor; color: var(--ht-rom); vertical-align: 1px; }
+.ht-res-chip.ht-res-great { color: var(--ht-rom-hot); }
+.ht-res-chip.ht-res-awkward { color: color-mix(in srgb, var(--ht-rom) 45%, #8d8792); }
+.ht-res-chip.ht-res-bad, .ht-res-chip.ht-res-missed { color: #8d8792; }
+.ht-res-chip.ht-res-terrible { color: var(--ht-fg); background: #141215; border-color: #141215; }

@@ -75,6 +75,13 @@ export function parseSmall(text, name = 'HT') {
         dateEnd: /^(yes|true|1|да|end)/i.test(String(f.date_end || '').trim()),
         // {{char}} в этом ответе позвал на свидание, задуманное помощником
         dateAsked: /^(yes|true|1|да)/i.test(String(f.date_asked || '').trim()),
+        // помощник подтверждает: позвали вслух (yes) или только подумали (no)
+        askedYes: /^(yes|true|да)/i.test(String(f.asked || '').trim()),
+        askedNo: /^(no|false|нет)/i.test(String(f.asked || '').trim()),
+        bdYes: /^(yes|true|да)/i.test(String(f.bd_invited || '').trim()),
+        bdNo: /^(no|false|нет)/i.test(String(f.bd_invited || '').trim()),
+        // кто-то в этом ответе вслух позвал {{user}} на день рождения человека NAME
+        invite: clean(f.invite, 60),
         // один человек праздника: чего он хочет теперь — «Имя: желание»
         who: (() => {
             const m = String(f.who || '').match(/^\s*(.{2,60}?)\s*(?::|\s[—–-]\s)\s*(.+)$/);
@@ -338,28 +345,52 @@ export function parseAt(v) {
 export function parseDateUp(text) {
     const inner = findBlock(text, 'HT-DATE-UP');
     if (inner == null) return null;
-    const up = { start: false, done: [], fail: [], add: [], mood: 0, vibe: null, thought: null, goal: false, end: false, recap: null, best: null };
-    const num = (v) => { const m = String(v || '').match(/\d+/); return m ? +m[0] : null; };
+    const up = { start: false, done: [], fail: [], add: [], moments: [], mood: 0, vibe: null, thought: null, goal: false, end: false, recap: null, best: null };
+    const num = (v) => { const m = String(v || '').match(/^\s*(?:№|#|s)?\s*(\d{1,3})\b/i); return m ? +m[1] : null; };
     for (const raw of inner.split(/\n+/)) {
         const cols = raw.split('|').map(x => x.trim());
         const k = (cols[0] || '').replace(/^[\s\-*•]+/, '').replace(/[:.]+$/, '').toUpperCase();
         if (k === 'START') up.start = true;
-        else if (k === 'DONE' || k === 'FAIL') {
+        else if (k === 'STEP') {
+            // STEP | N | done|failed|open | что вышло — вердикт по каждому открытому шагу
+            const n = num(cols[1]), v = String(cols[2] || '').toLowerCase();
+            if (n == null) continue;
+            if (/^(done|yes|сделан|выполн|да)/.test(v)) up.done.push({ n, note: stepText(cols[3], 160) });
+            else if (/^(fail|failed|no|сорв|провал|нет)/.test(v)) up.fail.push({ n, note: stepText(cols[3], 160) });
+        } else if (k === 'DONE' || k === 'FAIL') {
             const n = num(cols[1]);
-            if (n != null) (k === 'DONE' ? up.done : up.fail).push({ n, note: clean(cols[2], 160) });
+            if (n != null) (k === 'DONE' ? up.done : up.fail).push({ n, note: stepText(cols[2], 160) });
+            else if (stepText(cols[1], 120)) (k === 'DONE' ? up.done : up.fail).push({ byText: stepText(cols[1], 120), note: stepText(cols[2], 160) });
         } else if (k === 'NEW') {
-            const t = clean(cols[1], 120);
-            if (t) up.add.push({ t, whoRaw: clean(cols[2], 40) });
+            // «NEW | 2 | шаг | char» — номер впереди не текст шага
+            let rest = cols.slice(1);
+            if (rest.length > 1 && /^\s*\d{1,3}\s*$/.test(rest[0])) rest = rest.slice(1);
+            const t = stepText(rest[0], 120);
+            if (t) up.add.push({ t, whoRaw: clean(rest[1], 40) });
+        } else if (k === 'MOMENT') {
+            const t = stepText(cols[1], 160);
+            if (t) up.moments.push(t);
         } else if (k === 'MOOD') {
             const v = String(cols[1] || '').trim();
             up.mood = /^(up|better|лучш|\+)/i.test(v) ? 1 : /^(down|worse|хуж|-)/i.test(v) ? -1 : 0;
-        } else if (k === 'VIBE') up.vibe = clean(cols[1], 60);
-        else if (k === 'THOUGHT') up.thought = clean(cols[1], 160);
+        } else if (k === 'VIBE') up.vibe = stepText(cols[1], 60);
+        else if (k === 'THOUGHT') up.thought = stepText(cols[1], 160);
         else if (k === 'GOAL') up.goal = !/^(no|нет|false)/i.test(String(cols[1] || ''));
-        else if (k === 'END') { up.end = true; if (cols[1]) up.recap = cleanSentences(cols[1], 400); }
-        else if (k === 'RECAP') { up.recap = cleanSentences(cols[1], 400); up.best = clean(cols[2], 120); }
+        else if (k === 'END') { up.end = !/^(no|нет|false)/i.test(String(cols[1] || '')); if (cols[1] && !/^(yes|no|да|нет)$/i.test(cols[1])) up.recap = cleanSentences(cols[1], 400); }
+        else if (k === 'RECAP') { up.recap = cleanSentences(cols[1], 400); up.best = stepText(cols[2], 120); }
     }
     return up;
+}
+
+/** Текст шага или пометки: живые слова, а не «2», «…», «STEP» или кусок образца */
+export function stepText(v, max = 120) {
+    const t = clean(v, max);
+    if (!t) return null;
+    const letters = (t.match(/\p{L}/gu) || []).length;
+    if (letters < 4 || !/\p{L}{3,}/u.test(t)) return null;
+    if (/^(step|note|new|done|fail|vibe|thought|recap|best|text|char|user|both|n\/a|none|нет|—)$/i.test(t)) return null;
+    if (/[|<>]|-->|\{\{|\}\}/.test(t)) return null;
+    return t;
 }
 
 /** Итог прошедшего праздника — одна строка */
