@@ -2039,13 +2039,14 @@ function castTabHtml(view, live) {
     const pair = tab === 'all' ? `<div class="ht-cc ht-cc-pair${pr.r > 0 ? ' ht-cc-love' : ''}${pr.unknown ? ' ht-cc-unknown' : ''}">
         <span class="ht-portrait">${avaHtml(cA, c)}<span class="ht-ava-pin" title="${esc(u)}">${avaHtml(uA, u, 'ht-ava-round')}</span>${pr.r > 0 ? '<i class="fa-regular fa-heart ht-pair-mid"></i>' : ''}</span>
         <b class="ht-cc-name">${esc(c)}</b>
-        ${pr.unknown ? `<span class="ht-cc-role ht-mute">${esc(L().pairUnknown)}</span>` : pr.note ? `<span class="ht-cc-role">${esc(pr.note)}</span>` : ''}
         <div class="ht-pair-bars">
             <div class="ht-mini" title="${esc(`${L().friendship}: ${signed(pr.f)} · ${L().rel[relLevel(pr.f)]}`)}"><span class="ht-mini-row"><i class="fa-solid fa-handshake ht-mini-ico"></i>${esc(L().friendship)}<b>${signed(pr.f)}</b></span>${barHtml(pr.f)}</div>
             <div class="ht-mini ht-mini-rom" title="${esc(`${L().romance}: ${signed(pr.r)} · ${L().rom[rl]}`)}"><span class="ht-mini-row"><i class="fa-solid fa-heart ht-mini-ico"></i>${esc(L().romance)}<b>${signed(pr.r)}</b></span>${barHtml(pr.r)}</div>
         </div>
-        ${pr.r !== 0 ? `<span class="ht-rom-chip${pr.r < 0 ? ' ht-rom-neg' : ''}"><i class="fa-solid fa-heart"></i>${esc(L().rom[rl])}</span>` : ''}
-        ${dateLine ? `<span class="ht-pair-date"><i class="fa-solid fa-heart"></i>${esc(L().dateWord)}: ${esc(dateLine)}</span>` : ''}
+        <details class="ht-cc-status"><summary>${L().status}<i class="fa-solid fa-chevron-down"></i></summary>
+            <p>${esc(pr.unknown ? L().pairUnknown : pr.note || `${L().rel[relLevel(pr.f)]} · ${L().rom[rl]}`)}</p>
+            ${dateLine ? `<p><b>${esc(L().dateWord)}:</b> ${esc(dateLine)}</p>` : ''}
+        </details>
         ${live ? `<div class="ht-cc-tools"><button data-act="pair-edit" title="${esc(L().pairEdit)}" aria-label="${esc(L().pairEdit)}"><i class="fa-solid fa-pen"></i></button></div>` : ''}
     </div>` : '';
 
@@ -2080,11 +2081,9 @@ function castTabHtml(view, live) {
     const order = { kin_both: 0, kin_user: 1, kin_char: 2, friend: 3, acquaintance: 4, other: 5 };
     shown.sort((a, b) => (order[a.group] ?? 6) - (order[b.group] ?? 6));
     const cards = shown.map(card).join('');
-    // кого часто называют в истории, а в списке нет — добавить одним нажатием (роли допишет ИИ)
-    const hints = live && tab === 'all' ? castHint().slice(0, 6) : [];
-    const hintRow = hints.length ? `<div class="ht-hints"><span><i class="fa-solid fa-user-plus"></i>${L().hintTitle}</span>${hints.map(x =>
-        `<button data-act="cast-hint" data-name="${esc(x.name)}" title="${esc(L().hintAdd(x.name))}">${esc(x.name)}<em>${x.n}</em></button>`).join('')}</div>` : '';
-    return `${subtabs}<div class="ht-gallery">${pair}${cards || (pair ? '' : `<p class="ht-mute ht-gallery-empty">${L().castEmpty}</p>`)}</div>${hintRow}`;
+    // добавить человека самому — последней карточкой галереи
+    const addCard = live ? `<button class="ht-cc ht-cc-add" data-act="cast-new" title="${esc(L().castAdd)}"><i class="fa-solid fa-user-plus"></i><span>${L().castAdd}</span></button>` : '';
+    return `${subtabs}<div class="ht-gallery">${pair}${cards}${addCard}${!cards && !pair && !addCard ? `<p class="ht-mute ht-gallery-empty">${L().castEmpty}</p>` : ''}</div>`;
 }
 
 // Итог праздника — под спойлером «Итог», чтобы список был коротким
@@ -2104,10 +2103,18 @@ function recapPartsHtml(p) {
 // Правка человека — отдельным окном поверх таверны: перерисовки чата его не сбрасывают,
 // на телефоне — на весь экран, поля крупные
 function closeCastEditor() {
+    castDraft = null;
     const d = document.querySelector('.ht-modal');
     if (!d) return;
     try { d.close?.(); } catch (e) { /* пусто */ }
     d.remove();
+}
+// новый человек, которого игрок добавляет сам: в список попадает только после «Сохранить»
+let castDraft = null;
+function openCastNew() {
+    castDraft = { id: `c-${state.turn}-u-${Math.random().toString(36).slice(2, 6)}`, name: null, group: 'other', toU: null, toC: null, bday: null,
+        rel: { user: 0, char: 0 }, note: { user: null, char: null }, rom: { user: null, char: null }, scale: 2, turn: state.turn, byHand: true };
+    openCastEditor(castDraft.id);
 }
 function openCastEditor(cid) {
     try { openCastEditorRaw(cid); } catch (e) {
@@ -2116,8 +2123,10 @@ function openCastEditor(cid) {
     }
 }
 function openCastEditorRaw(cid) {
+    const draft = castDraft;
     closeCastEditor();
-    const p = (state.cast || []).find(c => c.id === cid);
+    castDraft = draft;
+    const p = (state.cast || []).find(c => c.id === cid) || (castDraft?.id === cid ? castDraft : null);
     if (!p) { window.toastr?.warning?.(L().editGone, 'Hearthtide'); return; }
     // <dialog> через showModal() браузер кладёт в «верхний слой» — поверх всего, что есть у таверны
     const native = typeof HTMLDialogElement === 'function' && 'showModal' in HTMLDialogElement.prototype;
@@ -2210,9 +2219,20 @@ function castFormHtml(p, photo) {
 
 // Правка человека игроком: переживает свайпы; ИИ после неё не трогает имя, роли и дату, а отношения — если игрок их менял
 function saveCast(cid, f) {
-    const cur = (state.cast || []).find(c => c.id === cid);
-    if (!cur) return false;
+    let cur = (state.cast || []).find(c => c.id === cid);
     const name = String(f.name || '').trim() || null;
+    // новый человек от игрока: нужно хоть имя или кем приходится
+    if (!cur && castDraft?.id === cid) {
+        if (!name && !String(f.toU || '').trim() && !String(f.toC || '').trim()) { window.toastr?.warning?.(L().castNeedName, 'Hearthtide'); return false; }
+        if (name && findCast(state, name)) { window.toastr?.warning?.(L().castExists(name), 'Hearthtide'); return false; }
+        if (name) state.castNo = (state.castNo || []).filter(x => !samePerson(x, name));
+        const add = (st) => { st.cast = st.cast || []; if (!st.cast.some(c => c.id === cid)) st.cast.push(clone(castDraft)); };
+        add(state);
+        applyToSnapshots(add);
+        castDraft = null;
+        cur = state.cast.find(c => c.id === cid);
+    }
+    if (!cur) return false;
     const bdayRaw = String(f.bday || '').trim();
     const bday = bdayRaw ? parseBday(bdayRaw) : null;
     if (bdayRaw && !bday) { window.toastr?.warning?.(L().badBday, 'Hearthtide'); return false; }
@@ -2650,8 +2670,8 @@ function bindBlock(block) {
             delete avatars()[t.dataset.cid];
             saveChatDebounced();
             renderBlock(id);
-        } else if (t.dataset.act === 'cast-hint') {
-            addCastByHand(t.dataset.name);
+        } else if (t.dataset.act === 'cast-new') {
+            openCastNew();
         } else if (t.dataset.act === 'pair-edit') {
             openPairEditor();
         } else if (t.dataset.act === 'cast-edit') {

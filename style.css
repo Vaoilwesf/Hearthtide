@@ -723,8 +723,9 @@ dialog.ht-modal:not([open]) { display: none; }
     box-shadow: 0 0 10px color-mix(in srgb, var(--ht-rom) 40%, transparent); }
 .ht-portrait-lg > .ht-ava { width: 60px; height: 76px; }
 .ht-ava-pin { position: absolute; right: -10px; bottom: -6px; line-height: 0; }
-.ht-ava-pin > .ht-ava { width: 24px; height: 24px; font-size: 0.55em; border: 2px solid var(--ht-acc);
-    box-shadow: 0 0 8px color-mix(in srgb, var(--ht-acc) 60%, transparent); }
+/* кружок {{user}} — розовая обводка и своя мягкая подсветка (во «Людях» и на карточке свидания) */
+.ht-ava-pin > .ht-ava { width: 24px; height: 24px; font-size: 0.55em; border: 2px solid var(--ht-rom);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--ht-rom) 60%, transparent); }
 .ht-portrait-lg .ht-ava-pin > .ht-ava { width: 30px; height: 30px; }
 .ht-portrait > .ht-pair-mid { position: absolute; top: -7px; right: -9px; font-size: 0.85em; }
 
@@ -833,3 +834,11 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-yr.ht-res-terrible > i, .ht-yr.ht-res-terrible > em { color: #3a3539; }
 .ht-yr.ht-res-terrible > i { text-shadow: 0 0 1px var(--ht-line-strong); }
 .ht-yr[class*="ht-res-"] > em { border-color: currentColor; }
+
+/* добавить человека самому — пунктирная карточка в конце галереи */
+:is(.ht-ib) .ht-cc.ht-cc-add {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+    min-height: 120px; border: 1px dashed var(--ht-line-strong); background: transparent; color: var(--ht-mute); cursor: pointer;
+}
+:is(.ht-ib) .ht-cc.ht-cc-add:hover { background: var(--ht-soft-2); color: var(--ht-fg); }
+:is(.ht-ib) .ht-cc.ht-cc-add > i { font-size: 1.4em; color: var(--ht-acc); }

@@ -32,8 +32,13 @@ function fields(inner) {
 function findBlock(text, name, loose = true) {
     const t = String(text ?? '');
     const strict = new RegExp(`<!--\\s*${name}(?![\\w-])[\\s:]*([\\s\\S]*?)-->`, 'gi');
-    let m, last = null;
-    while ((m = strict.exec(t)) !== null) last = m[1];
+    let m, last = null, lastEnd = 0;
+    while ((m = strict.exec(t)) !== null) { last = m[1]; lastEnd = strict.lastIndex; }
+    // «<!-- HT-CAST -->» пустой, а строки идут после него — берём их до следующего блока
+    if (last != null && !last.trim() && loose) {
+        const after = t.slice(lastEnd).split(/<!--/)[0];
+        if (after.trim()) return after;
+    }
     if (last != null || !loose) return last;
     const noFence = t.replace(/```[a-z]*|```/gi, '');
     const open = noFence.match(new RegExp(`(?:<!--\\s*)?${name}(?![\\w-])[\\s:]*([\\s\\S]*?)(?:-->|$)`, 'i'));
