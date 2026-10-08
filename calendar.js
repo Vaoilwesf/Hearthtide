@@ -70,6 +70,19 @@ export function npcHoliday(c, start) {
     h.id = holidayId(h);
     return h;
 }
+/**
+ * Подарок имениннику от {{char}} и {{user}}: общий или каждый свой.
+ * Выбрал игрок — так и есть; иначе общий, если они пара (романтика от 30) или это их общая семья.
+ */
+export const GIFT_JOINT_ROM = 30;
+export function giftJoint(state, h) {
+    if (!h?.npc) return false;
+    const m = state.giftMode?.[h.id];
+    if (m) return m === 'joint';
+    const c = (state.cast || []).find(x => x.id === h.cid);
+    return (state.pair?.r ?? 0) >= GIFT_JOINT_ROM || c?.group === 'kin_both';
+}
+
 /** Дни рождения людей истории, которые отмечаются: вчерашний (для «после») и ближайший */
 export function npcBirthdays(state) {
     if (state.today == null) return [];

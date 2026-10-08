@@ -951,3 +951,23 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-plan-where { display: flex; align-items: baseline; gap: 7px; margin: 0 0 6px; color: var(--ht-mute); font-size: 0.92em; }
 .ht-plan-where > i { color: var(--ht-acc); flex: none; }
 .ht-plan-where > span { overflow-wrap: anywhere; }
+
+/* ═══ Подарок имениннику: общий или от каждого ═══ */
+.ht-gifts { display: flex; flex-direction: column; gap: 6px; margin: 0 0 8px; padding: 8px 10px; border-radius: 10px;
+    border: 1px dashed color-mix(in srgb, var(--ht-acc) 50%, transparent); }
+.ht-gifts-head { display: flex; align-items: center; gap: 7px; }
+.ht-gifts-head > i { color: var(--ht-acc); }
+.ht-gifts-head > b { flex: 1; min-width: 0; font-weight: 700; overflow-wrap: anywhere; }
+:is(.ht-ib) .ht-gift-mode { display: inline-flex; align-items: center; gap: 5px; flex: none; padding: 2px 9px; border-radius: 999px;
+    border: 1px solid var(--ht-line-strong); color: var(--ht-mute); font-size: 0.82em; }
+:is(.ht-ib) .ht-gift-mode:hover { color: var(--ht-fg); background: var(--ht-soft-2); }
+.ht-gift-row { display: flex; align-items: flex-start; gap: 9px; }
+.ht-gift-row > i { color: var(--ht-acc); padding-top: 3px; }
+.ht-gift-row > div { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.ht-gift-row span { font-size: 0.82em; color: var(--ht-mute); }
+.ht-gift-row b { font-weight: 600; overflow-wrap: anywhere; }
+.ht-gift-row b.ht-mute-b { font-weight: 400; font-style: italic; color: var(--ht-mute); }
+.ht-gift-row.ht-done { opacity: 0.75; }
+.ht-gift-edit .text_pole { margin: 2px 0 0; color: var(--ht-fg); }
+.ht-gift-done { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85em; color: var(--ht-mute); cursor: pointer; }
+.ht-gift-done input { accent-color: var(--ht-acc); margin: 0; }

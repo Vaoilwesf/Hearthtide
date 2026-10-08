@@ -13,7 +13,7 @@ import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.j
 import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseDateUp, parseRecapParts, stripBlocks } from './tag.js';
 import { PAIR_DEFAULT, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, levelOf, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN } from './romance.js';
 import { CAST_GROUPS, KIN_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast, nameCandidates } from './cast.js';
-import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday } from './calendar.js';
+import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday, giftJoint } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, buildDateSideMessages, giftTarget } from './prompts.js';
 import { listProfiles, gatherSources, loreFor, sendSide, reasonOf } from './side.js';
 import { strings } from './i18n.js';
@@ -148,6 +148,8 @@ function defaultState() {
         charNow: null,          // { hid, text, turn } — мысль или действие персонажа сейчас
         charLog: {},            // hid → [{ text, turn }] — цепочка шагов персонажа, чтобы действия были последовательны
         charGift: null,         // { hid, text, done } — подарок персонажа игроку
+        userGift: {},           // hid → { text, done, by: hand|story } — подарок {{user}} имениннику: вписал игрок или {{user}} сам сказал
+        giftMode: {},           // hid → joint|own — подарок имениннику общий или каждый свой (выбор игрока)
         langSlip: false,        // в прошлом ответе значения пришли не на том языке
         forceCal: false,
         banned: [],             // ключи названий праздников, которые игрок удалил
@@ -267,7 +269,7 @@ function takeSnapshot(beforeMsg) {
     if (state.snapshots.length > 20) state.snapshots = state.snapshots.slice(-20);
 }
 // Решения игрока (удалённые праздники) переживают откаты
-const USER_FIELDS = ['banned', 'bannedNames', 'birthdayOff', 'calIgnore', 'offerNo', 'evDecisions', 'castNo', 'dateDecisions', 'pairSet', 'bdDecisions'];
+const USER_FIELDS = ['banned', 'bannedNames', 'birthdayOff', 'calIgnore', 'offerNo', 'evDecisions', 'castNo', 'dateDecisions', 'pairSet', 'bdDecisions', 'userGift', 'giftMode'];
 
 function restoreSnapshot(snap) {
     const keep = state.snapshots;
@@ -783,6 +785,13 @@ function processReply(N) {
                 text: sm.gift && langOk(sm.gift) ? sm.gift : prev?.text || null,
                 done: !!(sm.giftDone || prev?.done),
             };
+        }
+        // подарок {{user}} имениннику — то, что {{user}} сам написал; вписанное игроком не перезаписываем
+        if (phase.h.npc && (sm.ugift || sm.ugiftDone) && !giftJoint(state, phase.h)) {
+            const hid = phase.h.id, prev = state.userGift?.[hid];
+            if (sm.ugift && !langOk(sm.ugift)) slip = true;
+            const text = prev?.by === 'hand' && prev.text ? prev.text : (sm.ugift && langOk(sm.ugift) ? sm.ugift : prev?.text || null);
+            state.userGift = { ...(state.userGift || {}), [hid]: { text, done: !!(sm.ugiftDone || prev?.done), by: prev?.by === 'hand' ? 'hand' : 'story' } };
         }
     }
     if (day && phase.kind === 'today' && ['title', 'where', 'morning', 'day', 'evening', 'night'].some(k => day[k] && !langOk(day[k]))) { slip = true; }
@@ -1402,6 +1411,32 @@ function savePlaceEdit(value) {
     return true;
 }
 
+// ─── Подарки имениннику: свой подарок {{user}} и «общий / каждый свой» — решения игрока (USER_FIELDS) ───
+function npcPhase() {
+    const ph = phaseOf(state);
+    return ph.h?.npc && (ph.kind === 'prep' || ph.kind === 'today') ? ph.h : null;
+}
+function saveUserGift(text, done) {
+    const h = npcPhase();
+    if (!h) return;
+    const t = String(text || '').trim().slice(0, 120);
+    const map = { ...(state.userGift || {}) };
+    if (t || done) map[h.id] = { text: t || null, done: !!done, by: 'hand' };
+    else delete map[h.id];
+    state.userGift = map;
+    saveState();
+    injectPrompts();
+    window.toastr?.success?.(L().saved, 'Hearthtide');
+}
+function toggleGiftMode() {
+    const h = npcPhase();
+    if (!h) return;
+    state.giftMode = { ...(state.giftMode || {}), [h.id]: giftJoint(state, h) ? 'own' : 'joint' };
+    saveState();
+    injectPrompts();
+    renderAll();
+}
+
 // ─── Удаление праздника игроком: больше не предлагается и нигде не показывается ───
 function deleteHoliday(hid) {
     const h = allHolidays(state).find(x => x.id === hid);
@@ -1518,7 +1553,13 @@ function viewSnapshot(phase) {
                 evts: clone(state.evts.filter(e => e.hid === hid)),
                 charGift: state.charGift?.hid === hid ? { text: state.charGift.text, done: state.charGift.done } : null,
                 giftTo: giftTarget(state, phase.h, getUserName(), getCharName()),
-                gifts: hasGifts(state, phase.h) && giftTarget(state, phase.h, getUserName(), getCharName()).toLowerCase() !== getCharName().toLowerCase(),
+                // у чужого дня рождения подарки — своим блоком: общий или от каждого
+                npcGifts: phase.h.npc ? {
+                    joint: giftJoint(state, phase.h),
+                    char: state.charGift?.hid === hid ? { text: state.charGift.text, done: state.charGift.done } : null,
+                    user: state.userGift?.[hid] ? { ...state.userGift[hid] } : null,
+                } : null,
+                gifts: !phase.h.npc && hasGifts(state, phase.h) && giftTarget(state, phase.h, getUserName(), getCharName()).toLowerCase() !== getCharName().toLowerCase(),
             };
         })(),
     };
@@ -2804,6 +2845,31 @@ function bodyHtml(view, live, tab = 'now') {
             ${[bp.toU && `${L().toWhom(getUserName())}: ${bp.toU}`, bp.toC && `${L().toWhom(getCharName())}: ${bp.toC}`].filter(Boolean).map(t => `<em>${esc(t)}</em>`).join('')}
         </div></div>` : '';
 
+    // Подарки имениннику: общий от двоих — или от каждого свой; свой подарок {{user}} вписывает игрок
+    let giftsCard = '';
+    const ng = view.npcGifts;
+    if (bp && ng) {
+        const u = getUserName(), c = getCharName();
+        const row = (who, g, extra = '', empty = L().giftUndecided) => `<div class="ht-gift-row${g?.done ? ' ht-done' : ''}"><i class="fa-solid ${g?.done ? 'fa-circle-check' : 'fa-gift'}"></i>
+            <div><span>${esc(who)}</span><b class="${g?.text || g?.done ? '' : 'ht-mute-b'}">${esc(g?.done ? (g.text || L().giftGiven) : (g?.text || empty))}</b></div>${extra}</div>`;
+        let body;
+        if (ng.joint) body = row(L().giftFromBoth(c, u), ng.char);
+        else {
+            const ug = ng.user;
+            const userRow = live && ui.editing === 'ugift'
+                ? `<div class="ht-gift-row ht-gift-edit"><i class="fa-solid fa-gift"></i><div><span>${esc(L().giftFrom(u))}</span>
+                    <input class="text_pole" data-ed="ugift" value="${esc(ug?.text || '')}" placeholder="${esc(L().userGiftPh)}" maxlength="120">
+                    <label class="ht-gift-done"><input type="checkbox" data-ed="ugiftDone" ${ug?.done ? 'checked' : ''}>${esc(L().giftGiven)}</label>
+                    <div class="ht-edit-actions"><button class="ht-btn" data-act="edit-cancel">${L().cancel}</button><button class="ht-btn ht-btn-main" data-act="ugift-save"><i class="fa-solid fa-check"></i>${L().save}</button></div></div></div>`
+                : row(L().giftFrom(u), ug,
+                    live ? `<button class="ht-del ht-edit-btn" data-act="ugift-edit" title="${esc(L().userGiftEdit)}" aria-label="${esc(L().userGiftEdit)}"><i class="fa-solid fa-pen"></i></button>` : '',
+                    L().userGiftNone);
+            body = row(L().giftFrom(c), ng.char) + userRow;
+        }
+        const toggle = live ? `<button class="ht-gift-mode" data-act="gift-mode" title="${esc(ng.joint ? L().giftOwnTip : L().giftJointTip)}"><i class="fa-solid ${ng.joint ? 'fa-people-arrows' : 'fa-handshake'}"></i><span>${esc(ng.joint ? L().giftOwn : L().giftJoint)}</span></button>` : '';
+        giftsCard = `<div class="ht-gifts"><div class="ht-gifts-head"><i class="fa-solid fa-gift"></i><b>${esc(L().giftsFor(bp.name))}</b>${toggle}</div>${body}</div>`;
+    }
+
     // Персонаж — всегда сверху, своя карточка: важность, текущий шаг, что было до, подарок
     let charCard = '';
     if ((view.kind === 'prep' || view.kind === 'today') && view.care) {
@@ -2891,6 +2957,7 @@ function bodyHtml(view, live, tab = 'now') {
         ${npcCard}
         ${view.kind === 'today' || bp ? (worldMini ? `<div class="ht-world-mini"><i class="fa-solid fa-location-dot"></i>${worldMini}</div>` : '') : (world ? `<div class="ht-world">${world}</div>` : '')}
         ${charCard}
+        ${giftsCard}
         ${eventsSec}
         ${main}
         ${peopleSec}
@@ -2942,6 +3009,15 @@ function bindBlock(block) {
                 window.toastr?.success?.(L().saved, 'Hearthtide');
                 renderAll();
             }
+        } else if (t.dataset.act === 'ugift-edit') {
+            ui.editing = 'ugift';
+            renderBlock(id);
+        } else if (t.dataset.act === 'ugift-save') {
+            saveUserGift(block.querySelector('[data-ed="ugift"]')?.value, !!block.querySelector('[data-ed="ugiftDone"]')?.checked);
+            ui.editing = null;
+            renderAll();
+        } else if (t.dataset.act === 'gift-mode') {
+            toggleGiftMode();
         } else if (t.dataset.act === 'ev-yes' || t.dataset.act === 'ev-no') {
             decideEvent(t.dataset.eid, t.dataset.act === 'ev-yes' ? 'accepted' : 'declined');
         } else if (t.dataset.act === 'date-yes' || t.dataset.act === 'date-no') {

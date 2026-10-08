@@ -66,6 +66,9 @@ export function parseSmall(text, name = 'HT') {
         mean: clean(f.mean, 240),                                   // смысл праздника, который игрок переименовал
         giftDone: /^(true|yes|1|да)$/i.test(String(f.gift_done || '').trim()),
         giftTo: clean(f.gift_to, 60),
+        // подарок {{user}} имениннику — только то, что {{user}} сам написал в своём сообщении
+        ugift: clean(f.ugift, 160),
+        ugiftDone: /^(true|yes|1|да)$/i.test(String(f.ugift_done || '').trim()),
         // {{char}} и {{user}}: дружба / романтика −100…100 и коротко, как они сейчас
         bond: parseBond(f.bond, inner),
         bondNote: clean(f.bond_note, 60),
