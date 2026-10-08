@@ -35,7 +35,8 @@ const LIMIT = { card: 1400, persona: 600, lore: 1800, msg: 800, perMsg: 650 };
 
 /** Карточка, персона, сработавшие записи лорбука и последние сообщения */
 /** newFrom — сообщения после этого номера помечаются [NEW]: помощник судит ход свидания только по ним */
-export async function gatherSources(upTo, depth = 10, newFrom = null, loreLimit = LIMIT.lore) {
+/** newLimit — сколько символов отдать от каждого [NEW]-сообщения: ход свидания судят по ним, обрезать нельзя */
+export async function gatherSources(upTo, depth = 10, newFrom = null, loreLimit = LIMIT.lore, newLimit = LIMIT.msg) {
     const c = ctxST();
     const sub = (t) => { try { return c?.substituteParams ? c.substituteParams(t) : t; } catch (e) { return t; } };
     let fields = {};
@@ -49,9 +50,10 @@ export async function gatherSources(upTo, depth = 10, newFrom = null, loreLimit 
     const parts = [];
     let total = 0;
     for (let i = msgs.length - 1; i >= 0; i--) {
-        const mark = newFrom != null && msgs[i].ht_i > newFrom ? '[NEW] ' : '';
-        const line = `${mark}${msgs[i].name || (msgs[i].is_user ? 'User' : 'Character')}: ${cut(msgs[i].mes, LIMIT.msg)}`;
-        if (total + line.length > depth * LIMIT.perMsg && parts.length) break;   // в среднем ~650 символов на сообщение
+        const fresh = newFrom != null && msgs[i].ht_i > newFrom;
+        const line = `${fresh ? '[NEW] ' : ''}${msgs[i].name || (msgs[i].is_user ? 'User' : 'Character')}: ${cut(msgs[i].mes, fresh ? newLimit : LIMIT.msg)}`;
+        // новые — всегда целиком; старые — пока влезают (в среднем ~650 символов на сообщение)
+        if (!fresh && total + line.length > depth * LIMIT.perMsg && parts.length) break;
         parts.unshift(line);
         total += line.length;
     }

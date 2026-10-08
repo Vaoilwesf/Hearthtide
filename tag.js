@@ -340,23 +340,36 @@ export function parseAt(v) {
 
 /**
  * Ход свидания (помощник или основная модель):
- *   START                       — намеченное свидание началось
- *   DONE | N | что вышло        — шаг N случился
- *   FAIL | N | что не так       — шаг N попробовали, но вышло плохо
- *   NEW | шаг | char|user|both  — новый шаг на освободившееся место
- *   MOOD | up|down · VIBE | как идёт · THOUGHT | мысль {{char}} · GOAL · END · RECAP | итог | лучший момент
+ *   START                         — намеченное свидание началось
+ *   STATE | on|ending|over | ПОЧЕМУ — идёт / подходит к концу / закончилось
+ *   STEP | N | done|failed|open | что вышло — вердикт по каждому открытому шагу
+ *   NEW | шаг | char|both         — новый шаг на освободившееся место
+ *   MOMENT | что было             — признание, поцелуй, смелый или нежный жест
+ *   GIFT | КТО | ЧТО              — вещь, которую кто-то вручил (не действие)
+ *   MOOD | up|down|same · VIBE · THOUGHT · GOAL | yes · RECAP | итог | лучший момент
+ * Строки образца, переписанные как есть («GOAL», «END», «MOOD | up|down», «STEP | N | done|failed|open»), не засчитываются.
  */
 export function parseDateUp(text) {
     const inner = findBlock(text, 'HT-DATE-UP');
     if (inner == null) return null;
-    const up = { start: false, done: [], fail: [], add: [], moments: [], mood: 0, vibe: null, thought: null, goal: false, end: false, recap: null, best: null };
+    const up = { start: false, phase: null, why: null, done: [], fail: [], add: [], moments: [], gifts: [], mood: 0, vibe: null, thought: null, goal: false, recap: null, best: null };
     const num = (v) => { const m = String(v || '').match(/^\s*(?:№|#|s)?\s*(\d{1,3})\b/i); return m ? +m[1] : null; };
+    const yes = (v) => /^(yes|true|да|1)\b/i.test(String(v || '').trim());
+    // «done|failed|open», «up|down», «on|ending|over» — образец, а не ответ
+    const echo = (raw) => /\b(done\s*\|\s*failed|up\s*\|\s*down|on\s*\|\s*ending|ending\s*\|\s*over|char\s*\|\s*both)\b/i.test(raw);
     for (const raw of inner.split(/\n+/)) {
+        if (echo(raw)) continue;
         const cols = raw.split('|').map(x => x.trim());
         const k = (cols[0] || '').replace(/^[\s\-*•]+/, '').replace(/[:.]+$/, '').toUpperCase();
         if (k === 'START') up.start = true;
-        else if (k === 'STEP') {
-            // STEP | N | done|failed|open | что вышло — вердикт по каждому открытому шагу
+        else if (k === 'STATE') {
+            const v = String(cols[1] || '').toLowerCase();
+            up.phase = /^(over|ended|done|конч|законч|окончен)/.test(v) ? 'over' : /^(ending|closing|winding|подход|заверш)/.test(v) ? 'ending' : /^(on|going|ongoing|идёт|идет|продолж)/.test(v) ? 'on' : up.phase;
+            up.why = stepText(cols[2], 160) || up.why;
+        } else if (k === 'END') {
+            // прежний вид: END засчитываем только с явным «yes» и причиной
+            if (yes(cols[1]) && stepText(cols[2], 160)) { up.phase = 'over'; up.why = stepText(cols[2], 160); }
+        } else if (k === 'STEP') {
             const n = num(cols[1]), v = String(cols[2] || '').toLowerCase();
             if (n == null) continue;
             if (/^(done|yes|сделан|выполн|да)/.test(v)) up.done.push({ n, note: stepText(cols[3], 160) });
@@ -372,15 +385,19 @@ export function parseDateUp(text) {
             const t = stepText(rest[0], 120);
             if (t) up.add.push({ t, whoRaw: clean(rest[1], 40) });
         } else if (k === 'MOMENT') {
-            const t = stepText(cols[1], 160);
+            const t = stepText(cols.slice(1).join(' — '), 160);
             if (t) up.moments.push(t);
+        } else if (k === 'GIFT') {
+            // GIFT | КТО | ЧТО — или GIFT | ЧТО
+            const what = stepText(cols[2] ?? cols[1], 120);
+            const from = cols[2] != null ? clean(cols[1], 40) : null;
+            if (what) up.gifts.push({ from, what });
         } else if (k === 'MOOD') {
             const v = String(cols[1] || '').trim();
             up.mood = /^(up|better|лучш|\+)/i.test(v) ? 1 : /^(down|worse|хуж|-)/i.test(v) ? -1 : 0;
         } else if (k === 'VIBE') up.vibe = stepText(cols[1], 60);
         else if (k === 'THOUGHT') up.thought = stepText(cols[1], 160);
-        else if (k === 'GOAL') up.goal = !/^(no|нет|false)/i.test(String(cols[1] || ''));
-        else if (k === 'END') { up.end = !/^(no|нет|false)/i.test(String(cols[1] || '')); if (cols[1] && !/^(yes|no|да|нет)$/i.test(cols[1])) up.recap = cleanSentences(cols[1], 400); }
+        else if (k === 'GOAL') up.goal = yes(cols[1]);
         else if (k === 'RECAP') { up.recap = cleanSentences(cols[1], 400); up.best = stepText(cols[2], 120); }
     }
     return up;

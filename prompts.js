@@ -3,7 +3,7 @@
 
 import { isoOf, fromDayNum, easterJulian, easterGregorian } from './dates.js';
 import { hasGifts, charDue, isIntimate, openEvent, dateHoursLeft, giftJoint } from './calendar.js';
-import { openSteps, goalOpen, DATE_OPEN } from './romance.js';
+import { openSteps, goalOpen, DATE_OPEN, DATE_MOMENTS } from './romance.js';
 import { ageOf } from './cast.js';
 
 const PART_EN = { morning: 'morning', day: 'daytime', evening: 'evening', night: 'night' };
@@ -295,7 +295,11 @@ function dateStateLines(ctx) {
     // шкала растёт с нуля, поэтому «плохо» — это срывы, а не малый процент в начале
     const fails = (d.steps || []).filter(x => x.state === 'failed').length, dones = (d.steps || []).filter(x => x.state === 'done').length;
     const how = fails > dones ? (d.score < 10 ? 'badly' : 'poorly') : d.score >= 60 ? 'wonderfully' : d.score >= 30 ? 'well' : fails ? 'unevenly, a little awkward' : 'it is just warming up';
-    out.push(`${userName} and ${charName} are on a date: ${d.title}${d.where ? `, ${d.where}` : ''}.${d.startTurn >= state.turn - 1 ? ' It begins now.' : ''}${goal}${mine.length ? ` ${charName}'s next steps: ${mine.join('; ')} — gently, one at a time, as the scene allows.` : ''}${both.length ? ` Either may: ${both.join('; ')}.` : ''} So far: ${how}${d.vibe ? ` (${d.vibe})` : ''} — ${charName}'s mood, boldness and warmth follow it.${d.thought ? ` ${charName} thinks: ${d.thought}` : ''} ${userName} decides everything of ${userName}'s own.`);
+    const gifts = (d.gifts || []).map(g => `${g.from ? `${g.from}: ` : ''}${g.what}`);
+    out.push(`${userName} and ${charName} are on a date: ${d.title}${d.where ? `, ${d.where}` : ''}.${d.startTurn >= state.turn - 1 ? ' It begins now.' : ''}${gifts.length ? ` Gifts so far: ${gifts.join('; ')}.` : ''}${goal}${mine.length ? ` ${charName}'s next steps: ${mine.join('; ')} — gently, one at a time, as the scene allows.` : ''}${both.length ? ` Either may: ${both.join('; ')}.` : ''} So far: ${how}${d.vibe ? ` (${d.vibe})` : ''} — ${charName}'s mood, boldness and warmth follow it.${d.thought ? ` ${charName} thinks: ${d.thought}` : ''} ${userName} decides everything of ${userName}'s own.`);
+    // подходит к концу — закруглить по-человечески, а не оборвать
+    if (d.closing != null) out.push(`The date is drawing to its close: let it wind down naturally over this reply or the next — a last moment together, goodbyes, seeing ${userName} home — never cut off mid-scene; if ${userName} keeps it going, it goes on.`);
+    else out.push(`The date goes on until the story itself brings it to a close — don't end it on your own.`);
     return out;
 }
 
@@ -306,33 +310,55 @@ function dateUpRule(ctx, main = false) {
     const lang = langOf(ctx);
     const scope = main ? 'in this reply' : 'in the messages marked [NEW]';
     if (d.status === 'scheduled') {
-        return `<!-- HT-DATE-UP\nSTART\nNEW | STEP TEXT | char|both\n-->\nOnly if the date "${d.title}" (planned ${dateAtText(state, d.at)}; meant to ${d.goal || 'be together'}) has actually begun ${scope}: START, then ${DATE_OPEN} NEW first steps — short concrete actions in words, small romantic things or moments of closeness that fit this date and the moment; char — only ${charName} does it, both — either of them may; never a step for ${userName} alone, never chores or anything off the date; real names. Otherwise write nothing.`;
+        return `<!-- HT-DATE-UP\nSTART\nNEW | <step> | <char or both>\n-->\nFill in the lines, never copy the <…> placeholders. Only if the date "${d.title}" (planned ${dateAtText(state, d.at)}; meant to ${d.goal || 'be together'}) has actually begun ${scope}: START, then ${DATE_OPEN} NEW first steps — short concrete actions in words, small romantic things or moments of closeness that fit this date and the moment; char — only ${charName} does it, both — either of them may; never a step for ${userName} alone, never chores or anything off the date; real names. Otherwise write nothing.`;
     }
     const open = openSteps(d);
     const list = open.map(s => `${s.n}. ${s.t} (${s.who === 'char' ? charName : 'either of them'})`).join('\n');
     const need = DATE_OPEN - open.length;
-    const goal = d.goalDone ? 'reached' : goalOpen(d, ctx.dateLevel) ? 'within reach — GOAL once the story reaches it' : 'locked until more steps are done';
+    const goal = d.goalDone ? 'reached' : goalOpen(d, ctx.dateLevel) ? 'within reach — GOAL | yes once the story reaches it' : 'locked until more steps are done';
+    const gifts = (d.gifts || []).map(g => `${g.from ? `${g.from}: ` : ''}${g.what}`);
+    const time = ctx.dateTime ? `\n${ctx.dateTime}` : '';
     return `<!-- HT-DATE-UP
-STEP | N | done|failed|open | NOTE
-NEW | STEP TEXT | char|both
-MOMENT | …
-MOOD | up|down
-VIBE | …
-THOUGHT | …
-GOAL
-END
+STATE | <on, ending or over> | <why, a few words>
+STEP | <number> | <done, failed or open> | <what came of it>
+NEW | <step> | <char or both>
+MOMENT | <what happened>
+GIFT | <who gave> | <the thing given>
+MOOD | <up or down>
+VIBE | <how it goes, 2–5 words>
+THOUGHT | <${charName}'s thought>
+GOAL | yes
 -->
-The date: ${d.title}${d.where ? `, ${d.where}` : ''}; goal: ${d.goal || '—'} (${goal}); success so far ${d.score}%.
+Fill in the lines; never copy the <…> placeholders. The date: ${d.title}${d.where ? `, ${d.where}` : ''}; goal: ${d.goal || '—'} (${goal}); success so far ${d.score}%${d.closing != null ? '; it was already drawing to a close' : ''}.${gifts.length ? ` Gifts already counted: ${gifts.join('; ')}.` : ''}${time}
 Open steps:
 ${list || '(none yet)'}
 
-Judge only what happens ${scope}:
-- One STEP line for EVERY open step above, by its number: done — it clearly happened (for "either of them" — when ${charName} or ${userName} did it); failed — it was tried but met a refusal, coldness or a bad reaction; open — not yet (no NOTE). NOTE for done or failed: what came of it, past tense, one line, real names declined properly (who learned, felt or gave what).
-- NEW: ${need > 0 ? `exactly ${need} new step${need > 1 ? 's' : ''} now, ` : ''}one for each step closed in this check, so that ${DATE_OPEN} stay open. Each is a short concrete action in words (never a number, never a copy of an open step): a small romantic thing or a moment of closeness that grows out of this date and what is happening right now — getting to know each other, attention, tenderness, touch, shared moments, confessions; true to its goal and kind (a first meeting may end in asking to meet again, or for a way to reach each other in a modern setting; making up may bring a gift or an apology from ${charName}). After a failed step, one NEW step grows out of it and softens the moment — never named as fixing it. Never chores, errands, children or anything off the date. Who: char — something only ${charName} does; both — either of them may (asking, sharing, touching). Never a step for ${userName} alone. Weigh who leads and who is shy by the card, persona, lore and how they stand. Real names; never (user), (char) or {{…}}.
-- MOMENT: something notable for them that clearly happened outside the open steps — a gift, a confession, a kiss, a brave or tender gesture; one line each, past tense, real names; at most two, none if nothing stood out.
-- MOOD only if it clearly went better or worse beyond the steps and moments. VIBE: how the date goes overall, 2–5 words. THOUGHT: ${charName}'s private thought about the date now, in ${charName}'s own manner, under 15 words.
-- GOAL only when the story itself reaches the goal. END only when the date is over in the story.
+Judge what happens ${scope} — read ${main ? 'the whole reply' : 'every [NEW] message to its very end'}:
+- STATE, always: on — they are still on the date; ending — it is winding down (saying goodbye, heading home, about to part); over — it has ended: they parted, went their separate ways, or the story skipped past it. WHY: what in the story shows it. A quarrel, a pause, a change of place or a talk about other things is still on. Never over just because the [NEW] messages are short or quiet.
+- One STEP line for EVERY open step above, by its number: done — it happened, or something close to it in spirit (for "either of them" — when ${charName} or ${userName} did it); failed — tried, but met a refusal, coldness or a bad reaction; open — not yet (no note). NOTE for done or failed: what came of it, past tense, one line, real names.
+- NEW: ${need > 0 ? `exactly ${need} new step${need > 1 ? 's' : ''}` : 'one for each step you mark done or failed'}, so that ${DATE_OPEN} stay open. Each is a short concrete action in words, never a copy of an open step: a small romantic thing or a moment of closeness that grows out of this date and what is happening right now — getting to know each other, attention, tenderness, touch, shared moments, confessions; true to its goal and kind. After a failed step, one NEW step grows out of it and softens the moment. Never chores, errands or anything off the date. char — something only ${charName} does; both — either of them may. Never a step for ${userName} alone. Real names; never (user), (char) or {{…}}.
+- MOMENT: up to ${DATE_MOMENTS} notable things that happened outside the open steps — a confession, a kiss, an embrace, a brave or tender gesture; one line each, past tense, real names. None if nothing stood out.
+- GIFT: only a real thing handed from one to the other (a flower, a trinket, a keepsake, food made for them) — who gave it and what it is, a few words; never a kiss, a touch, a word or an act. Up to ${DATE_MOMENTS}; skip the gifts already counted.
+- MOOD only if it clearly went better or worse beyond the steps. VIBE: how the date goes overall. THOUGHT: ${charName}'s private thought about the date now, in ${charName}'s own manner, under 15 words.
+- GOAL | yes only when the story itself reaches the goal.
 Text in ${lang}.`;
+}
+
+/** Помощнику, вдогонку: на освободившиеся места не пришло новых шагов — только они */
+export function buildDateRefillMessages(ctx, src, k) {
+    const { state, userName, charName } = ctx;
+    const d = state.date;
+    const open = openSteps(d).map(s => `- ${s.t}`).join('\n');
+    const done = (d.steps || []).filter(s => s.state !== 'open').slice(-6).map(s => `- ${s.t}`).join('\n');
+    return [
+        { role: 'system', content: `You suggest the next small steps of a date between ${charName} and ${userName} in an ongoing roleplay. Answer only with the requested lines.` },
+        { role: 'user', content: [
+            src.card && `[${charName}]\n${src.card}`,
+            `[Story — latest messages]\n${src.story || '—'}`,
+            `The date: ${d.title}${d.where ? `, ${d.where}` : ''}; goal: ${d.goal || '—'}.\nStill open:\n${open || '—'}\nAlready done or tried:\n${done || '—'}`,
+            `Write exactly ${k} line${k > 1 ? 's' : ''} like:\nNEW | <a short concrete step> | <char or both>\nEach grows out of what is happening right now: a small romantic thing or a moment of closeness, never a copy of the lists above, never chores or anything off the date. char — only ${charName} does it; both — either may; never a step for ${userName} alone. Real names. In ${langOf(ctx)}.`,
+        ].filter(Boolean).join('\n\n') },
+    ];
 }
 
 /** Отдельный запрос помощника о свидании: каждый ответ, коротко, только про свидание */
@@ -343,12 +369,12 @@ export function buildDateSideMessages(ctx, src) {
     if (d && (d.status === 'active' || d.status === 'scheduled')) task.push(dateUpRule(ctx));
     if (state.dateRecapFor && !(d?.status === 'active')) task.push(dateRecapRule(ctx));
     return [
-        { role: 'system', content: `You track a date between ${charName} and ${userName} in an ongoing roleplay for an extension. Answer only with the requested hidden block, nothing else. Be strict: count only what the story actually shows.` },
+        { role: 'system', content: `You track a date between ${charName} and ${userName} in an ongoing roleplay for an extension. Answer only with the requested hidden block, nothing else. Count what the story actually shows — fairly, not stingily: a step done in spirit is done.` },
         { role: 'user', content: [
             src.card && `[${charName}]\n${src.card}`,
             src.persona && `[${userName}]\n${src.persona}`,
             src.lore && `[World info]\n${src.lore}`,
-            `[Story — latest messages; [NEW] marks those since the last check]\n${src.story || '—'}`,
+            `[Story — latest messages; [NEW] marks those since the last check, given in full]\n${src.story || '—'}`,
             task.join('\n\n'),
         ].filter(Boolean).join('\n\n') },
     ];
@@ -356,7 +382,10 @@ export function buildDateSideMessages(ctx, src) {
 
 function dateRecapRule(ctx) {
     const last = (ctx.state.datesDone || []).slice(-1)[0];
-    return `<!-- HT-DATE-UP\nRECAP | TEXT | BEST\n-->\nThe date "${last?.title || ''}" is over: TEXT — how it went for ${ctx.userName} and ${ctx.charName}, one or two sentences, only what the story showed; BEST — the moment worth remembering, a few words. In ${langOf(ctx)}.`;
+    const d = ctx.state.date?.id === ctx.state.dateRecapFor ? ctx.state.date : null;
+    const facts = d ? [(d.gifts || []).length && `gifts: ${d.gifts.map(g => `${g.from ? `${g.from}: ` : ''}${g.what}`).join('; ')}`,
+        (d.log || []).some(x => x.kind === 'moment') && `moments: ${(d.log || []).filter(x => x.kind === 'moment').map(x => x.t).slice(-4).join('; ')}`].filter(Boolean) : [];
+    return `<!-- HT-DATE-UP\nRECAP | <text> | <best moment>\n-->\nThe date "${last?.title || ''}" is over: text — how it went for ${ctx.userName} and ${ctx.charName}, one or two sentences, only what the story showed; best moment — the one worth remembering, a few words.${facts.length ? ` Facts: ${facts.join(' · ')}.` : ''} In ${langOf(ctx)}.`;
 }
 
 // ─── Приглашение на свидание ───

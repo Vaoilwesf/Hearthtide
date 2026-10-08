@@ -971,3 +971,33 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-gift-edit .text_pole { margin: 2px 0 0; color: var(--ht-fg); }
 .ht-gift-done { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85em; color: var(--ht-mute); cursor: pointer; }
 .ht-gift-done input { accent-color: var(--ht-acc); margin: 0; }
+
+/* ═══ Вкладки на любой теме и ширине: счётчик — одной строкой, подпись сжимается сама ═══ */
+.ht-ib .ht-tab { flex-wrap: nowrap; overflow: hidden; }
+.ht-ib .ht-tab > i { flex: none; }
+.ht-ib .ht-tab > span { flex: 0 1 auto; min-width: 0; }
+:is(.ht-ib, .ht-cards, .ht-modal) .ht-count,
+.ht-ib .ht-subtabs em, :is(.ht-ib) .ht-gift-mode, :is(.ht-ib) .ht-gift-mode > span {
+    flex: none; display: inline-block; white-space: nowrap; word-break: keep-all; overflow-wrap: normal;
+    line-height: 1.45; font-variant-numeric: tabular-nums;
+}
+:is(.ht-ib, .ht-cards, .ht-modal) .ht-count { padding: 0 6px; min-width: 1.6em; text-align: center; box-sizing: border-box; }
+/* узко — подписи остаются только у открытой вкладки; совсем узко — одни иконки и числа */
+/* контейнер — весь инфоблок: строка вкладок сама себя перестроить по своей ширине не может */
+.ht-ib { container: htib / inline-size; }
+@container htib (max-width: 400px) {
+    .ht-tabs { display: flex; }
+    .ht-ib .ht-tab { flex: 0 0 auto; padding: 5px 9px; }
+    .ht-ib .ht-tab.ht-on { flex: 1 1 auto; }
+    .ht-ib .ht-tab:not(.ht-on) > span { display: none; }
+}
+@container htib (max-width: 280px) { .ht-ib .ht-tab > span { display: none; } .ht-ib .ht-tab { gap: 4px; padding: 5px 4px; } }
+
+/* ═══ Свидание: подходит к концу, подарки ═══ */
+.ht-dclosing { display: inline-flex; align-items: center; gap: 5px; align-self: flex-start; margin-top: 2px; padding: 0 8px; border-radius: 999px;
+    font-size: 0.78em; color: var(--ht-mute); border: 1px solid var(--ht-line-strong); white-space: nowrap; }
+.ht-dclosing > i { font-size: 0.85em; }
+.ht-dgifts { display: flex; align-items: baseline; gap: 8px; margin: 0; font-size: 0.9em; }
+.ht-dgifts > i { color: var(--c, var(--ht-rom)); flex: none; }
+.ht-dgifts > span { overflow-wrap: anywhere; }
+.ht-dlog li.ht-log-gift > i { color: var(--ht-acc); }

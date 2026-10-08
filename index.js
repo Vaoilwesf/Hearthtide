@@ -11,10 +11,10 @@ import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
 import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseDateUp, parseRecapParts, stripBlocks } from './tag.js';
-import { PAIR_DEFAULT, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, levelOf, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN } from './romance.js';
+import { PAIR_DEFAULT, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, levelOf, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN, DATE_SKIP_END, DATE_SKIP_HARD, DATE_CLOSE_TURNS, DATE_QUIET } from './romance.js';
 import { CAST_GROUPS, KIN_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast, nameCandidates } from './cast.js';
 import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday, giftJoint } from './calendar.js';
-import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, buildDateSideMessages, giftTarget } from './prompts.js';
+import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, buildDateSideMessages, buildDateRefillMessages, giftTarget } from './prompts.js';
 import { listProfiles, gatherSources, loreFor, sendSide, reasonOf } from './side.js';
 import { strings } from './i18n.js';
 
@@ -666,7 +666,10 @@ function processReply(N) {
     const lvl = dateLevel();
     // ход свидания: при помощнике — из отдельного запроса о свидании (каждый ответ), без него — из ответа основной модели
     const dateRec = apiOn() ? (msg.extra?.ht_date?.[coreHash(text)] || null) : null;
-    const upRaw = (dateRec ? parseDateUp(dateRec.text) : null) || (apiOn() ? null : parseDateUp(src));
+    let upRaw = (dateRec ? parseDateUp(dateRec.text) : null) || (apiOn() ? null : parseDateUp(src));
+    // новые шаги, дозапрошенные у помощника, когда в оценке их не хватило
+    const refill = dateRec?.refill ? parseDateUp(`<!-- HT-DATE-UP\n${dateRec.refill}\n-->`) : null;
+    if (refill?.add?.length) upRaw = { ...(upRaw || parseDateUp('<!-- HT-DATE-UP -->')), add: [...(upRaw?.add || []), ...refill.add] };
     const up = upRaw ? tidyDateUp(upRaw) : null;
     if (dateRec) state.dateSeenMsg = N;
     const endNow = () => { const e = finishDate(state, state.turn); if (e) recordDate(state, e); return e; };
@@ -682,13 +685,34 @@ function processReply(N) {
             recordDate(state, dd, true);
         }
     }
-    if (dd?.status === 'active' && up) {
-        const r = applyDateUp(dd, up, state.turn, lvl);
-        if (r.ignoredGoal) console.info('[Hearthtide] свидание: цель ещё закрыта — GOAL пропущен');
-        if (r.moved) console.info(`[Hearthtide] свидание: ${dd.score}% · шагов сделано ${doneCount(dd)} · открыто ${openSteps(dd).length}`);
-        if (r.ended) dateEnded = endNow();
+    if (dd?.status === 'active') {
+        // Конец свидания — только по истории: «подходит к концу» → конец, или таймскип. Одно «over» без предпосылок
+        // лишь помечает «подходит к концу»; конец — если следующий ответ его подтвердит. Так свидание не обрывается.
+        const nowAt = { day: state.today, clock: state.clock };
+        dd.startAt = dd.startAt || nowAt;
+        const jump = hoursBetween(dd.seenAt || dd.startAt, nowAt);
+        const why = (w) => { dd.endWhy = w; console.info(`[Hearthtide] свидание закончилось: ${w}`); return endNow(); };
+        if (up) {
+            const r = applyDateUp(dd, up, state.turn, lvl);
+            if (r.ignoredGoal) console.info('[Hearthtide] свидание: цель ещё закрыта — GOAL пропущен');
+            console.info(`[Hearthtide] свидание: ${up.phase || 'без STATE'}${up.why ? ` (${up.why})` : ''} · ${dd.score}% · сделано ${doneCount(dd)} · открыто ${openSteps(dd).length}${jump ? ` · прошло ${jump.toFixed(1)} ч` : ''}`);
+            dd.lastSeen = state.turn;
+            dd.seenAt = nowAt;
+            if (up.phase === 'on') dd.closing = null;
+            else if (up.phase === 'ending') dd.closing = dd.closing ?? state.turn;
+            else if (up.phase === 'over') {
+                if (dd.closing != null && dd.closing < state.turn) dateEnded = why(`подтвердилось: ${up.why || 'закончилось в истории'}`);
+                else if ((jump ?? 0) >= DATE_SKIP_END) dateEnded = why(`таймскип ${jump.toFixed(1)} ч: ${up.why || ''}`);
+                else { dd.closing = dd.closing ?? state.turn; console.info('[Hearthtide] свидание: помощник считает, что оно кончилось — пока «подходит к концу», ждём подтверждения следующим ответом'); }
+            }
+        }
+        if (!dateEnded && (jump ?? 0) >= DATE_SKIP_HARD) dateEnded = why(`таймскип ${jump.toFixed(1)} ч`);
+        if (!dateEnded && dd.closing != null && state.turn - dd.closing >= DATE_CLOSE_TURNS) dateEnded = why('подходило к концу и закончилось');
+        if (!dateEnded && dd.closing == null && state.turn - (dd.lastSeen ?? dd.lastUpdate ?? dd.startTurn ?? dd.turn) > DATE_QUIET) {
+            dd.closing = state.turn;
+            console.info(`[Hearthtide] свидание: ${DATE_QUIET} ответов без оценки — «подходит к концу»`);
+        }
     }
-    if (dd?.status === 'active' && !dateEnded && state.turn - (dd.lastUpdate ?? dd.turn) > 14) dateEnded = endNow();
     // итог, дописанный после конца свидания
     if (up?.recap && state.dateRecapFor && !dateEnded) applyDateRecap(state, state.dateRecapFor, up.recap, up.best);
     if (state.dateRecapFor && state.turn - (state.dateRecapTurn ?? state.turn) > 3) state.dateRecapFor = null;   // не дождались — без итога
@@ -946,6 +970,8 @@ function echoes(a, b) {
 }
 
 // ─── Свидание: служебное ───
+/** Сколько часов прошло в истории между двумя отметками { day, clock } (null — неизвестно) */
+const hoursBetween = (a, b) => (!a || !b || a.day == null || b.day == null ? null : (b.day - a.day) * 24 + (b.clock ?? 12) - (a.clock ?? 12));
 const hoursUntil = (st, at) => (!at || at.now || st.today == null ? null : ((at.day ?? st.today) - st.today) * 24 + (at.clock ?? 18) - (st.clock ?? 12));
 /** Игрок сказал «да»: назначено на потом — намечено (без шкалы и шагов), прямо сейчас — началось */
 function acceptInto(st, d) {
@@ -969,12 +995,16 @@ function tidyDateUp(up) {
     };
     up.add = (up.add || []).map(a => ({ t: ok(fix(a.t)), who: who(a.whoRaw) })).filter(a => a.t);
     for (const x of [...(up.done || []), ...(up.fail || [])]) x.note = ok(fix(x.note));
-    for (const k of ['vibe', 'thought', 'recap', 'best']) up[k] = ok(fix(up[k]));
+    for (const k of ['vibe', 'thought', 'recap', 'best', 'why']) up[k] = ok(fix(up[k]));
+    up.moments = (up.moments || []).map(m => ok(fix(m))).filter(Boolean);
+    up.gifts = (up.gifts || []).map(g => ({ from: fix(g.from), what: ok(fix(g.what)) })).filter(g => g.what);
     return up;
 }
 const dateParts = (d) => ({
     done: (d.notes || []).filter(n => n.ok).map(n => n.t).slice(-5),
-    gifts: (d.log || []).filter(x => x.kind === 'moment').map(x => x.t).slice(-4),
+    // подарки — только вещи; поцелуи, признания и прочее — моменты
+    gifts: (d.gifts || []).map(g => (g.from ? `${g.from}: ${g.what}` : g.what)).slice(-4),
+    moments: (d.log || []).filter(x => x.kind === 'moment').map(x => x.t).slice(-4),
     goal: d.goal ? `${d.goal} — ${d.goalDone ? L().goalState.done : L().goalMissed}` : null,
     best: d.best || null,
 });
@@ -1665,7 +1695,7 @@ function dateSideDue() {
     const left = d?.status === 'scheduled' ? dateHoursLeft(state) : null;
     return left != null && left <= 30;
 }
-async function runDateSide(N) {
+async function runDateSide(N, attempt = 1) {
     if (!apiOn() || !isEnabled() || !state || !dateSideDue()) return;
     const msg = chat[N];
     if (!msg || msg.is_user || msg.is_system || N !== lastProcessedMsg()) return;
@@ -1675,28 +1705,61 @@ async function runDateSide(N) {
     const me = { N, ctl: new AbortController() };
     dateSide = me;
     scheduleRenderAll();
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     try {
         const ctx = ctxFor(null);
+        ctx.dateTime = dateTimeNote();
         const newFrom = state.dateSeenMsg != null && state.dateSeenMsg < N ? state.dateSeenMsg : Math.max(-1, N - 2);
-        const src = await gatherSources(N, 8, newFrom, 1600);
+        // новые сообщения — целиком: шаги и подарки часто в конце длинного ответа
+        const src = await gatherSources(N, 8, newFrom, 1600, 6000);
         if (dateSide !== me) return;
-        const messages = buildDateSideMessages(ctx, src);
-        const text = await sendSide(apiProfile(), messages, me.ctl.signal, 1500);
+        // 3000: модели с рассуждениями не успевали дописать блок в 1500
+        const text = await sendSide(apiProfile(), buildDateSideMessages(ctx, src), me.ctl.signal, 3000);
         if (dateSide !== me) return;
-        const m = chat[N];
-        if (!m || coreHash(m.mes) !== hash || N !== lastProcessedMsg()) { console.info('[Hearthtide] свидание: ответ помощника не к месту — текст уже другой'); return; }
+        const stale = () => { const m = chat[N]; return !m || coreHash(m.mes) !== hash || N !== lastProcessedMsg(); };
+        if (stale()) { console.info('[Hearthtide] свидание: ответ помощника отброшен — текст уже другой'); return; }
         console.info(`[Hearthtide] свидание — помощник:\n${text}`);
+        if (!/HT-DATE-UP/i.test(text)) console.warn('[Hearthtide] свидание: в ответе помощника нет блока HT-DATE-UP — ход не обновлён');
+        const m = chat[N];
         m.extra = m.extra || {};
         m.extra.ht_date = { [hash]: { text } };
-        dateSide = null;
         processReply(N);
+        // освободились места, а новых шагов помощник не дал — коротко дозапросить только их
+        const d = state.date;
+        const k = d?.status === 'active' && d.closing == null ? DATE_OPEN - openSteps(d).length : 0;
+        if (k > 0 && dateSide === me) {
+            try {
+                const refill = await sendSide(apiProfile(), buildDateRefillMessages(ctxFor(null), src, k), me.ctl.signal, 1200);
+                if (dateSide !== me || stale()) return;
+                console.info(`[Hearthtide] свидание: не хватало ${k} шаг(ов) — дозапрос:\n${refill}`);
+                chat[N].extra.ht_date[hash].refill = refill;
+                processReply(N);
+            } catch (e) {
+                if (!me.ctl.signal.aborted) console.warn('[Hearthtide] свидание: дозапрос шагов не прошёл —', reasonOf(e));
+            }
+        }
     } catch (e) {
         if (me.ctl.signal.aborted || dateSide !== me) return;
-        console.warn('[Hearthtide] свидание: запрос не прошёл —', reasonOf(e));
+        console.warn(`[Hearthtide] свидание: запрос не прошёл (попытка ${attempt}) —`, reasonOf(e));
+        // одна повторная попытка: чаще всего это лимит API сразу после ответа основной модели
+        if (attempt < 2) {
+            dateSide = null;
+            await sleep(4000);
+            if (N === lastProcessedMsg() && !generating) return runDateSide(N, attempt + 1);
+        }
     } finally {
         if (dateSide === me) dateSide = null;
         scheduleRenderAll();
     }
+}
+/** Для помощника: когда началось свидание, когда его оценивали в прошлый раз и сколько сейчас — чтобы заметить таймскип */
+function dateTimeNote() {
+    const d = state.date;
+    if (d?.status !== 'active' || state.today == null) return '';
+    const fmt = (a) => (a?.day != null ? `${isoOf(a.day)}${a.clock != null ? ` ${String(Math.floor(a.clock)).padStart(2, '0')}:${String(Math.round((a.clock % 1) * 60)).padStart(2, '0')}` : ''}` : '?');
+    const now = { day: state.today, clock: state.clock };
+    const gap = hoursBetween(d.seenAt || d.startAt, now);
+    return `Story time: the date began ${fmt(d.startAt || now)}, last checked ${fmt(d.seenAt || d.startAt || now)}, now ${fmt(now)}${gap != null && gap >= DATE_SKIP_END ? ` — ${Math.round(gap)} hours have passed since the last check: if the story skipped past the date, STATE is over` : ''}.`;
 }
 function sideMarkHtml() {
     if (sideErr && sideErr.N === lastProcessedMsg()) {
@@ -1745,6 +1808,8 @@ async function runSide(N, needs) {
             await new Promise(r => setTimeout(r, 2500));
             if (side !== me) return;
         }
+        // запрос о свидании — первым: два запроса разом к одному API часто упираются в лимит
+        for (let t = 0; dateSide && t < 200; t++) { await new Promise(r => setTimeout(r, 300)); if (side !== me) return; }
         const ctx = ctxFor(null);
         ctx.castHint = castHint();
         // перепись людей читает больше сообщений, чем обычный запрос
@@ -2172,7 +2237,7 @@ function dateCardHtml() {
             <p class="ht-dgoal-how"><i class="fa-solid ${g === 'done' ? 'fa-circle-check' : g === 'open' ? 'fa-lock-open' : 'fa-lock'}"></i><span>${esc(goalHow)}</span></p>
         </div>` : '';
     // ход свидания — свёрнут: для памяти, инфоблок не растягивает
-    const LOG_ICON = { done: 'fa-check', failed: 'fa-xmark', moment: 'fa-star', goal: 'fa-bullseye', up: 'fa-arrow-trend-up', down: 'fa-arrow-trend-down' };
+    const LOG_ICON = { done: 'fa-check', failed: 'fa-xmark', moment: 'fa-star', gift: 'fa-gift', goal: 'fa-bullseye', up: 'fa-arrow-trend-up', down: 'fa-arrow-trend-down' };
     const log = (d.log || []).slice().reverse().map(x => `<li class="ht-log-${x.kind}"><i class="fa-solid ${LOG_ICON[x.kind] || 'fa-circle'}"></i>
         <span>${esc(x.t || L().dateLogKind[x.kind] || '')}</span><b>${x.delta > 0 ? '+' : ''}${x.delta}%</b></li>`).join('');
     const logBox = log ? `<details class="ht-dlog"><summary><i class="fa-solid fa-list-ul"></i>${L().dateLog}<em>${(d.log || []).length}</em><i class="fa-solid fa-chevron-down ht-dlog-chev"></i></summary><ol>${log}</ol></details>` : '';
@@ -2184,11 +2249,13 @@ function dateCardHtml() {
                 <b class="ht-dtitle">${esc(d.title)}</b>
                 ${d.where ? `<span class="ht-dwhen"><i class="fa-solid fa-location-dot"></i>${esc(d.where)}</span>` : ''}
                 <span class="ht-dvibe">${esc(d.vibe || L().dateVibeStart)}</span>
+                ${d.closing != null ? `<span class="ht-dclosing"><i class="fa-solid fa-hourglass-end"></i>${esc(L().dateClosing)}</span>` : ''}
             </div>
             <div class="ht-dscore"><b>${d.score}%</b><small>${L().dateSuccess}</small></div>
         </div>
         <div class="ht-date-meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${d.score}" aria-label="${esc(L().dateSuccess)}"><i></i></div>
         ${goalBox}
+        ${(d.gifts || []).length ? `<p class="ht-dgifts"><i class="fa-solid fa-gift"></i><span>${d.gifts.map(g => esc(g.from ? `${g.from}: ${g.what}` : g.what)).join(' · ')}</span></p>` : ''}
         ${d.thought ? `<p class="ht-dthought"><i class="fa-solid fa-comment-dots"></i><span><b>${L().dateThinks}</b>«${esc(d.thought.replace(/^[«"“]+|[»"”]+$/g, ''))}»</span></p>` : ''}
         <div class="ht-dsec"><i class="fa-solid fa-shoe-prints"></i>${L().dateSteps}</div>
         <div class="ht-date-steps">${slots.join('') || `<p class="ht-mute">${L().dateNoSteps}</p>`}</div>
@@ -2383,17 +2450,17 @@ function castTabHtml(view, live) {
 }
 
 // Итог праздника — под спойлером «Итог», чтобы список был коротким
-function recapSpoiler(text, parts) {
+function recapSpoiler(text, parts, date = false) {
     if (!text && !parts) return '';
-    return `<details class="ht-recap"><summary><i class="fa-solid fa-scroll"></i><span>${L().recapTitle}</span><i class="fa-solid fa-chevron-down ht-recap-chev"></i></summary>
+    return `<details class="ht-recap"><summary><i class="fa-solid ${date ? 'fa-heart' : 'fa-scroll'}"></i><span>${date ? L().dateRecapTitle : L().recapTitle}</span><i class="fa-solid fa-chevron-down ht-recap-chev"></i></summary>
         ${text ? `<p>${esc(text)}</p>` : ''}${recapPartsHtml(parts)}</details>`;
 }
 
-// Короткий итог праздника по пунктам: сделали · подарки · лучший момент
+// Короткий итог по пунктам: цель · сделали · моменты · подарки (только вещи) · лучший момент
 function recapPartsHtml(p) {
     if (!p) return '';
-    const row = (icon, items) => items?.length ? `<li><i class="fa-solid ${icon}"></i><span>${items.map(esc).join(' · ')}</span></li>` : '';
-    return `<ul class="ht-recap-parts">${row('fa-bullseye', p.goal ? [p.goal] : [])}${row('fa-list-check', p.done)}${row('fa-gift', p.gifts)}${row('fa-star', p.best ? [p.best] : [])}</ul>`;
+    const row = (icon, items, title) => items?.length ? `<li title="${esc(title)}"><i class="fa-solid ${icon}"></i><span>${items.map(esc).join(' · ')}</span></li>` : '';
+    return `<ul class="ht-recap-parts">${row('fa-bullseye', p.goal ? [p.goal] : [], L().dateGoalMain)}${row('fa-list-check', p.done, L().recapDone)}${row('fa-heart', p.moments, L().moments)}${row('fa-gift', p.gifts, L().gifts)}${row('fa-star', p.best ? [p.best] : [], L().recapBest)}</ul>`;
 }
 
 // Правка человека — отдельным окном поверх таверны: перерисовки чата его не сбрасывают,
@@ -2917,7 +2984,7 @@ function bodyHtml(view, live, tab = 'now') {
         const res = i.type === 'date' && i.result ? i.result : null;
         return `<div class="ht-yr${i.kept ? '' : ' ht-yr-missed'}${res ? ` ht-res-${res}` : ''}">
             <time>${d}.${m}</time><i class="fa-solid ${TYPE_ICON[i.type] || 'fa-star'}"></i>
-            <div><b>${esc(i.name)}</b>${recapSpoiler(i.recap, i.parts)}</div>
+            <div><b>${esc(i.name)}</b>${recapSpoiler(i.recap, i.parts, i.type === 'date')}</div>
             <em>${res ? (res === 'missed' ? L().yearMissed : L().dateResult[res]) : i.kept ? L().yearKept : L().yearMissed}</em></div>`;
     }).join('');
 
@@ -2927,7 +2994,7 @@ function bodyHtml(view, live, tab = 'now') {
         const btn = live ? `<button class="ht-recall${queued ? ' ht-on' : ''}" data-act="recall" data-fb="${esc(f.id)}" title="${queued ? L().recallQueued : L().recall}">
             <i class="fa-solid fa-clock-rotate-left"></i><span>${queued ? L().recallShort : L().recall}</span></button>` : '';
         const res = f.kind === 'date' && f.result ? `<em class="ht-res-chip ht-res-${f.result}"><i class="fa-solid fa-heart"></i>${esc(f.result === 'missed' ? L().yearMissed : L().dateResult[f.result] || '')}</em>` : '';
-        return `<div class="ht-fb${f.kind === 'date' ? ' ht-fb-date' : ''}"><div><b>${esc(f.title)}</b>${res}${f.when ? `<span class="ht-mute"> · ${esc(f.when)}</span>` : ''}${recapSpoiler(f.text, f.parts)}</div>${btn}</div>`;
+        return `<div class="ht-fb${f.kind === 'date' ? ' ht-fb-date' : ''}"><div><b>${esc(f.title)}</b>${res}${f.when ? `<span class="ht-mute"> · ${esc(f.when)}</span>` : ''}${recapSpoiler(f.text, f.parts, f.kind === 'date')}</div>${btn}</div>`;
     }).join('');
 
     // Вкладки сверху: праздник сейчас и прошедшие за год — год не растягивает инфоблок вниз

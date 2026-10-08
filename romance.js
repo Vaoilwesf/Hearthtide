@@ -7,12 +7,26 @@ export const PAIR_DEFAULT = { f: 0, r: 0, note: null, scale: 2 };   // друж�
 
 // Сложность свиданий: сколько дают шаг, срыв, «лучше/хуже» и цель; сколько шагов и успеха нужно, чтобы цель открылась
 export const DATE_LEVELS = {
-    easy: { step: 12, fail: -6, up: 4, down: -4, goal: 15, moment: 6, goalSteps: 3, goalScore: 35 },
-    hard: { step: 7, fail: -10, up: 3, down: -6, goal: 10, moment: 4, goalSteps: 5, goalScore: 55 },
+    easy: { step: 12, fail: -6, up: 4, down: -4, goal: 15, moment: 6, gift: 9, goalSteps: 3, goalScore: 35 },
+    hard: { step: 7, fail: -10, up: 3, down: -6, goal: 10, moment: 4, gift: 6, goalSteps: 5, goalScore: 55 },
 };
 export const levelOf = (k) => DATE_LEVELS[k] || DATE_LEVELS.easy;
 /** Сколько шагов открыто одновременно */
-export const DATE_OPEN = 3;
+export const DATE_OPEN = 4;
+/** Моментов (поцелуй, признание, смелый жест) — не больше стольких за ответ; подарков — столько же */
+export const DATE_MOMENTS = 3;
+/**
+ * Как свидание заканчивается — без обрывов:
+ *   over — после ending (или повторного over) или после таймскипа от DATE_SKIP_END часов;
+ *   одно over без предпосылок — только «подходит к концу», конец — если следующий ответ его подтвердит;
+ *   «подходит к концу» дольше DATE_CLOSE_TURNS ответов — свидание заканчивается само;
+ *   время в истории ушло на DATE_SKIP_HARD часов и больше — свидание кончилось, что бы ни сказал помощник;
+ *   оценки нет DATE_QUIET ответов подряд — «подходит к концу».
+ */
+export const DATE_SKIP_END = 3;
+export const DATE_SKIP_HARD = 12;
+export const DATE_CLOSE_TURNS = 4;
+export const DATE_QUIET = 10;
 // Итоги свидания: порог успеха → что меняется в отношениях
 export const DATE_RESULTS = [
     { key: 'great', min: 75, f: 6, r: 15 },
@@ -38,7 +52,7 @@ export function newDate(d, turn, started) {
         // одно и то же свидание при повторной обработке ответа — тот же id (уведомление и анимация — один раз)
         id: `d-${turn}-${idOf(d.title)}`,
         title: d.title, goal: d.goal || null, hook: d.hook || null, where: d.where || null, at: d.at || null,
-        steps: [], nextN: 1, score: 0, goalDone: false, thought: null, vibe: null, notes: [], log: [],
+        steps: [], nextN: 1, score: 0, goalDone: false, thought: null, vibe: null, notes: [], log: [], gifts: [], closing: null,
         status: started ? 'active' : 'offered',
         turn, startTurn: started ? turn : null, lastUpdate: turn, result: null,
     };
@@ -101,10 +115,17 @@ export function applyDateUp(d, up, turn, level) {
     for (const x of up.done || []) close(x, 'done', L.step);
     for (const x of up.fail || []) close(x, 'failed', L.fail);
     for (const a of up.add || []) if (addStep(d, a.t, a.who, turn)) moved = true;
-    // значимое вне шагов (подарок, признание, поцелуй) — тоже засчитывается, не больше двух за ответ
-    for (const m of (up.moments || []).slice(0, 2)) {
+    // значимое вне шагов (признание, поцелуй, смелый жест) — тоже засчитывается
+    for (const m of (up.moments || []).slice(0, DATE_MOMENTS)) {
         if (d.log.some(x => x.kind === 'moment' && normT(x.t) === normT(m))) continue;
         d.score += L.moment; note('moment', m, L.moment); moved = true;
+    }
+    // подарки — только вещи, которые кто-то кому-то вручил; отдельно от моментов
+    d.gifts = d.gifts || [];
+    for (const g of (up.gifts || []).slice(0, DATE_MOMENTS)) {
+        if (d.gifts.some(x => normT(x.what) === normT(g.what))) continue;
+        d.gifts.push({ from: g.from || null, what: g.what, turn });
+        d.score += L.gift; note('gift', g.from ? `${g.from}: ${g.what}` : g.what, L.gift); moved = true;
     }
     if (up.mood > 0) { d.score += L.up; note('up', up.vibe || null, L.up); moved = true; }
     if (up.mood < 0) { d.score += L.down; note('down', up.vibe || null, L.down); moved = true; }
@@ -120,11 +141,12 @@ export function applyDateUp(d, up, turn, level) {
     d.score = clamp(d.score, 0, 100);
     if (moved) d.lastUpdate = turn;
     if (d.notes.length > 10) d.notes = d.notes.slice(-10);
-    if (d.log.length > 30) d.log = d.log.slice(-30);
+    if (d.log.length > 40) d.log = d.log.slice(-40);
+    if (d.gifts.length > 8) d.gifts = d.gifts.slice(-8);
     // старые закрытые шаги не копим
     const closed = d.steps.filter(s => s.state !== 'open');
     if (closed.length > 16) d.steps = [...closed.slice(-16), ...openSteps(d)];
-    return { moved, ended: !!up.end, ignoredGoal };
+    return { moved, phase: up.phase || null, ignoredGoal };
 }
 
 /** Шаг отмечен игроком вручную */
@@ -202,5 +224,6 @@ export function migrateDate(state) {
     for (const s of d.steps) if (s.state === 'open') { if (slot < DATE_OPEN) s.slot = slot++; else s.state = 'dropped'; }
     d.goalDone = d.goalDone || false;
     d.at = d.at || null;
+    d.gifts = d.gifts || [];
     if (d.status === 'active' && d.score === 35 && !doneCount(d)) d.score = 0;   // старый стартовый бонус
 }
