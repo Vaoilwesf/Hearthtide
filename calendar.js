@@ -2,6 +2,7 @@
 // Фазы праздника и что попросить у ИИ в следующем ответе.
 
 import { nextOccurrence, dayPart, fromDayNum } from './dates.js';
+import { isKin, castBanned } from './cast.js';
 
 // За сколько дней начинается подготовка: ИИ указывает сам для каждого праздника,
 // это — запасные значения, если не указал
@@ -9,6 +10,7 @@ export const PREP_DEFAULT = { personal: 2, family: 3, fast: 1, memorial: 1 };
 export const PREP_DEFAULT_OTHER = 5;
 export function prepWindow(state, h) {
     if (!h) return 0;
+    if (h.npc) return h.prep ?? 1;
     if (h.birthday) return state.birthdays?.[h.who]?.prep ?? PREP_DEFAULT.personal;
     if (h.prep != null) return h.prep;
     return PREP_DEFAULT[h.type] ?? PREP_DEFAULT_OTHER;
@@ -44,8 +46,44 @@ export function namesMatch(a, b) {
 }
 
 export function holidayId(h) {
+    if (h.npc) return `bday-npc-${h.cid}@${h.start}`;
     if (h.birthday) return `bday-${h.who}-${h.start}`;
     return `${String(h.name).toLowerCase().replace(/\s+/g, '-').slice(0, 40)}@${h.start}`;
+}
+
+// ─── День рождения человека из истории — свой, небольшой праздник ───
+// Родня любого из двоих и близкие (отношения от 40) — сами; остальные — только если позвали и игрок принял.
+// Отказ или «убрать» в инфоблоке — этот день рождения больше не показываем.
+export const NPC_BD_AHEAD = 30;          // дальше месяца вперёд не показываем — список «Дальше» не засоряется
+export const NPC_BD_CLOSE = 40;
+export const npcBdKey = (cid, start) => `${cid}@${start}`;
+export function npcBdOn(state, c, start) {
+    if (!c?.id || !c.bday || c.off || (c.name && castBanned(state, c.name))) return false;
+    const dec = state.bdDecisions?.[npcBdKey(c.id, start)];
+    if (dec === 'declined') return false;
+    if (dec === 'accepted') return true;
+    return isKin(c.group) || (c.rel?.user ?? 0) >= NPC_BD_CLOSE || (c.rel?.char ?? 0) >= NPC_BD_CLOSE;
+}
+export function npcHoliday(c, start) {
+    const h = { start, days: 1, name: c.name || c.toU || c.toC || '?', who: `npc:${c.id}`, npc: true, cid: c.id,
+        birthday: true, type: 'personal', prep: isKin(c.group) ? 2 : 1 };
+    h.id = holidayId(h);
+    return h;
+}
+/** Дни рождения людей истории, которые отмечаются: вчерашний (для «после») и ближайший */
+export function npcBirthdays(state) {
+    if (state.today == null) return [];
+    const out = [];
+    for (const c of state.cast || []) {
+        if (!c?.bday) continue;
+        for (const from of [state.today - 1, state.today]) {
+            const start = nextOccurrence({ m: c.bday.m, d: c.bday.d }, from);
+            if (start - state.today > NPC_BD_AHEAD || !npcBdOn(state, c, start)) continue;
+            const h = npcHoliday(c, start);
+            if (!out.some(x => x.id === h.id)) out.push(h);
+        }
+    }
+    return out;
 }
 
 /** Праздники из календаря + ближайшие дни рождения, по порядку */
@@ -63,6 +101,7 @@ export function allHolidays(state) {
                 if (!list.some(x => x.id === h.id)) list.push(h);
             }
         }
+        for (const h of npcBirthdays(state)) if (!list.some(x => x.id === h.id)) list.push(h);
     }
     return list.sort((a, b) => a.start - b.start);
 }
@@ -84,13 +123,14 @@ export function phaseOf(state) {
     if (active) {
         return { kind: 'today', h: active, dayIndex: today - active.start + 1, upcoming, ended: null };
     }
-    const next = upcoming[0] || null;
+    // готовятся к тому, чьё окно подготовки уже открыто — даже если раньше него стоит чей-то день рождения
+    const inPrep = upcoming.find(x => x.start - today <= prepWindow(state, x));
+    const next = inPrep || upcoming[0] || null;
     const daysTo = next ? next.start - today : null;
-    const window = prepWindow(state, next);
     const base = { h: next, daysTo, upcoming, ended: ended || null };
     if (ended) return { kind: 'after', ...base };
     if (!next) return { kind: 'none', ...base };
-    return { kind: daysTo <= window ? 'prep' : 'far', ...base };
+    return { kind: inPrep ? 'prep' : 'far', ...base };
 }
 
 /** Этот праздник в текущем году уже прошёл — повторно не предлагаем; в следующем году — снова можно */

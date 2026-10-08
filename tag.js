@@ -191,12 +191,13 @@ export function parsePrep(text) {
     return r.people || r.mood ? r : null;
 }
 
-/** День праздника: title / morning / day / evening / night */
+/** День праздника: title / where / morning / day / evening / night */
 export function parseDay(text) {
     const inner = findBlock(text, 'HT-DAY');
     if (inner == null) return null;
     const f = fields(inner);
-    const r = { title: clean(f.title, 120), morning: clean(f.morning), day: clean(f.day), evening: clean(f.evening), night: clean(f.night) };
+    // where — где отмечают (у дня рождения человека из истории: чей дом или какое место)
+    const r = { title: clean(f.title, 120), where: clean(f.where, 80), morning: clean(f.morning), day: clean(f.day), evening: clean(f.evening), night: clean(f.night) };
     return r.morning || r.day || r.evening || r.night ? r : null;
 }
 

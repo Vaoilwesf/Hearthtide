@@ -13,7 +13,7 @@ import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.j
 import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseDateUp, parseRecapParts, stripBlocks } from './tag.js';
 import { PAIR_DEFAULT, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, levelOf, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN } from './romance.js';
 import { CAST_GROUPS, KIN_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast, nameCandidates } from './cast.js';
-import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft } from './calendar.js';
+import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, buildDateSideMessages, giftTarget } from './prompts.js';
 import { listProfiles, gatherSources, loreFor, sendSide, reasonOf } from './side.js';
 import { strings } from './i18n.js';
@@ -785,7 +785,7 @@ function processReply(N) {
             };
         }
     }
-    if (day && phase.kind === 'today' && ['title', 'morning', 'day', 'evening', 'night'].some(k => day[k] && !langOk(day[k]))) { slip = true; }
+    if (day && phase.kind === 'today' && ['title', 'where', 'morning', 'day', 'evening', 'night'].some(k => day[k] && !langOk(day[k]))) { slip = true; }
     else if (day && phase.kind === 'today') {
         // Распорядок дополняется: пришедшие части заменяют старые, прошедшие остаются
         const key = `${phase.h.id}#${phase.dayIndex}`;
@@ -857,7 +857,8 @@ function processReply(N) {
     if ((phase.kind === 'today' || phase.kind === 'prep') && phase.h && !openEvent(state, phase.h.id) && !offeredEvent(state)
         && state.turn - (state.lastEventEnd ?? -99) >= EVENT_COOLDOWN
         && state.turn - Math.max(-99, ...(state.evts || []).filter(e => e.hid === phase.h.id).map(e => e.turn)) >= EVENT_COOLDOWN) {
-        state.evRoll = rollFor(text, state.turn) < EVENT_CHANCE[phase.kind];
+        // у чужого дня рождения случайных ивентов нет — он и так небольшой
+        state.evRoll = !phase.h.npc && rollFor(text, state.turn) < EVENT_CHANCE[phase.kind];
     }
 
     // ── Свидание: бросок после ответа (есть романтика; после ссоры шанс выше) ──
@@ -997,7 +998,6 @@ function handleBdInvite(small, conf) {
     // день рождения прошёл — в «Текущий год» (если ходили), приглашение закрыто
     const old = state.bdInv;
     if (old && state.today != null && state.today > old.day) {
-        if (old.status === 'accepted') recordBday(state, old);
         state.bdInv = null;
     }
     // при помощнике — по проверке (модели часто забывают отметку invite=); без помощника или если проверка упала — по отметке
@@ -1017,16 +1017,6 @@ function handleBdInvite(small, conf) {
     if (!inv) return;
     if (inv.status === 'pending') inv.status = 'offered';            // из прошлой версии
     if (inv.status === 'offered' && state.turn - inv.turn > 6) state.bdInv = null;      // не ответили — забылось
-}
-function recordBday(st, inv) {
-    const name = L().birthday(inv.name);
-    if (st === state) ensureYear();
-    const log = st.yearLog;
-    const id = `bd-${inv.cid}@${inv.day}`;
-    if (log && fromDayNum(inv.day).y === log.y && !log.items.some(i => i.id === id)) {
-        log.items.push({ id, name, birthday: false, type: 'personal', start: inv.day, days: 1, kept: true });
-        log.items.sort((a, b) => a.start - b.start);
-    }
 }
 function decideBd(yes) {
     const inv = state.bdInv;
@@ -1107,7 +1097,9 @@ function logPast() {
         if (log.items.some(i => i.id === r.hid)) continue;
         const h = (state.holidays || []).find(x => holidayId(x) === r.hid);
         const bday = String(r.hid).match(/^bday-(user|char)-/);
-        log.items.push({ id: r.hid, name: bday ? null : r.name, birthday: !!bday, who: bday?.[1], type: h?.type || 'folk', start, days: h?.days || 1, kept: true });
+        // день рождения человека из истории: имя уже в итоге («День рождения · …»), who — свой у каждого
+        const npc = String(r.hid).match(/^bday-npc-(.+)@-?\d+$/);
+        log.items.push({ id: r.hid, name: bday ? null : r.name, birthday: !!bday || !!npc, npc: !!npc, who: npc ? `npc:${npc[1]}` : bday?.[1], type: npc ? 'personal' : h?.type || 'folk', start, days: h?.days || 1, kept: true });
         log.items.sort((a, b) => a.start - b.start);
     }
     const list = allHolidays(state);
@@ -1119,9 +1111,17 @@ function logPast() {
         h.id = holidayId(h);
         if (!list.some(x => x.id === h.id)) list.push(h);
     }
+    // и дни рождения людей истории, которые отмечаются (родня, близкие, принятые приглашения)
+    for (const c of state.cast || []) {
+        if (!c?.bday) continue;
+        const start = dayNum(log.y, c.bday.m, c.bday.d);
+        if (start >= state.today || !npcBdOn(state, c, start)) continue;
+        const h = npcHoliday(c, start);
+        if (!list.some(x => x.id === h.id)) list.push(h);
+    }
     for (const h of list) {
         if (h.start + h.days - 1 >= state.today) continue;
-        logItem(log, { id: h.id, name: h.name, birthday: !!h.birthday, who: h.who, type: h.type, start: h.start, days: h.days, kept: !!state.lived?.[h.id] });
+        logItem(log, { id: h.id, name: h.npc ? displayName(h) : h.name, birthday: !!h.birthday, npc: !!h.npc, who: h.who, type: h.type, start: h.start, days: h.days, kept: !!state.lived?.[h.id] });
     }
 }
 
@@ -1406,7 +1406,13 @@ function savePlaceEdit(value) {
 function deleteHoliday(hid) {
     const h = allHolidays(state).find(x => x.id === hid);
     if (!h) return;
-    if (h.birthday) {
+    // чужой день рождения: «не пойдём» — тот же отказ, что и кнопкой приглашения; человек остаётся в списке
+    const npcKey = h.npc ? npcBdKey(h.cid, h.start) : null;
+    const npcOff = (st) => { if (st.bdInv && npcBdKey(st.bdInv.cid, st.bdInv.day) === npcKey) st.bdInv.status = 'declined'; };
+    if (h.npc) {
+        state.bdDecisions = { ...(state.bdDecisions || {}), [npcKey]: 'declined' };
+        npcOff(state);
+    } else if (h.birthday) {
         state.birthdayOff = { ...(state.birthdayOff || {}), [h.who]: true };
     } else {
         for (const k of banKeys(h.name)) if (!state.banned.includes(k)) state.banned.push(k);
@@ -1419,7 +1425,8 @@ function deleteHoliday(hid) {
         if (st.prep?.hid === hid) st.prep = null;
         if (st.charNow?.hid === hid) st.charNow = null;
         if (st.charGift?.hid === hid) st.charGift = null;
-        if (h.birthday) st.birthdayOff = { ...(st.birthdayOff || {}), [h.who]: true };
+        if (h.npc) npcOff(st);
+        else if (h.birthday) st.birthdayOff = { ...(st.birthdayOff || {}), [h.who]: true };
     });
     if (state.prep?.hid === hid) state.prep = null;
     for (const k of Object.keys(state.days)) if (k.startsWith(`${hid}#`)) delete state.days[k];
@@ -1435,21 +1442,29 @@ function deleteHoliday(hid) {
 // В старых снимках тоже прячем удалённые праздники
 function sanitizeView(view) {
     if (!view) return view;
-    const gone = (name, birthday, who) => (birthday ? !!state.birthdayOff?.[who] : isBanned(state, name));
+    // чужой день рождения: отказались, убрали человека или выключили глазком
+    const npcGone = (id) => {
+        const m = String(id || '').match(/^bday-npc-(.+)@(-?\d+)$/);
+        if (!m) return false;
+        const c = (state.cast || []).find(x => x.id === m[1]);
+        return !c || !!c.off || state.bdDecisions?.[npcBdKey(m[1], m[2])] === 'declined';
+    };
+    const gone = (x) => (String(x.id || '').startsWith('bday-npc-') ? npcGone(x.id) : x.birthday ? !!state.birthdayOff?.[x.who] : isBanned(state, x.name));
     const v = { ...view };
-    v.upcoming = (v.upcoming || []).filter(u => !gone(u.name, u.birthday, u.who));
+    v.upcoming = (v.upcoming || []).filter(u => !gone(u));
     v.recaps = (v.recaps || []).filter(r => !isBanned(state, r.name));
-    if (v.h && gone(v.h.name, v.h.birthday, v.h.who)) {
+    if (v.h && gone(v.h)) {
         v.h = null; v.kind = 'none'; v.plan = null; v.prep = null; v.daysTo = null;
-        v.people = []; v.charNow = null; v.charGift = null; v.care = null; v.gifts = false;
+        v.people = []; v.charNow = null; v.charGift = null; v.care = null; v.gifts = false; v.bdPerson = null;
     }
     if (v.ended && isBanned(state, v.ended.name)) v.ended = null;
-    v.year = (v.year || []).filter(i => !i.raw || !isBanned(state, i.raw));
+    v.year = (v.year || []).filter(i => i.npc || !i.raw || !isBanned(state, i.raw));
     return v;
 }
 
 function displayName(h) {
     if (!h) return '';
+    if (h.npc) return L().birthday(h.name);
     if (h.birthday) return L().birthday(h.who === 'user' ? getUserName() : getCharName());
     return h.name;
 }
@@ -1462,17 +1477,17 @@ function viewSnapshot(phase) {
         kind: phase.kind,
         diag: phase.h ? null : state.diag || null,
         diagNames: phase.h || state.diag !== 'lang' ? [] : state.diagNames || [],
-        h: phase.h ? { id: phase.h.id, name: displayName(phase.h), raw: phase.h.name, iso: isoOf(phase.h.start), meaning: phase.h.meaning, type: phase.h.type, days: phase.h.days, birthday: !!phase.h.birthday, who: phase.h.who } : null,
+        h: phase.h ? { id: phase.h.id, name: displayName(phase.h), raw: phase.h.name, iso: isoOf(phase.h.start), meaning: phase.h.meaning, type: phase.h.type, days: phase.h.days, birthday: !!phase.h.birthday, who: phase.h.who, npc: !!phase.h.npc } : null,
         daysTo: phase.daysTo ?? null,
         dayIndex: phase.dayIndex ?? null,
         plan: phase.kind === 'today' ? planFor(phase.h, phase.dayIndex) : null,
         prep: phase.kind === 'prep' && state.prep?.hid === phase.h?.id ? state.prep : null,
         ended: phase.ended ? { name: displayName(phase.ended), recap: state.recaps.find(r => r.hid === phase.ended.id)?.text || null } : null,
         upcoming: (phase.upcoming || []).filter(x => !phase.h || x.id !== phase.h.id).slice(0, 4)
-            .map(x => ({ id: x.id, name: displayName(x), raw: x.name, iso: isoOf(x.start), type: x.type, meaning: x.meaning, daysTo: x.start - state.today, birthday: !!x.birthday, who: x.who })),
+            .map(x => ({ id: x.id, name: displayName(x), raw: x.name, iso: isoOf(x.start), type: x.type, meaning: x.meaning, daysTo: x.start - state.today, birthday: !!x.birthday, who: x.who, npc: !!x.npc })),
         recaps: state.recaps.slice(-3).reverse(),
         year: (state.yearLog?.items || []).map(i => ({
-            id: i.id, name: i.birthday ? L().birthday(i.who === 'user' ? getUserName() : getCharName()) : i.name, raw: i.name,
+            id: i.id, name: i.npc ? i.name : i.birthday ? L().birthday(i.who === 'user' ? getUserName() : getCharName()) : i.name, raw: i.name, npc: !!i.npc,
             type: i.birthday ? 'personal' : i.type, iso: isoOf(i.start), kept: i.kept, result: i.result || null,
             recap: state.recaps.find(r => r.hid === i.id)?.text || (i.type === 'date' && i.result && i.result !== 'missed' ? L().dateResult[i.result] : null),
             parts: state.recaps.find(r => r.hid === i.id)?.parts || null,
@@ -1481,9 +1496,15 @@ function viewSnapshot(phase) {
         pair: state.pair ? clone(state.pair) : null,
         // намеченное свидание — в инфоблоке, праздник сейчас или нет
         planned: state.date?.status === 'scheduled' ? { title: state.date.title, goal: state.date.goal, where: state.date.where, when: dateWhenText(state, state.date.at) } : null,
-        plannedBd: state.bdInv?.status === 'accepted' && state.today != null ? { name: state.bdInv.name, when: L().dateAt(state.bdInv.day - state.today, '') } : null,
+        plannedBd: state.bdInv?.status === 'accepted' && state.today != null
+            && !(phase.h?.npc && phase.h.cid === state.bdInv.cid && (phase.kind === 'prep' || phase.kind === 'today')) ? { name: state.bdInv.name, when: L().dateAt(state.bdInv.day - state.today, '') } : null,
         cast: (state.cast || []).filter(c => !castBanned(state, c.name)).map(c => ({ ...clone(c), bdayIn: bdayIn(c, state.today), age: ageOf(c, state.today) })),
         recall: state.recall,
+        // чей день рождения: портрет, кем приходится, сколько исполняется
+        bdPerson: phase.h?.npc && (phase.kind === 'prep' || phase.kind === 'today') ? (() => {
+            const c = (state.cast || []).find(x => x.id === phase.h.cid);
+            return c ? { cid: c.id, name: phase.h.name, toU: c.toU || null, toC: c.toC || null, age: ageOf(c, phase.h.start), kin: isKin(c.group) } : null;
+        })() : null,
         ...(() => {
             const act = phase.h && (phase.kind === 'prep' || phase.kind === 'today');
             if (!act) return { people: [], highlights: [], evts: [], care: null, charNow: null, charSteps: [], charGift: null, gifts: false };
@@ -2721,7 +2742,8 @@ function bodyHtml(view, live, tab = 'now') {
         return `<button class="ht-del${confirm ? ' ht-del-confirm' : ''}" data-act="del" data-hid="${esc(hid)}" title="${confirm ? L().removeSure : L().remove}" aria-label="${L().remove}">
             <i class="fa-solid ${confirm ? 'fa-check' : 'fa-trash-can'}"></i>${confirm ? `<span>${L().removeQ}</span>` : ''}</button>`;
     };
-    const editBtn = (hid) => (live && hid ? `<button class="ht-del ht-edit-btn" data-act="edit" data-hid="${esc(hid)}" title="${L().edit}" aria-label="${L().edit}"><i class="fa-solid fa-pen"></i></button>` : '');
+    // чужой день рождения правится через карточку человека во вкладке «Люди», не здесь
+    const editBtn = (hid) => (live && hid && !String(hid).startsWith('bday-npc-') ? `<button class="ht-del ht-edit-btn" data-act="edit" data-hid="${esc(hid)}" title="${L().edit}" aria-label="${L().edit}"><i class="fa-solid fa-pen"></i></button>` : '');
     const editForm = (x) => editFormHtml(x);
     const s = view.setting || {};
     const kv = (icon, label, value) => `<div class="ht-kv"><i class="fa-solid ${icon}"></i><div><span>${label}</span><b>${esc(value)}</b></div></div>`;
@@ -2750,9 +2772,10 @@ function bodyHtml(view, live, tab = 'now') {
                     <i class="fa-solid ${PART_ICON[p]}"></i>
                     <div><b>${L().part[p]}${p === view.part ? L().now : ''}</b><span>${esc(plan[p])}</span></div>
                 </div>`).join('');
-            main = section('main', 'fa-fire', plan.title && !namesMatch(plan.title, h.name) ? esc(plan.title) : L().festiveDay, `<div class="ht-parts">${rows}</div>`, sideMark + editBtn(h.id) + delBtn(h.id));
+            const where = plan.where ? `<p class="ht-plan-where"><i class="fa-solid fa-location-dot"></i><span>${esc(plan.where)}</span></p>` : '';
+            main = section('main', h.npc ? 'fa-cake-candles' : 'fa-fire', plan.title && !namesMatch(plan.title, h.name) ? esc(plan.title) : L().festiveDay, `${where}<div class="ht-parts">${rows}</div>`, sideMark + editBtn(h.id) + delBtn(h.id));
         } else {
-            main = section('main', 'fa-fire', L().festiveDay, `<p class="ht-text">${esc(h.meaning || '')}</p>${apiOn() ? '' : `<p class="ht-mute">${L().planSoon}</p>`}`, sideMark + editBtn(h.id) + delBtn(h.id));
+            main = section('main', h.npc ? 'fa-cake-candles' : 'fa-fire', L().festiveDay, `${h.meaning ? `<p class="ht-text">${esc(h.meaning)}</p>` : ''}${apiOn() ? '' : `<p class="ht-mute">${L().planSoon}</p>`}`, sideMark + editBtn(h.id) + delBtn(h.id));
         }
     } else if (view.kind === 'prep' && h) {
         const p = view.prep;
@@ -2773,6 +2796,13 @@ function bodyHtml(view, live, tab = 'now') {
     const upcoming = (view.upcoming || []).map(u => ui.editing === u.id && live ? editForm(u) : `
         <div class="ht-up"><i class="fa-solid ${TYPE_ICON[u.birthday ? 'personal' : u.type] || 'fa-star'}"></i>
         <span>${esc(u.name)}</span><b>${u.daysTo === 1 ? L().tomorrow : L().inDays(daysWord(u.daysTo))}</b>${editBtn(u.id)}${delBtn(u.id)}</div>`).join('');
+
+    // Чей день рождения: портрет (своё фото из «Людей»), кем приходится обоим, сколько исполняется
+    const bp = view.bdPerson;
+    const npcCard = bp ? `<div class="ht-npcbd">${avaHtml(avatars()[bp.cid], bp.name)}<div>
+            <b>${esc(bp.name)}</b>${bp.age != null ? `<span class="ht-npcbd-age"><i class="fa-solid fa-cake-candles"></i>${esc(L().turns(bp.age, plural))}</span>` : ''}
+            ${[bp.toU && `${L().toWhom(getUserName())}: ${bp.toU}`, bp.toC && `${L().toWhom(getCharName())}: ${bp.toC}`].filter(Boolean).map(t => `<em>${esc(t)}</em>`).join('')}
+        </div></div>` : '';
 
     // Персонаж — всегда сверху, своя карточка: важность, текущий шаг, что было до, подарок
     let charCard = '';
@@ -2858,7 +2888,8 @@ function bodyHtml(view, live, tab = 'now') {
     return `<div class="ht-body">
         ${tabs}
         ${planned}${plannedBd}
-        ${view.kind === 'today' ? (worldMini ? `<div class="ht-world-mini"><i class="fa-solid fa-location-dot"></i>${worldMini}</div>` : '') : (world ? `<div class="ht-world">${world}</div>` : '')}
+        ${npcCard}
+        ${view.kind === 'today' || bp ? (worldMini ? `<div class="ht-world-mini"><i class="fa-solid fa-location-dot"></i>${worldMini}</div>` : '') : (world ? `<div class="ht-world">${world}</div>` : '')}
         ${charCard}
         ${eventsSec}
         ${main}

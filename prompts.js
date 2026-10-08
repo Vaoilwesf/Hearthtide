@@ -4,19 +4,41 @@
 import { isoOf, fromDayNum, easterJulian, easterGregorian } from './dates.js';
 import { hasGifts, charDue, isIntimate, openEvent, dateHoursLeft } from './calendar.js';
 import { openSteps, goalOpen, DATE_OPEN } from './romance.js';
+import { ageOf } from './cast.js';
 
 const PART_EN = { morning: 'morning', day: 'daytime', evening: 'evening', night: 'night' };
 
 function hName(h, ctx) {
     if (!h) return '';
+    if (h.npc) return `${h.name}'s birthday`;
     if (h.birthday) return `${h.who === 'user' ? ctx.userName : ctx.charName}'s birthday`;
     return h.name;
+}
+
+// ─── День рождения человека из истории ───
+const npcOf = (state, h) => (h?.npc ? (state.cast || []).find(c => c.id === h.cid) || null : null);
+/** «turns 30; to Anna: mother; to Ivan: mother-in-law» */
+function npcAbout(ctx, h) {
+    const c = npcOf(ctx.state, h);
+    if (!c) return '';
+    const age = ageOf(c, h.start);
+    return [age != null && `turns ${age}`, c.toU && `to ${ctx.userName}: ${c.toU}`, c.toC && `to ${ctx.charName}: ${c.toC}`].filter(Boolean).join('; ');
+}
+/** Ждут ли там {{char}} и {{user}} и почему */
+function npcExpect(ctx, h) {
+    const { state, userName, charName } = ctx;
+    const c = npcOf(state, h);
+    if (state.bdDecisions?.[`${h.cid}@${h.start}`] === 'accepted') return `${userName} accepted the invitation: ${charName} and ${userName} are expected`;
+    if (c?.group === 'kin_both') return `it is family to both — ${charName} and ${userName} are among those who keep the day, not guests`;
+    if (c?.group === 'kin_user' || c?.group === 'kin_char') return `as ${c.group === 'kin_user' ? userName : charName}'s family, custom expects ${charName} and ${userName} there`;
+    return `${h.name} is close to them, so an invitation is likely; until it comes, they aren't expected`;
 }
 const langOf = (ctx) => ctx.lang || "the roleplay's language";
 
 // Кому по обычаю дарят на этом празднике: виновнику торжества (из подготовки), иначе {{user}}
 export function giftTarget(state, h, userName, charName) {
     if (!h) return userName;
+    if (h.npc) return h.name;
     if (h.birthday) return h.who === 'user' ? userName : charName;
     return state.giftTo?.[h.id] || userName;
 }
@@ -54,6 +76,10 @@ export function buildStatePrompt(ctx) {
             const bits = [p.people && `around ${ctx.placeName || userName}: ${p.people}`, p.mood && `mood: ${p.mood}`].filter(Boolean);
             if (bits.length) lines.push(`Preparations — ${bits.join(' · ')}`);
         }
+        if (h.npc) {
+            const about = npcAbout(ctx, h);
+            lines.push(`It is ${h.name}'s own occasion${about ? ` (${about})` : ''}, kept by ${h.name}'s household and close circle — a small family affair, not the whole place's; ${npcExpect(ctx, h)}.`);
+        }
         if (h.birthday && h.who === 'user') {
             lines.push(`People close to ${userName} are secretly preparing a surprise — keep it hidden from ${userName}; hints at most.`);
         }
@@ -68,8 +94,11 @@ export function buildStatePrompt(ctx) {
         lines.push(`TODAY: ${hName(h, ctx)}${dayInfo}${plan?.title ? ` — ${plan.title}` : ''}.`);
         if (plan && part && plan[part]) lines.push(`Now (${PART_EN[part]}): ${plan[part]}`);
         else if (h.meaning) lines.push(`Traditions: ${h.meaning}`);
-        // праздник идёт своим ходом вокруг сюжета: люди держатся распорядка, сюжет его не отменяет
-        lines.push(`The holiday keeps its own course: ${charName} and the people around follow today's plan as custom expects — they gather, call, wait, come to fetch ${userName}, carry on without ${userName} if need be. The story's own events come first and can move or shorten a part, but they don't cancel the day; once a scene settles, the day pulls them back in. Follow the day's order — don't jump ahead.`);
+        if (h.npc) {
+            // чужой день рождения — свой распорядок у именинника; {{char}} и {{user}} — гости, а не хозяева дня
+            const about = npcAbout(ctx, h);
+            lines.push(`It is ${h.name}'s day${about ? ` (${about})` : ''}: a small household occasion, kept by ${h.name} and their close ones on their own schedule${plan?.where ? ` (${plan.where})` : ''}; ${npcExpect(ctx, h)}. When the scene allows, the day draws ${charName} and ${userName} in — a reminder, someone sent for them, time to set off with a gift; the story's own events come first, and if they can't come, it goes on without them. Follow the day's order — don't jump ahead.`);
+        } else lines.push(`The holiday keeps its own course: ${charName} and the people around follow today's plan as custom expects — they gather, call, wait, come to fetch ${userName}, carry on without ${userName} if need be. The story's own events come first and can move or shorten a part, but they don't cancel the day; once a scene settles, the day pulls them back in. Follow the day's order — don't jump ahead.`);
         if (h.birthday && h.who === 'user') lines.push(`It is ${userName}'s birthday: the prepared surprise comes out today.`);
     }
     if (phase.kind === 'after' && phase.ended) {
@@ -118,6 +147,8 @@ export function buildStatePrompt(ctx) {
     // Дни рождения людей вокруг: позовут или промолчат — по отношениям
     for (const b of ctx.castBdays || []) {
         const inv = state.bdInv?.cid === b.cid ? state.bdInv : null;
+        // день рождения уже идёт как свой праздник (подготовка или сам день) — эта строка его только повторила бы
+        if (active && h.npc && h.cid === b.cid && (inv?.status === 'accepted' || (!inv && b.kin))) continue;
         const ties = [b.toU && `to ${userName}: ${b.toU}`, b.toC && `to ${charName}: ${b.toC}`].filter(Boolean).join('; ');
         const day = b.days === 0 ? 'is today' : b.days === 1 ? 'is tomorrow' : `is in ${b.days} days, not sooner`;
         if (inv?.status === 'accepted') lines.push(`${b.name}'s birthday ${day}${ties ? ` (${ties})` : ''}. ${userName} accepted the invitation; ${charName} knows${b.days === 0 ? ` — today they are expected; lead there when the scene allows` : ''}.`);
@@ -189,7 +220,11 @@ function holidayGuide(ctx) {
 // Список людей — общий текст для подготовки и обновлений
 function peopleRules(ctx) {
     const { userName, charName } = ctx;
-    return `HT-PEOPLE replaces the previous list. P lines: up to 8 people taking part in this holiday (not ${charName}, not ${userName}) — those in the story, kin first, and for a family occasion also those its custom calls for. Each person once, under the name the story uses for them (never the same person twice under a name and a role). GROUP: relative = kin of ${userName} or of ${charName}, by blood or marriage (parents, siblings, in-laws); friend; acquaintance — judge by the card, persona and story. WANT: what this person wants, hopes, plans or worries about around the holiday, a few words, the way people speak in this era and setting — something that could draw them into the story; it must fit where they are and what they have just done in the latest messages, never what they are doing in the current scene, each person different. GIFT: their gift while still pending, else empty. No surprise meant for ${userName} spoiled, no one who has left. D lines: people whose part is done (gave their gift, did their bit) — what they did; they leave the P list. Skip the block if nobody qualifies.`;
+    const h = ctx.phase?.h;
+    const who = h?.npc
+        ? `up to 5 people at ${h.name}'s birthday (not ${charName}, not ${userName}) — ${h.name} first, it is their day, then their household and guests the story gives grounds for.`
+        : `up to 8 people taking part in this holiday (not ${charName}, not ${userName}) — those in the story, kin first, and for a family occasion also those its custom calls for.`;
+    return `HT-PEOPLE replaces the previous list. P lines: ${who} Each person once, under the name the story uses for them (never the same person twice under a name and a role). GROUP: relative = kin of ${userName} or of ${charName}, by blood or marriage (parents, siblings, in-laws); friend; acquaintance — judge by the card, persona and story. WANT: what this person wants, hopes, plans or worries about around the holiday, a few words, the way people speak in this era and setting — something that could draw them into the story; it must fit where they are and what they have just done in the latest messages, never what they are doing in the current scene, each person different. GIFT: their gift while still pending, else empty. No surprise meant for ${userName} spoiled, no one who has left. D lines: people whose part is done (gave their gift, did their bit) — what they did; they leave the P list. Skip the block if nobody qualifies.`;
 }
 const PEOPLE_BLOCK = '<!-- HT-PEOPLE\nP | NAME | GROUP | WANT | GIFT\nD | NAME | WHAT_THEY_DID\n-->';
 
@@ -407,7 +442,9 @@ function prepRule(ctx) {
     const { state, phase, userName, charName } = ctx;
     const h = phase.h;
     const prev = state.prep?.hid === h.id ? state.prep : null;
-    const scope = isIntimate(h)
+    const scope = h.npc
+        ? `This is ${h.name}'s birthday${npcAbout(ctx, h) ? ` (${npcAbout(ctx, h)})` : ''}: only ${h.name}'s household and close circle get ready, modestly, as a family affair; ${npcExpect(ctx, h)}.`
+        : isIntimate(h)
         ? `This is a personal or family occasion: only ${h.birthday && h.who === 'user' ? `the people close to ${userName}` : 'the household and close circle'} get ready — not the whole community.`
         : `This is a public holiday: the community around ${userName} gets ready.`;
     return `<!-- HT-PREP people=… | mood=… | gifts=yes|no | gift_to=… | care=high|normal|low -->
@@ -416,6 +453,11 @@ How things get ready for ${hName(h, ctx)} (in ${phase.daysTo} day${phase.daysTo 
 
 function dayRule(ctx) {
     const h = ctx.phase.h;
+    if (h.npc) {
+        const about = npcAbout(ctx, h);
+        return `<!-- HT-DAY title=… | where=… | morning=… | day=… | evening=… | night=… -->
+How ${h.name}'s birthday is kept TODAY${about ? ` (${about})` : ''} by the customs of this era and place and by who ${h.name} is — a small household occasion, not a public feast. title = what the day is for ${h.name}, a few words; where = where it is kept — whose home or what place, as the story names it. Then only the parts of the day when something happens for it — the gathering, the meal, wishes and gifts, seeing guests off — one sentence each; leave the other parts out. Note: ${npcExpect(ctx, h)}; never decide whether ${ctx.userName} comes.`;
+    }
     return `<!-- HT-DAY title=… | morning=… | day=… | evening=… | night=… -->
 How ${hName(h, ctx)} is celebrated TODAY${h.days > 1 ? ` (day ${ctx.phase.dayIndex} of ${h.days} — each day may have its own meaning)` : ''} by the traditions of this era and place, from morning to night: rites, food, games, songs, what people do. title = what this day is about, a few words — not the holiday's name. One or two sentences per part.`;
 }
