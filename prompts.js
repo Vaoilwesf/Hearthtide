@@ -264,6 +264,13 @@ ${bare.length ? `Listed without roles yet: ${bare.join(', ')} — send C lines f
 }
 
 // ═══ Свидания ═══
+/** Темп романтики словами — для модели */
+const paceText = (ctx, d) => ({
+    slow: `slow-burn: small, careful steps — words, glances, light touches; closeness is earned slowly`,
+    fast: `fast-burn: bolder, quicker steps toward closeness`,
+}[d?.pace] || `an even pace: closeness grows step by step, as the story allows`);
+/** Чем должны быть шаги: заметные шаги к цели, разные по виду, каждый вырастает из предыдущего */
+const stepFlow = (ctx, d) => `Steps are beats toward the goal, not tiny gestures: each is a different kind of closeness — physical (a touch, an embrace, a kiss) or spoken (a question, a confession, a compliment, a shared memory), mixed as the goal needs; never two open steps of the same kind (not two touches of the hand, not two talks), never the same act in other words. A new step grows out of what was just done — it carries that moment one step further, the way the scene is going. Pace: ${paceText(ctx, d)}.`;
 /** Как писать шаг свидания: задача для {{char}}, одна форма — глагол в неопределённой форме + что / кому */
 const stepForm = (ctx) => `Each step is a task for ${ctx.charName} to carry out next — written as a to-do: ${ctx.lang === 'Russian' ? 'an infinitive verb first, then whom / what (like a to-do list item)' : 'a bare verb first, then whom / what (like a to-do list item)'}, 3–8 words, real names; never narration — no past, present or future tense, no "${ctx.charName} will…", no "${ctx.charName} does…". Only ${ctx.charName}'s own actions — never a step for ${ctx.userName} or for both of them: what ${ctx.userName} does is the player's choice.`;
 const whoName = (ctx, w) => (w === 'user' ? ctx.userName : w === 'char' ? ctx.charName : 'either of them');
@@ -300,7 +307,7 @@ function dateStateLines(ctx) {
     if (d.status !== 'active') return out;
     const open = openSteps(d);
     const both = [];
-    const goal = d.goal ? ` Its point: ${d.goal}${d.goalDone ? ' — reached.' : goalOpen(d, ctx.dateLevel) ? ' — within reach now; let it come when the moment is right.' : ' — not yet; first more closeness.'}` : '';
+    const goal = d.goal ? ` Its goal: ${d.goal}${d.goalDone ? ' — reached.' : goalOpen(d, ctx.dateLevel) ? ` — UNLOCKED: they have grown close enough. In this reply or the next, ${charName} takes the lead and moves to it — acts on it as fits the story, their pace and how they stand; ${userName} answers.` : ' — not yet; first more closeness.'}` : '';
     // шкала растёт с нуля, поэтому «плохо» — это срывы, а не малый процент в начале
     const fails = (d.steps || []).filter(x => x.state === 'failed').length, dones = (d.steps || []).filter(x => x.state === 'done').length;
     const how = fails > dones ? (d.score < 10 ? 'badly' : 'poorly') : d.score >= 60 ? 'wonderfully' : d.score >= 30 ? 'well' : fails ? 'unevenly, a little awkward' : 'it is just warming up';
@@ -319,12 +326,12 @@ function dateUpRule(ctx, main = false) {
     const lang = langOf(ctx);
     const scope = main ? 'in this reply' : 'in the messages marked [NEW]';
     if (d.status === 'scheduled') {
-        return `<!-- HT-DATE-UP\nSTART\nNEW | <task for ${charName}>\n-->\nFill in the lines, never copy the <…> placeholders. Only if the date "${d.title}" (planned ${dateAtText(state, d.at)}; goal: ${d.goal || 'to be together'}) has actually begun ${scope}: START, then ${DATE_OPEN} NEW first steps toward the goal — small romantic things or moments of closeness that fit this date. ${stepForm(ctx)} Never chores or anything off the date. Otherwise write nothing.`;
+        return `<!-- HT-DATE-UP\nSTART\nNEW | <task for ${charName}>\n-->\nFill in the lines, never copy the <…> placeholders. Only if the date "${d.title}" (planned ${dateAtText(state, d.at)}; goal: ${d.goal || 'to be together'}) has actually begun ${scope}: START, then ${DATE_OPEN} NEW first steps toward the goal. ${stepFlow(ctx, d)} ${stepForm(ctx)} Never chores or anything off the date. Otherwise write nothing.`;
     }
     const open = openSteps(d);
     const list = open.map(s => `${s.n}. ${s.t}`).join('\n');
     const need = DATE_OPEN - open.length;
-    const goal = d.goalDone ? 'reached' : goalOpen(d, ctx.dateLevel) ? 'within reach — GOAL | yes once the story reaches it' : 'locked until more steps are done';
+    const goal = d.goalDone ? 'reached' : goalOpen(d, ctx.dateLevel) ? `UNLOCKED — ${charName} moves to it now; GOAL | yes once the story shows it done` : `locked: ${(d.need?.steps ?? 5)} done steps and ${(d.need?.score ?? 40)}% success needed`;
     const gifts = (d.gifts || []).map(g => `${g.from ? `${g.from}: ` : ''}${g.what}`);
     const time = ctx.dateTime ? `\n${ctx.dateTime}` : '';
     return `<!-- HT-DATE-UP
@@ -345,7 +352,7 @@ ${list || '(none yet)'}
 Judge what happens ${scope} — read ${main ? 'the whole reply' : 'every [NEW] message to its very end'}:
 - STATE, always: on — they are still on the date; ending — it is winding down (saying goodbye, heading home, about to part); over — it has ended: they parted, went their separate ways, or the story skipped past it. WHY: what in the story shows it. A quarrel, a pause, a change of place or a talk about other things is still on. Never over just because the [NEW] messages are short or quiet.
 - One STEP line for EVERY open step above, by its number: done — ${charName} did it, or something close to it in spirit; failed — tried, but met a refusal, coldness or a bad reaction; open — not yet (no note). NOTE for done or failed: what came of it, past tense, one line, real names.
-- NEW: ${need > 0 ? `exactly ${need} new step${need > 1 ? 's' : ''}` : 'one for each step you mark done or failed'}, so that ${DATE_OPEN} stay open. Steps lead toward the goal: a small romantic thing or a moment of closeness that grows out of this date and what is happening right now — getting to know ${userName}, attention, tenderness, touch, a shared moment, a confession; never a copy of an open step. After a failed step, one NEW step grows out of it and softens the moment. Never chores, errands or anything off the date. ${stepForm(ctx)} Never (user), (char) or {{…}}.
+- NEW: ${need > 0 ? `exactly ${need} new step${need > 1 ? 's' : ''}` : 'one for each step you mark done or failed'}, so that ${DATE_OPEN} stay open. ${stepFlow(ctx, d)} After a failed step, one NEW step softens the moment. Never chores, errands or anything off the date. ${stepForm(ctx)} Never (user), (char) or {{…}}.${(d.rejected || []).length ? ` Rejected earlier as repeats or not tasks — don't send these again: ${d.rejected.slice(-4).join(' / ')}.` : ''}
 - MOMENT: up to ${DATE_MOMENTS} notable things that happened outside the open steps — a confession, a kiss, an embrace, a brave or tender gesture; one line each, past tense, real names. None if nothing stood out.
 - GIFT: only a real thing handed from one to the other (a flower, a trinket, a keepsake, food made for them) — who gave it and what it is, a few words; never a kiss, a touch, a word or an act. Up to ${DATE_MOMENTS}; skip the gifts already counted.
 - MOOD only if it clearly went better or worse beyond the steps. VIBE: how the date goes overall. THOUGHT: ${charName}'s private thought about the date now, in ${charName}'s own manner, under 15 words.
@@ -365,7 +372,7 @@ export function buildDateRefillMessages(ctx, src, k) {
             src.card && `[${charName}]\n${src.card}`,
             `[Story — latest messages]\n${src.story || '—'}`,
             `The date: ${d.title}${d.where ? `, ${d.where}` : ''}; goal: ${d.goal || '—'}.\nStill open:\n${open || '—'}\nAlready done or tried:\n${done || '—'}`,
-            `Write exactly ${k} line${k > 1 ? 's' : ''} like:\nNEW | <task for ${charName}>\nEach leads toward the goal and grows out of what is happening right now: a small romantic thing or a moment of closeness, never a copy of the lists above, never chores or anything off the date. ${stepForm(ctx)} In ${langOf(ctx)}.`,
+            `Write exactly ${k} line${k > 1 ? 's' : ''} like:\nNEW | <task for ${charName}>\nEach leads toward the goal and grows out of the last thing done and what is happening right now. ${stepFlow(ctx, d)} Never chores or anything off the date. ${stepForm(ctx)}${(d.rejected || []).length ? ` Rejected as repeats — don't send again: ${d.rejected.slice(-4).join(' / ')}.` : ''} In ${langOf(ctx)}.`,
         ].filter(Boolean).join('\n\n') },
     ];
 }
@@ -412,7 +419,7 @@ function dateSense(ctx) {
 - what: true to ${charName}'s character and means and to the customs of the era — something ${charName} would really think of for ${userName}.`;
 }
 const DATE_FORMAT = '<!-- HT-DATE title=… | goal=… | hook=… | where=… | at=YYYY-MM-DD HH:MM -->';
-const dateFields = (ctx) => `title: what it is, a few words; goal: what ${ctx.charName} means to achieve on it, from the story — written as a task (${ctx.lang === 'Russian' ? 'an infinitive verb first' : 'a bare verb first'}: to mend, to say, to begin, to celebrate something), a few words; hook: how ${ctx.charName} will ask, one sentence; where: the place; at: when, in the story's calendar (now — if right away).`;
+const dateFields = (ctx) => `title: what it is, a few words; goal: what the date is for, from the story — general, 2–5 words, written as a task (${ctx.lang === 'Russian' ? 'an infinitive verb first' : 'a bare verb first'}), what is to be reached, not how; hook: how ${ctx.charName} will ask, one sentence; where: the place; at: when, in the story's calendar (now — if right away).`;
 
 /** Помощнику: составить план свидания */
 function datePlanRule(ctx) {
@@ -709,7 +716,7 @@ Only if the latest messages show something new at "${ev?.title || 'the gathering
     if (needs.has('dateplan')) task.push(datePlanRule(ctx));
     if (needs.has('daterecap') && !(needs.has('date') && state.date?.status === 'active')) task.push(dateRecapRule(ctx));
     if (needs.has('datewatch')) task.push(`<!-- HT-DATE title=… | goal=… | where=… | at=YYYY-MM-DD HH:MM | started=yes -->
-Only if the latest messages show ${userName} and ${charName} on a date that isn't tracked yet (started=yes), or agreeing on one for later (at — when, no started). Leave it out otherwise.`);
+goal: what the date is for — general, 2–5 words, a task. Only if the latest messages show ${userName} and ${charName} on a date that isn't tracked yet (started=yes), or agreeing on one for later (at — when, no started). Leave it out otherwise.`);
     if (needs.has('new')) {
         const known = [...(state.holidays || []).map(x => x.name), ...(ctx.offerNames || []), ...(ctx.passed || [])].filter(Boolean).slice(0, 14);
         task.push(`<!-- HT-NEW CAUSE | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP -->

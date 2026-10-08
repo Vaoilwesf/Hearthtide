@@ -11,7 +11,7 @@ import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
 import { slimSmallTag, parseExtras, parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseDateUp, parseRecapParts, stripBlocks } from './tag.js';
-import { PAIR_DEFAULT, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, levelOf, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN, DATE_SKIP_END, DATE_SKIP_HARD, DATE_CLOSE_TURNS, DATE_QUIET } from './romance.js';
+import { PAIR_DEFAULT, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, levelOf, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN, DATE_SKIP_END, DATE_SKIP_HARD, DATE_CLOSE_TURNS, DATE_QUIET, goalNeed, paceAuto, stepKinds } from './romance.js';
 import { CAST_GROUPS, KIN_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast, nameCandidates } from './cast.js';
 import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE_DEFAULT, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday, giftJoint } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, buildDateSideMessages, buildDateRefillMessages, giftTarget, hName } from './prompts.js';
@@ -37,7 +37,8 @@ const LS = {
     eraMap: 'hearthtide_era_map',      // эпоха и вера — отдельно для каждого персонажа или группы
     dateChance: 'hearthtide_date_chance', // шанс, что чар сам позовёт на свидание после ответа (%)
     dateLevel: 'hearthtide_date_level',   // сложность свиданий: easy | hard
-    evChance: 'hearthtide_ev_chance',     // шанс случайного ивента на идущем мероприятии после ответа (%)
+    evChance: 'hearthtide_ev_chance',
+    datePace: 'hearthtide_date_pace',     // темп романтики: auto (по истории) | slow | fast     // шанс случайного ивента на идущем мероприятии после ответа (%)
 };
 const lsGet = (k, d) => { const v = localStorage.getItem(k); return v === null ? d : v; };
 const isEnabled = () => lsGet(LS.enabled, 'true') !== 'false';
@@ -53,6 +54,7 @@ function apiProfile() {
 const apiOn = () => isEnabled() && !!apiProfile();
 const sideDepth = () => Number(lsGet(LS.depth, '10')) || 10;
 const dateLevel = () => (lsGet(LS.dateLevel, 'easy') === 'hard' ? 'hard' : 'easy');
+const datePaceSetting = () => { const v = lsGet(LS.datePace, 'auto'); return ['slow', 'fast'].includes(v) ? v : 'auto'; };
 const evChanceSetting = () => { const n = Number(lsGet(LS.evChance, String(EVENT_CHANCE_DEFAULT))); return isNaN(n) ? EVENT_CHANCE_DEFAULT : Math.max(0, Math.min(50, n)); };
 const dateChanceSetting = () => { const n = Number(lsGet(LS.dateChance, '6')); return isNaN(n) ? 6 : Math.max(0, Math.min(30, n)); };
 
@@ -751,6 +753,22 @@ function processReply(N) {
         }
     }
     if (dd?.status === 'active') {
+        // темп (слоуберн / обычный / фастберн): выбран в настройках или по романтике пары в начале свидания
+        const ps = datePaceSetting();
+        dd.pace = ps !== 'auto' ? ps : (dd.paceAuto ?? (dd.paceAuto = paceAuto(state.pair?.r)));
+        dd.need = goalNeed(lvl, dd.pace);
+        // один раз: открытые шаги из прошлых версий — не задачи («Лёша уберёт…») или повторы одного вида — убираем, места дозапросим
+        if (!dd.taskV) {
+            const c = getCharName();
+            const kept = [];
+            for (const st of openSteps(dd)) {
+                const kinds = stepKinds(st.t);
+                const dup = kinds.length && kept.some(k => stepKinds(k.t).some(x => kinds.includes(x)));
+                if (taskForm(st.t, c) && !dup) kept.push(st);
+                else { st.state = 'dropped'; console.info(`[Hearthtide] свидание: старый шаг убран (${dup ? 'повтор' : 'не задача'}): ${st.t}`); }
+            }
+            dd.taskV = 1;
+        }
         // Конец свидания — только по истории: «подходит к концу» → конец, или таймскип. Одно «over» без предпосылок
         // лишь помечает «подходит к концу»; конец — если следующий ответ его подтвердит. Так свидание не обрывается.
         const nowAt = { day: state.today, clock: state.clock };
@@ -2408,11 +2426,11 @@ function dateCardHtml() {
     }
     const hearts = Math.min(5, Math.floor(d.score / 18));
     const tone = romMix(d.score);
-    const L0 = levelOf(lvl);
+    const L0 = d.need || goalNeed(lvl, d.pace);
     const done = doneCount(d);
     // главная цель: отдельный блок; как открывается — словами и цифрами
     const goalHow = g === 'done' ? L().goalHow.done : g === 'open' ? L().goalHow.open
-        : L().goalHow.locked(L0.goalSteps, Math.min(done, L0.goalSteps), L0.goalScore, d.score);
+        : L().goalHow.locked(L0.steps, Math.min(done, L0.steps), L0.score, d.score);
     const goalBox = d.goal ? `<div class="ht-dgoal ht-goal-${g}">
             <div class="ht-dgoal-head"><i class="fa-solid fa-bullseye"></i><span>${L().dateGoalMain}</span><em>${esc(L().goalState[g])}</em></div>
             <p class="ht-dgoal-text">${esc(d.goal)}</p>
@@ -3464,6 +3482,14 @@ function injectSettingsPanel() {
                             <option value="hard" ${dateLevel() === 'hard' ? 'selected' : ''}>сложная</option>
                         </select>
                     </div>
+                    <div class="ht-set-row" title="Медленный (слоуберн) — до главной цели дольше, шаги осторожнее. Быстрый — короче и смелее. «По истории» — по романтике пары в начале свидания">
+                        <span>Темп романтики</span>
+                        <select id="ht-set-datepace" class="text_pole">
+                            <option value="auto" ${datePaceSetting() === 'auto' ? 'selected' : ''}>по истории</option>
+                            <option value="slow" ${datePaceSetting() === 'slow' ? 'selected' : ''}>медленный</option>
+                            <option value="fast" ${datePaceSetting() === 'fast' ? 'selected' : ''}>быстрый</option>
+                        </select>
+                    </div>
                 </section>
               </div>
             </div>
@@ -3496,6 +3522,11 @@ function injectSettingsPanel() {
             if (v) v.textContent = +e.target.value ? `${e.target.value}%` : 'выкл.';
             updateDateWhy();
             scheduleRenderAll();          // строка о свидании в карточке пары
+        });
+        document.getElementById('ht-set-datepace')?.addEventListener('change', e => {
+            localStorage.setItem(LS.datePace, e.target.value);
+            injectPrompts();
+            renderAll();
         });
         document.getElementById('ht-set-datelevel')?.addEventListener('change', e => {
             localStorage.setItem(LS.dateLevel, e.target.value);

@@ -7,10 +7,60 @@ export const PAIR_DEFAULT = { f: 0, r: 0, note: null, scale: 2 };   // друж�
 
 // Сложность свиданий: сколько дают шаг, срыв, «лучше/хуже» и цель; сколько шагов и успеха нужно, чтобы цель открылась
 export const DATE_LEVELS = {
-    easy: { step: 12, fail: -6, up: 4, down: -4, goal: 15, moment: 6, gift: 9, goalSteps: 3, goalScore: 35 },
-    hard: { step: 7, fail: -10, up: 3, down: -6, goal: 10, moment: 4, gift: 6, goalSteps: 5, goalScore: 55 },
+    easy: { step: 9, fail: -6, up: 4, down: -4, goal: 15, moment: 6, gift: 9, goalSteps: 5, goalScore: 40 },
+    hard: { step: 6, fail: -10, up: 3, down: -6, goal: 10, moment: 4, gift: 6, goalSteps: 7, goalScore: 55 },
 };
 export const levelOf = (k) => DATE_LEVELS[k] || DATE_LEVELS.easy;
+/**
+ * Темп романтики: медленный (слоуберн) — до цели дольше, шаги осторожнее; быстрый — короче и смелее.
+ * «По истории» — по романтике пары в начале свидания.
+ */
+export const DATE_PACES = { slow: { steps: 2, score: 10 }, normal: { steps: 0, score: 0 }, fast: { steps: -2, score: -10 } };
+export const paceAuto = (r) => (r == null ? 'normal' : r < 30 ? 'slow' : r >= 70 ? 'fast' : 'normal');
+/** Сколько шагов и успеха нужно, чтобы главная цель открылась: сложность + темп */
+export function goalNeed(level, pace) {
+    const L = levelOf(level), P = DATE_PACES[pace] || DATE_PACES.normal;
+    return { steps: Math.max(3, L.goalSteps + P.steps), score: Math.max(25, Math.min(80, L.goalScore + P.score)) };
+}
+/** Главная цель — коротко и общо: длинную обрезаем по первой запятой или «и» */
+export function shortGoal(g) {
+    const x = String(g || '').trim().replace(/[.;!]+$/, '');
+    if (!x || x.split(/\s+/).length <= 6) return x || null;
+    const cut = x.split(/,|\s+(?:и|а также|чтобы|and|so that|to help)\s+/i)[0].trim();
+    return cut.split(/\s+/).length >= 2 ? cut : x;
+}
+
+// ─── Виды шагов: два открытых шага одного вида — повтор («накрыть ладонь» и «положить ладонь на руку») ───
+const STEP_KINDS = {
+    hand: /(рук|ладон|пальц|кист|запяст|hand|palm|finger|wrist)/i,
+    face: /(волос|прядь|пряд|лиц|щек|щёк|подбород|висок|лоб|hair|cheek|face|chin|forehead)/i,
+    hug: /(обн[яи]|объят|прижа|притян|hug|embrace|hold her close|hold him close|pull .* close)/i,
+    kiss: /(поцел|губ|целов|kiss|lips)/i,
+    talk: /(разговор|поговор|расспрос|спрос|рассказ|обсуд|talk|ask|tell|discuss|conversation)/i,
+    confess: /(призна|откро|confess|admit|open up)/i,
+    praise: /(комплимент|похвал|красив|compliment|praise)/i,
+    care: /(укры|плед|куртк|пиджак|кофт|согре|напо|накорм|позабот|blanket|jacket|coat|warm|feed|look after)/i,
+    gaze: /(взгляд|смотр|глаз|look into|gaze|eyes)/i,
+};
+export function stepKinds(t) {
+    const x = String(t || '').toLowerCase().replace(/ё/g, 'е');
+    return Object.entries(STEP_KINDS).filter(([, re]) => re.test(x)).map(([k]) => k);
+}
+const stems = (t) => new Set(String(t || '').toLowerCase().replace(/ё/g, 'е').split(/[^\p{L}]+/u).filter(w => w.length >= 4).map(w => w.slice(0, 5)));
+/** Шаг повторяет открытый (тот же вид) или почти дословно — недавно сделанный */
+export function stepRepeats(d, t) {
+    const open = openSteps(d);
+    const kinds = stepKinds(t);
+    if (kinds.length && open.some(s => stepKinds(s.t).some(k => kinds.includes(k)))) return true;
+    const A = stems(t);
+    const recent = [...open, ...(d.steps || []).filter(s => s.state !== 'open').slice(-4)];
+    return recent.some(s => {
+        const B = stems(s.t);
+        let n = 0;
+        for (const w of A) if (B.has(w)) n++;
+        return n >= 2 && n / Math.max(1, Math.min(A.size, B.size)) >= 0.5;
+    });
+}
 /** Сколько шагов открыто одновременно */
 export const DATE_OPEN = 4;
 /** Моментов (поцелуй, признание, смелый жест) — не больше стольких за ответ; подарков — столько же */
@@ -51,7 +101,7 @@ export function newDate(d, turn, started) {
         v: 2,
         // одно и то же свидание при повторной обработке ответа — тот же id (уведомление и анимация — один раз)
         id: `d-${turn}-${idOf(d.title)}`,
-        title: d.title, goal: d.goal || null, hook: d.hook || null, where: d.where || null, at: d.at || null,
+        title: d.title, goal: shortGoal(d.goal), hook: d.hook || null, where: d.where || null, at: d.at || null,
         steps: [], nextN: 1, score: 0, goalDone: false, thought: null, vibe: null, notes: [], log: [], gifts: [], closing: null,
         status: started ? 'active' : 'offered',
         turn, startTurn: started ? turn : null, lastUpdate: turn, result: null,
@@ -72,7 +122,7 @@ export const openSteps = (d) => (d?.steps || []).filter(s => s.state === 'open')
 export const doneCount = (d) => (d?.steps || []).filter(s => s.state === 'done').length;
 export const failCount = (d) => (d?.steps || []).filter(s => s.state === 'failed').length;
 /** Цель открыта: сделано достаточно шагов и свидание идёт неплохо */
-export const goalOpen = (d, level) => !!d && !d.goalDone && doneCount(d) >= levelOf(level).goalSteps && d.score >= levelOf(level).goalScore;
+export const goalOpen = (d, level) => { const n = d?.need || goalNeed(level, d?.pace); return !!d && !d.goalDone && doneCount(d) >= n.steps && d.score >= n.score; };
 
 function freeSlot(d) {
     const used = new Set(openSteps(d).map(s => s.slot));
@@ -84,6 +134,8 @@ function addStep(d, t, who, turn) {
     const slot = freeSlot(d);
     if (slot < 0) return false;
     if (d.steps.some(s => s.state === 'open' && normT(s.t) === normT(t))) return false;
+    // тот же вид, что уже открытый шаг, или почти дословный повтор недавнего — не ставим, место дозапросим
+    if (stepRepeats(d, t)) { d.rejected = [...(d.rejected || []), t].slice(-6); return false; }
     // шаги — только действия {{char}}: что делает {{user}}, решает игрок
     d.steps.push({ n: d.nextN++, t, who: 'char', state: 'open', slot, turn, note: null });
     return true;
