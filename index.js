@@ -10,11 +10,12 @@ import {
 import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
-import { parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseDateUp, parseRecapParts, stripBlocks } from './tag.js';
+import { slimSmallTag, parseExtras, parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseDateUp, parseRecapParts, stripBlocks } from './tag.js';
 import { PAIR_DEFAULT, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, levelOf, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN, DATE_SKIP_END, DATE_SKIP_HARD, DATE_CLOSE_TURNS, DATE_QUIET } from './romance.js';
 import { CAST_GROUPS, KIN_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast, nameCandidates } from './cast.js';
-import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday, giftJoint } from './calendar.js';
-import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, buildDateSideMessages, buildDateRefillMessages, giftTarget } from './prompts.js';
+import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE_DEFAULT, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday, giftJoint } from './calendar.js';
+import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, buildDateSideMessages, buildDateRefillMessages, giftTarget, hName } from './prompts.js';
+import { inviteCandidates, bdKey, extraKey, mergeExtras, INVITE_TRIES, INVITE_COOL, INVITE_AHEAD } from './invites.js';
 import { listProfiles, gatherSources, loreFor, sendSide, reasonOf } from './side.js';
 import { strings } from './i18n.js';
 
@@ -36,6 +37,7 @@ const LS = {
     eraMap: 'hearthtide_era_map',      // эпоха и вера — отдельно для каждого персонажа или группы
     dateChance: 'hearthtide_date_chance', // шанс, что чар сам позовёт на свидание после ответа (%)
     dateLevel: 'hearthtide_date_level',   // сложность свиданий: easy | hard
+    evChance: 'hearthtide_ev_chance',     // шанс случайного ивента на идущем мероприятии после ответа (%)
 };
 const lsGet = (k, d) => { const v = localStorage.getItem(k); return v === null ? d : v; };
 const isEnabled = () => lsGet(LS.enabled, 'true') !== 'false';
@@ -51,6 +53,7 @@ function apiProfile() {
 const apiOn = () => isEnabled() && !!apiProfile();
 const sideDepth = () => Number(lsGet(LS.depth, '10')) || 10;
 const dateLevel = () => (lsGet(LS.dateLevel, 'easy') === 'hard' ? 'hard' : 'easy');
+const evChanceSetting = () => { const n = Number(lsGet(LS.evChance, String(EVENT_CHANCE_DEFAULT))); return isNaN(n) ? EVENT_CHANCE_DEFAULT : Math.max(0, Math.min(50, n)); };
 const dateChanceSetting = () => { const n = Number(lsGet(LS.dateChance, '6')); return isNaN(n) ? 6 : Math.max(0, Math.min(30, n)); };
 
 // ─── Эпоха и вера запоминаются для каждого персонажа (и группы) ───
@@ -123,7 +126,15 @@ function defaultState() {
         bondMiss: 0,            // сколько ответов подряд без bond, пока пара не ясна
         bondSide: -99,          // когда помощника последний раз просили начальные значения пары
         dateRollTry: 0,         // выпавшее свидание модель пропустила — просим ещё раз, настойчивее
-        bdInv: null,            // приглашение на день рождения: { cid, name, day, status: pending|offered|accepted|declined, turn }
+        inv: null,              // приглашение в пути: { kind: bday|extra, key, cid|xid, name, host, whom, day, status: offered|accepted|declined, turn, msg }
+        invRoll: null,          // выпал бросок: в следующем ответе кто-то зовёт — { kind, key, name, host, whom, day, tries }
+        invCool: {},            // ключ → ход, до которого его не бросаем (модель так и не позвала)
+        invDeclined: null,      // { name, host, turn } — игрок только что отказался
+        extras: [],             // дополнительные праздники от модели: { id, start, days, name, host, whom, meaning }
+        lastExtrasTurn: -99,
+        skipAsk: [],            // таймскип перепрыгнул принятое приглашение — спросить, пришли ли: { id, kind, key, cid, what, host, day, turn }
+        hurt: [],               // обещали прийти и не пришли: { who, what, turn }
+        decMsg: {},             // решение игрока → номер сообщения, к которому оно относится (удалили сообщение — решение снимается)
         datePlan: null,         // план свидания от помощника: { title, goal, hook, where, at } — основная модель зовёт по нему
         dateRecapFor: null,     // id закончившегося свидания, к которому ещё нужен итог
         dateRecapTurn: null,
@@ -194,6 +205,12 @@ function loadState() {
     migrateCast(state, getUserName(), getCharName());
     // свидание из прошлой версии: шаги разом и шкала с 35 % → живые шаги
     migrateDate(state);
+    // приглашение на день рождения из прошлой версии → общее приглашение
+    if (state.bdInv) {
+        const b = state.bdInv;
+        if (!state.inv && b.cid) state.inv = { kind: 'bday', key: bdKey(b.cid, b.day), cid: b.cid, name: b.name, host: b.name, whom: 'both', day: b.day, status: b.status === 'pending' ? 'offered' : b.status, turn: b.turn };
+        delete state.bdInv;
+    }
 }
 
 // ИИ иногда пишет тип места словом из промпта на другом языке: «settlement Деревня Березовка» → «Деревня Березовка»
@@ -222,6 +239,11 @@ const BOND_STALE = 12;
 // «деревня», «город», «village» без собственного имени — просим ИИ назвать место
 const GENERIC_PLACES = /^(деревня|село|сельцо|город|городок|посад|слобода|усадьба|двор|монастырь|лагерь|стан|дорога|лес|поле|village|town|city|court|monastery|camp|road|wilds|forest|hamlet|estate|castle|замок|крепость|острог)$/i;
 
+/** Принятые приглашения (дни рождения людей истории, дополнительные праздники), ещё не прошедшие */
+function acceptedAhead() {
+    if (state?.today == null) return [];
+    return allHolidays(state).filter(h => (h.npc || h.extra) && h.start + h.days - 1 >= state.today);
+}
 function ctxFor(request = null) {
     const phase = phaseOf(state);
     const placeName = state.place || state.setting?.place || null;
@@ -250,6 +272,10 @@ function ctxFor(request = null) {
         bondMiss: state.pair ? 0 : state.bondMiss || 0,
         bondStale: !!state.pair && (state.turn || 0) - (state.lastBondTurn ?? -99) >= BOND_STALE,
         dateLevel: dateLevel(),
+        // где могут случиться ивенты; принятые приглашения впереди (чтобы модель не «сходила» туда раньше дня)
+        evTarget: evTarget(phase),
+        acceptedAhead: acceptedAhead(),
+        inviteWatch: state.inv?.status === 'offered' || state.invRoll ? [] : inviteCandidates(state).filter(c => c.d <= 14).slice(0, 3).map(c => (c.kind === 'bday' ? `${c.name}'s birthday` : c.name)),
         // {{char}} сам вспоминал свидание в последних ответах — не подталкивать
         dateMentioned: dateMentioned(),
         // перепись в инджекте: кого часто называют в истории
@@ -269,7 +295,7 @@ function takeSnapshot(beforeMsg) {
     if (state.snapshots.length > 20) state.snapshots = state.snapshots.slice(-20);
 }
 // Решения игрока (удалённые праздники) переживают откаты
-const USER_FIELDS = ['banned', 'bannedNames', 'birthdayOff', 'calIgnore', 'offerNo', 'evDecisions', 'castNo', 'dateDecisions', 'pairSet', 'bdDecisions', 'userGift', 'giftMode'];
+const USER_FIELDS = ['banned', 'bannedNames', 'birthdayOff', 'calIgnore', 'offerNo', 'evDecisions', 'castNo', 'dateDecisions', 'pairSet', 'bdDecisions', 'userGift', 'giftMode', 'decMsg'];
 
 function restoreSnapshot(snap) {
     const keep = state.snapshots;
@@ -337,19 +363,12 @@ function seenInStory(name, text) {
 function castForPrompt() {
     // «глазок» выключен — человек не попадает в промпт (но и не вносится заново)
     const cast = (state.cast || []).filter(c => !c.off && !castBanned(state, c.name));
-    if (!cast.length) return { castSeen: [], castBdays: [] };
+    if (!cast.length) return { castSeen: [] };
     const text = recentStoryText(8);
-    const castBdays = cast.map(c => ({ c, days: bdayIn(c, state.today) })).filter(x => x.days != null && x.days <= 7)
-        .sort((a, b) => a.days - b.days).slice(0, 2)
-        .map(({ c, days }) => ({
-            cid: c.id, name: c.name || c.toU || c.toC, days, relU: c.rel?.user ?? 0, relC: c.rel?.char ?? 0, toU: c.toU, toC: c.toC, kin: isKin(c.group),
-            // ближе к дню — чаще всплывает в разговоре
-            // ближе к дню — чаще; позвали уже — не подталкиваем
-            nudge: !state.bdInv && (state.turn || 0) % (days <= 2 ? 2 : 3) === 0,
-        }));
-    const castSeen = cast.filter(c => (c.name ? seenInStory(c.name, text) : [c.toU, c.toC].some(r => r && seenInStory(r, text)))
-        || castBdays.some(b => b.name === (c.name || c.toU || c.toC))).slice(0, 6);
-    return { castSeen, castBdays };
+    // кого зовут или кто именинник сейчас — тоже «рядом», даже если в последних сообщениях его не называли
+    const near = new Set([state.inv?.cid, state.invRoll?.cid].filter(Boolean));
+    const castSeen = cast.filter(c => near.has(c.id) || (c.name ? seenInStory(c.name, text) : [c.toU, c.toC].some(r => r && seenInStory(r, text)))).slice(0, 6);
+    return { castSeen };
 }
 
 // ─── Кого часто называют в истории — подсказка для переписи людей (по всему чату, с кэшем) ───
@@ -377,10 +396,16 @@ function addFlashback(title, text, kind, parts = null) {
     if (state.flashbacks.length > 40) state.flashbacks = state.flashbacks.slice(-40);
 }
 
-// ─── Ивенты: появились, идут, закончились ───
-function processEvents(phase, small, evs) {
-    // ивенты привязаны к ближайшему празднику — и в подготовке, и в сам день
-    const cur = (phase.kind === 'today' || phase.kind === 'prep') && phase.h ? phase.h.id : null;
+// ─── Ивенты: только на идущем мероприятии — свидание, праздник в сам день, день рождения ───
+/** Где сейчас могут случиться ивенты: идущее свидание важнее праздника вокруг */
+function evTarget(phase) {
+    const d = state?.date;
+    if (d?.status === 'active') return { hid: d.id, name: `the date "${d.title}"`, kind: 'date' };
+    if (phase?.kind === 'today' && phase.h) return { hid: phase.h.id, name: hName(phase.h, { userName: getUserName(), charName: getCharName() }), kind: 'holiday' };
+    return null;
+}
+function processEvents(target, small, evs, N) {
+    const cur = target?.hid || null;
     for (const e of state.evts) {
         if ((OPEN_STATUSES.includes(e.status) || e.status === 'offered') && e.hid !== cur) e.status = e.status === 'offered' ? 'missed' : 'faded';
     }
@@ -418,7 +443,7 @@ function processEvents(phase, small, evs) {
         if (ev || offeredEvent(state)) continue;   // одновременно — только одно
         const item = {
             id: `ev-${state.turn}`, hid: cur, kind: e.kind, title: e.title, who: e.who, hook: e.hook || null,
-            status: 'offered', turn: state.turn, lastUpdate: state.turn, note: null, moments: [],
+            status: 'offered', turn: state.turn, lastUpdate: state.turn, note: null, moments: [], msg: N,
         };
         // игрок уже решал по этому ивенту (свайп, пересборка) — его решение в силе
         const d = state.evDecisions?.[evKey(item)];
@@ -446,10 +471,29 @@ function applyEventDecision(e, d) {
     else e.status = 'declined';
     e.lastUpdate = state?.turn ?? e.lastUpdate;
 }
+// ─── Решения игрока помнят, к какому сообщению относятся: удалили сообщение — решение снимается ───
+// (свайп длину чата не меняет — там решения остаются)
+function noteDecision(kind, key, msg) {
+    if (msg == null) return;
+    state.decMsg = { ...(state.decMsg || {}), [`${kind}:${key}`]: msg };
+}
+function dropDecisionsFrom(len) {
+    const maps = { bd: 'bdDecisions', ev: 'evDecisions', date: 'dateDecisions' };
+    const gone = [];
+    for (const [k, m] of Object.entries(state.decMsg || {})) {
+        if (m < len) continue;
+        const i = k.indexOf(':');
+        const map = maps[k.slice(0, i)], key = k.slice(i + 1);
+        if (map && state[map]) { delete state[map][key]; gone.push(key); }
+        delete state.decMsg[k];
+    }
+    if (gone.length) console.info(`[Hearthtide] удалены сообщения — сняты решения: ${gone.join(', ')}`);
+}
 function decideEvent(id, d) {
     const e = (state.evts || []).find(x => x.id === id);
     if (!e || e.status !== 'offered') return;
     state.evDecisions = { ...(state.evDecisions || {}), [evKey(e)]: d };
+    noteDecision('ev', evKey(e), e.msg);
     const apply = (st) => {
         const x = (st.evts || []).find(y => y.id === id && y.status === 'offered');
         if (!x) return;
@@ -493,6 +537,7 @@ function processReply(N) {
     // (с отдельным запросом основную модель ни о чём не просим)
     const asked = apiOn() ? null : requestFor(state, phaseOf(state));
     const hadDateRoll = !!state.dateRoll;     // в промпте этого ответа была просьба позвать на свидание
+    const hadInvRoll = state.invRoll ? { ...state.invRoll } : null;   // и просьба произнести приглашение
     state.turn += 1;
     state.beat = null;      // подсказка ушла в этот ответ
 
@@ -508,7 +553,9 @@ function processReply(N) {
     const src = fromThink ? think : source;
 
     // Чистим текст сообщения от крупных блоков и «неправильных» форм тега
-    const cleaned = stripBlocks(text);
+    // в тексте остаётся только дата, время и место: имена из who=, char=, invite= и прочего лорбук читает по ключам,
+    // а всё это уже разобрано (полный ответ — в extra.ht_raw)
+    const cleaned = slimSmallTag(stripBlocks(text));
     if (cleaned !== text && cleaned.trim()) {
         msg.mes = cleaned;
         if (Array.isArray(msg.swipes) && msg.swipe_id != null) msg.swipes[msg.swipe_id] = cleaned;
@@ -545,6 +592,7 @@ function processReply(N) {
     const evs = [...parseEvents(src), ...(sideText ? parseEvents(sideText) : [])];
     const offersIn = [...parseOffers(src), ...(sideText ? parseOffers(sideText) : [])];
     const castIn = [parseCast(src), sideText ? parseCast(sideText) : null].filter(Boolean);
+    const extrasIn = [...parseExtras(src), ...(sideText ? parseExtras(sideText) : [])];
     const planIn = sideText && sideAsked.includes('dateplan') ? parseDateBlock(sideText) : null;
     let dateIn = parseDateBlock(src) || (sideText && sideAsked.includes('datewatch') ? parseDateBlock(sideText) : null);
     // Позвали ли вслух — короткий отдельный запрос «да/нет» (при помощнике). Нет ответа — ждём его; запрос упал — верим основной модели
@@ -583,7 +631,14 @@ function processReply(N) {
         if (small.date != null && state.today != null && small.date - state.today > 1) {
             for (const h of allHolidays(state)) {
                 const end = h.start + h.days - 1;
-                if (end >= state.today && end < small.date) state.recapDone[h.id] = true;
+                if (end >= state.today && end < small.date) {
+                    state.recapDone[h.id] = true;
+                    // принятое приглашение проскочили — решит модель: пришли или нет (и чем это обернулось)
+                    if ((h.npc || h.extra) && !state.lived?.[h.id] && !(state.skipAsk || []).some(x => x.id === h.id)) {
+                        state.skipAsk = [...(state.skipAsk || []), { ...invItemOf(h), turn: state.turn }];
+                        console.info(`[Hearthtide] таймскип перепрыгнул принятое приглашение: ${invItemOf(h).what} — спрошу, пришли ли`);
+                    }
+                }
             }
             // Большой скип: календарь знает только ближайшие праздники — спросим, какие ещё проскочили
             if (small.date - state.today > 14) {
@@ -636,6 +691,16 @@ function processReply(N) {
     }
     // ── Поводы из истории — ждут решения игрока ──
     if (takeOffers(offersIn)) slip = true;
+    // ── Дополнительные праздники: на них позовут (бросок), в календаре — только принятые ──
+    if (extrasIn.length && mergeExtras(state, extrasIn, langOk, namesMatch)) slip = true;
+    if (extrasIn.length) console.info(`[Hearthtide] дополнительные праздники: ${extrasIn.map(x => `${x.name} (${isoOf(x.start)}, зовёт: ${x.host || '?'})`).join('; ')}`);
+    if (asked === 'extras' || askedCal || sideAsked.includes('extras')) state.lastExtrasTurn = state.turn;
+    // ── Таймскип перепрыгнул принятое приглашение: пришли или нет ──
+    if (state.skipAsk?.length) {
+        const x = state.skipAsk[0];
+        if (sm?.went != null) { state.skipAsk = state.skipAsk.slice(1); applyWent(x, sm.went, sm.wentNote && langOk(sm.wentNote) ? sm.wentNote : null); }
+        else if (state.turn - x.turn > 3) { state.skipAsk = state.skipAsk.slice(1); applyWent(x, null, null); }   // не ответили — без последствий
+    }
     // ── Люди истории: новые — один раз, известные — только отношения ──
     const castLog = [];
     for (const c of castIn) if (mergeCast(state, c, langOk, state.turn, castLog)) slip = true;
@@ -719,8 +784,9 @@ function processReply(N) {
     if (['offered', 'pending'].includes(state.date?.status) && state.turn - state.date.turn > 4) state.date = null;   // не ответили — забылось
     if (dateIn && !['active', 'offered', 'scheduled', 'pending'].includes(state.date?.status)
         && [dateIn.title, dateIn.goal, dateIn.hook, dateIn.where].every(langOk)) {
-        const fixed = tidyDateUp({ add: dateIn.steps.map(x => ({ t: x.t, whoRaw: x.who })), done: [], fail: [] }).add;
+        const fixed = tidyDateUp({ add: dateIn.steps.map(x => ({ t: x.t })), done: [], fail: [] }).add;
         const d = newDate({ ...dateIn, steps: fixed }, state.turn, dateIn.started);
+        d.msg = N;
         if (d.at && !d.at.now && d.at.day == null) d.at.day = state.today;
         const dec = !dateIn.started && state.dateDecisions?.[String(d.title).toLowerCase()];
         if (dec === 'declined') d.status = 'declined';
@@ -733,15 +799,15 @@ function processReply(N) {
         state.dateRoll = false;
     }
 
-    // ── Приглашение на день рождения человека из истории: по факту (invite=), проверка помощником, решение игрока ──
-    handleBdInvite(small, conf);
-    // что проверить коротким запросом после этого ответа: позвал ли {{char}} на свидание, позвал ли кто-то на день рождения
+    // ── Приглашение (день рождения, дополнительный праздник): прозвучало вслух — по проверке или по invite= ──
+    handleInvite(small, conf, N);
+    // что проверить коротким запросом после этого ответа: позвал ли {{char}} на свидание, позвал ли кто-то на праздник
     confirmNeed = apiOn() && !conf ? {
         N, hash: coreHash(text),
         date: !!(dateIn && !dateIn.started) || (hadDateRoll && !!state.datePlan && state.date?.status !== 'active'),
-        bd: state.bdInv ? [] : (castForPrompt().castBdays || []).filter(b => b.days <= 7).map(b => b.name),
+        inv: inviteWatch(text, hadInvRoll),
     } : null;
-    if (confirmNeed && !confirmNeed.date && !confirmNeed.bd.length) confirmNeed = null;
+    if (confirmNeed && !confirmNeed.date && !confirmNeed.inv.length) confirmNeed = null;
 
     // ── Подготовка, день праздника, итог — привязываем к текущей фазе ──
     let phase = phaseOf(state);
@@ -770,7 +836,11 @@ function processReply(N) {
             if (hl.length > 8) state.highlights[hid] = hl.slice(-8);
         }
         const doneNames = new Set(doneOk.map(d => d.name.toLowerCase()));
-        const active = people.active.filter(p => !doneNames.has(p.name.toLowerCase()));
+        // в списке — только те, кто уже был в истории: иначе инфоблок «показывает» людей раньше, чем они появились
+        const story = recentStoryText(40);
+        const unseen = people.active.filter(p => !seenInStory(p.name, story)).map(p => p.name);
+        if (unseen.length) console.info(`[Hearthtide] люди праздника: ${unseen.join(', ')} — ещё не появлялись в истории, пропущены`);
+        const active = people.active.filter(p => !doneNames.has(p.name.toLowerCase()) && !unseen.includes(p.name));
         const ok = active.filter(p => langOk(p.now) && langOk(p.gift));
         if (ok.length < active.length) slip = true;
         state.people = ok;
@@ -832,12 +902,14 @@ function processReply(N) {
     if (recap && phase.ended && langOk(recap)) {
         const parts = recapParts && [...recapParts.done, ...recapParts.gifts, recapParts.best].filter(Boolean).every(langOk) ? recapParts : null;
         addFlashback(displayName(phase.ended), recap, 'holiday', parts);
+        // приглашение: пришли ли на самом деле
+        if ((phase.ended.npc || phase.ended.extra) && recapParts?.went != null) applyWent(invItemOf(phase.ended), recapParts.went, null);
         state.recaps.push({ hid: phase.ended.id, name: displayName(phase.ended), text: recap, parts });
         if (state.recaps.length > 30) state.recaps = state.recaps.slice(-30);
         state.recapDone[phase.ended.id] = true;
     }
     // ── Ивенты и мероприятия ──
-    processEvents(phase, sm, evs);
+    processEvents(evTarget(phase), sm, evs, N);
     // Проигнорированные запросы повторяем не сразу, а через несколько ответов
     const answered = { cal: !!cal, day: !!day, prep: !!prep, people: !!people, recap: !!recap };
     const WAIT = { cal: 2, day: 1, prep: 3, people: 3, recap: 1 };
@@ -885,14 +957,20 @@ function processReply(N) {
         if (state.charNow && state.charNow.hid !== phase.h?.id) state.charNow = null;
     }
 
-    // ── Случайный ивент: бросок после ответа (в праздник чаще, в подготовке реже) ──
+    // ── Случайный ивент: только на идущем мероприятии (свидание, праздник в сам день, день рождения); шанс — из настроек ──
     state.evRoll = false;
-    if ((phase.kind === 'today' || phase.kind === 'prep') && phase.h && !openEvent(state, phase.h.id) && !offeredEvent(state)
+    const tgt = evTarget(phase);
+    const evChance = evChanceSetting();
+    if (tgt && evChance > 0 && !openEvent(state, tgt.hid) && !offeredEvent(state)
         && state.turn - (state.lastEventEnd ?? -99) >= EVENT_COOLDOWN
-        && state.turn - Math.max(-99, ...(state.evts || []).filter(e => e.hid === phase.h.id).map(e => e.turn)) >= EVENT_COOLDOWN) {
-        // у чужого дня рождения случайных ивентов нет — он и так небольшой
-        state.evRoll = !phase.h.npc && rollFor(text, state.turn) < EVENT_CHANCE[phase.kind];
+        && state.turn - Math.max(-99, ...(state.evts || []).filter(e => e.hid === tgt.hid).map(e => e.turn)) >= EVENT_COOLDOWN) {
+        const r = rollFor(text, state.turn);
+        state.evRoll = r < evChance;
+        console.debug(`[Hearthtide] ивент (${tgt.kind}): бросок ${r} ${state.evRoll ? '<' : '≥'} ${evChance}%`);
     }
+
+    // ── Приглашения: бросок после ответа — кого из близких позовут (чем ближе день и человек, тем вероятнее) ──
+    rollInvite(text, hadInvRoll);
 
     // ── Свидание: бросок после ответа (есть романтика; после ссоры шанс выше) ──
     // Выпало, а модель промолчала — просим ещё раз, настойчивее (один раз); потом — новый бросок
@@ -950,8 +1028,9 @@ function processReply(N) {
     if (dateEnded) showDateToast(dateEnded);
     // {{char}} зовёт на свидание — короткое уведомление сверху (один раз на приглашение)
     if (state.date?.status === 'offered' && state.date.turn === state.turn && N === lastBotIndex()) showDateInvite(state.date);
-    if (state.bdInv?.status === 'offered' && state.bdInv.turn === state.turn && N === lastBotIndex()) {
-        showDateInvite({ id: `bd-${state.bdInv.cid}@${state.bdInv.day}`, title: L().bdInviteToast(state.bdInv.name), head: L().bdInvite, icon: 'fa-gift', target: '.ht-cards .ht-bdinv' });
+    const iv = state.inv;
+    if (iv?.status === 'offered' && iv.turn === state.turn && N === lastBotIndex()) {
+        showDateInvite({ id: `inv-${iv.key}`, title: iv.kind === 'bday' ? L().bdInviteToast(iv.name) : L().exInviteToast(iv.name), head: iv.kind === 'bday' ? L().bdInvite : L().exInvite, icon: iv.kind === 'bday' ? 'fa-gift' : 'fa-champagne-glasses', target: '.ht-cards .ht-bdinv' });
     }
 
     saveState();
@@ -979,21 +1058,35 @@ function acceptInto(st, d) {
     if (left != null && left > 0.75) d.status = 'scheduled';
     else startDate(d, st.turn);
 }
-/** Ответ модели о свидании: имена вместо {{user}} / (user), кто делает шаг, язык */
+/**
+ * Шаг свидания — в форме задачи: глагол в неопределённой форме впереди (можно после наречия), без имени {{char}} в начале.
+ * Не подходит — null (такой шаг не принимаем, на его место дозапрашиваем новый).
+ */
+function taskForm(t, charName) {
+    let x = String(t || '').trim().replace(/[.;!]+$/, '');
+    if (!x) return null;
+    const words = x.split(/\s+/);
+    const first = words[0].toLowerCase().replace(/ё/g, 'е');
+    const cname = String(charName || '').toLowerCase().replace(/ё/g, 'е');
+    if (cname && first.startsWith(cname.slice(0, Math.max(3, cname.length - 2)))) return null;
+    if (/[а-яё]/i.test(x)) {
+        const inf = (w) => /(ть|ться|тись|ти|чь|чься)$/i.test(String(w || '').replace(/[,:]$/, ''));
+        if (!inf(words[0]) && !inf(words[1])) return null;
+    } else if (/^(he|she|they|i|we|will|is|was|has|had)\b/i.test(x)) return null;
+    return x.charAt(0).toUpperCase() + x.slice(1);
+}
+/** Ответ модели о свидании: имена вместо {{user}} / (user), язык, шаги — задачи {{char}} */
 function tidyDateUp(up) {
     const u = getUserName(), c = getCharName();
     const stem = (n) => String(n || '').toLowerCase().replace(/ё/g, 'е').slice(0, 4);
     const fix = (t) => (t ? String(t).replace(/\{\{user\}\}/gi, u).replace(/\{\{char\}\}/gi, c)
         .replace(/\s*\((?:user|char|both|юзер|чар|оба|вместе|игрок)\)\s*/gi, ' ').replace(/\s{2,}/g, ' ').trim() || null : null);
     const ok = (t) => (t && langOk(t) ? t : null);
-    const who = (w) => {
-        const x = String(w || '').toLowerCase().replace(/ё/g, 'е');
-        if (/both|either|together|оба|вмест|обе/.test(x)) return 'both';
-        if (/user|юзер|игрок/.test(x) || (stem(u).length >= 3 && x.includes(stem(u)))) return 'user';
-        if (/char|чар/.test(x) || (stem(c).length >= 3 && x.includes(stem(c)))) return 'char';
-        return 'both';
-    };
-    up.add = (up.add || []).map(a => ({ t: ok(fix(a.t)), who: who(a.whoRaw) })).filter(a => a.t);
+    // шаг — задача для {{char}}: «Подарить Анне венок», а не «Ярослав дарит / подарит / подарил»
+    const added = (up.add || []).map(a => ok(fix(a.t))).filter(Boolean);
+    up.add = added.map(t => ({ t: taskForm(t, c), who: 'char' })).filter(a => a.t);
+    const bad = added.filter(t => !taskForm(t, c));
+    if (bad.length) console.info(`[Hearthtide] свидание: шаги не в форме задачи — пропущены, дозапрошу: ${bad.join(' / ')}`);
     for (const x of [...(up.done || []), ...(up.fail || [])]) x.note = ok(fix(x.note));
     for (const k of ['vibe', 'thought', 'recap', 'best', 'why']) up[k] = ok(fix(up[k]));
     up.moments = (up.moments || []).map(m => ok(fix(m))).filter(Boolean);
@@ -1032,59 +1125,127 @@ function applyDateRecap(st, id, text, best) {
     if (st.date?.id === id) { st.date.recap = text; if (best) st.date.best = best; }
     st.dateRecapFor = null;
 }
-// ─── Приглашение на день рождения человека из истории ───
-function handleBdInvite(small, conf) {
-    // день рождения прошёл — в «Текущий год» (если ходили), приглашение закрыто
-    const old = state.bdInv;
-    if (old && state.today != null && state.today > old.day) {
-        state.bdInv = null;
+// ─── Приглашения: на день рождения человека из истории и на дополнительный праздник ───
+/** Что именно позвали: для итогов, обид и вопроса «пришли ли» */
+function invItemOf(h) {
+    if (h.npc) return { id: h.id, kind: 'bday', key: bdKey(h.cid, h.start), cid: h.cid, what: displayName(h), host: h.name, day: h.start };
+    return { id: h.id, kind: 'extra', key: extraKey(h.xid), xid: h.xid, what: h.name, host: h.host || null, day: h.start };
+}
+/** Кто тот, кого позвали: кандидат по имени (имя человека, его роль, название праздника или кто зовёт) */
+function inviteMatch(name) {
+    const n = String(name || '').toLowerCase().replace(/ё/g, 'е').trim();
+    if (!n) return null;
+    const all = inviteCandidates(state, true);
+    return all.find(c => c.kind === 'bday' && (samePerson(c.name, name) || [c.name, c.host].some(v => v && String(v).toLowerCase().replace(/ё/g, 'е') === n)))
+        || all.find(c => c.kind === 'extra' && (namesMatch(c.name, name) || (c.host && namesMatch(c.host, name))))
+        || null;
+}
+function handleInvite(small, conf, N) {
+    const old = state.inv;
+    if (old && state.today != null && state.today > old.day) state.inv = null;                       // день прошёл
+    if (state.inv?.status === 'offered' && state.turn - state.inv.turn > 6) {                       // не ответили — забылось
+        console.info(`[Hearthtide] приглашение «${state.inv.name}» осталось без ответа — забылось`);
+        state.inv = null;
     }
     // при помощнике — по проверке (модели часто забывают отметку invite=); без помощника или если проверка упала — по отметке
-    const name = apiOn() && conf && !conf.failed ? conf.bd : small?.invite;
-    if (name && !state.bdInv) {
-        const c = findCast(state, name) || (state.cast || []).find(x => [x.name, x.toU, x.toC].some(v => v && String(v).toLowerCase() === String(name).toLowerCase()));
-        const days = c ? bdayIn(c, state.today) : null;
-        if (c && days != null && days <= 7) {
-            const inv = { cid: c.id, name: c.name || name, day: state.today + days, status: 'offered', turn: state.turn };
-            const dec = state.bdDecisions?.[`${inv.cid}@${inv.day}`];
-            if (dec) inv.status = dec;
-            state.bdInv = inv;
-            console.info(`[Hearthtide] приглашение на день рождения: ${inv.name}${dec ? ` (решение уже было: ${dec})` : ''}`);
-        } else console.info(`[Hearthtide] приглашение на день рождения «${name}» пропущено: ${c ? 'день рождения не скоро' : 'такого человека нет в списке'}`);
-    }
-    const inv = state.bdInv;
-    if (!inv) return;
-    if (inv.status === 'pending') inv.status = 'offered';            // из прошлой версии
-    if (inv.status === 'offered' && state.turn - inv.turn > 6) state.bdInv = null;      // не ответили — забылось
+    const said = apiOn() && conf && !conf.failed ? conf.inv : small?.invite;
+    if (!said || state.inv?.status === 'offered') return;
+    const c = inviteMatch(said);
+    if (!c) { console.info(`[Hearthtide] приглашение «${said}» пропущено: ${INVITE_AHEAD.bday} дней вперёд нет такого дня рождения или праздника`); return; }
+    const inv = { kind: c.kind, key: c.key, cid: c.cid || null, xid: c.xid || null, name: c.name, host: c.host, whom: c.whom || 'both', day: c.day, status: 'offered', turn: state.turn, msg: N };
+    const dec = state.bdDecisions?.[c.key];
+    if (dec) inv.status = dec;                                // игрок уже решал (свайп, пересборка) — его решение в силе
+    state.inv = inv;
+    if (state.invRoll?.key === c.key) state.invRoll = null;
+    console.info(`[Hearthtide] приглашение: ${c.kind === 'bday' ? 'день рождения' : 'праздник'} «${c.name}» на ${isoOf(c.day)}${dec ? ` (решение уже было: ${dec})` : ''}`);
 }
-function decideBd(yes) {
-    const inv = state.bdInv;
+/** Кого проверить «позвали ли вслух»: выпавшее приглашение и тех, о ком в ответе говорят вместе со словами о приглашении */
+const INVITE_WORDS = /(пригла|зов[уеё]|позов|позвал|ждём|ждем|придёшь|придешь|приходи|invit|come to|join us|expect you)/i;
+function inviteWatch(text, rolled) {
+    if (state.inv?.status === 'offered') return [];
+    const t = String(text || '').toLowerCase().replace(/ё/g, 'е');
+    const asks = INVITE_WORDS.test(t);
+    const out = [];
+    for (const c of inviteCandidates(state, true)) {
+        if (state.bdDecisions?.[c.key] && c.key !== rolled?.key) continue;
+        const named = [c.name, c.host].some(v => v && seenInStory(v, t));
+        if (c.key === rolled?.key || (asks && named)) out.push({ value: c.name, label: c.kind === 'bday' ? `${c.name}'s birthday` : `${c.name}${c.host ? ` (held by ${c.host})` : ''}` });
+    }
+    return out.slice(0, 4);
+}
+/** Бросок после ответа: кого позовут в следующем ответе. Выпавшее, но не прозвучавшее — повтор, потом пауза */
+function rollInvite(text, had) {
+    if (had && state.inv?.key !== had.key && !state.bdDecisions?.[had.key]) {
+        if ((had.tries || 0) + 1 < INVITE_TRIES) {
+            state.invRoll = { ...had, tries: (had.tries || 0) + 1 };
+            console.info(`[Hearthtide] приглашение «${had.name}»: модель не позвала — прошу ещё раз`);
+            return;
+        }
+        state.invCool = { ...(state.invCool || {}), [had.key]: state.turn + INVITE_COOL };
+        console.info(`[Hearthtide] приглашение «${had.name}»: модель так и не позвала — пауза ${INVITE_COOL} ответов`);
+    }
+    state.invRoll = null;
+    if (state.inv?.status === 'offered' || state.today == null) return;
+    const c = inviteCandidates(state).find(x => x.key !== state.inv?.key);
+    if (!c || c.chance <= 0) return;
+    const r = rollFor(text, state.turn + 3571);
+    console.info(`[Hearthtide] приглашение: ${c.kind === 'bday' ? `день рождения ${c.name}` : c.name} через ${c.d} дн. — бросок ${r} ${r < c.chance ? '<' : '≥'} ${c.chance}%`);
+    if (r < c.chance) state.invRoll = { kind: c.kind, key: c.key, cid: c.cid || null, xid: c.xid || null, name: c.name, host: c.host, whom: c.whom || 'both', day: c.day, tries: 0,
+        meaning: c.kind === 'extra' ? (state.extras || []).find(x => x.id === c.xid)?.meaning || null : null };
+}
+/** Пришли ли по принятому приглашению: да — теплее и «отметили»; нет — обида и холоднее; null — не узнали, без последствий */
+function applyWent(x, went, note) {
+    if (!x) return;
+    const c = x.kind === 'bday' ? (state.cast || []).find(p => p.id === x.cid) : (x.host ? findCast(state, x.host) : null);
+    const bump = (du, dc) => { if (!c) return; c.rel = c.rel || { user: 0, char: 0 }; c.rel.user = clampRel((c.rel.user ?? 0) + du) ?? 0; c.rel.char = clampRel((c.rel.char ?? 0) + dc) ?? 0; };
+    const log = state.yearLog?.items?.find(i => i.id === x.id);
+    if (went === true) {
+        state.lived = { ...(state.lived || {}), [x.id]: true };
+        if (log) log.kept = true;
+        bump(5, 5);
+        if (note) addFlashback(x.what, note, 'holiday');
+    } else if (went === false) {
+        state.lived = { ...(state.lived || {}), [x.id]: false };
+        if (log) log.kept = false;
+        if (x.kind === 'bday') bump(-15, -10); else bump(-8, -8);
+        state.hurt = [...(state.hurt || []), { who: c?.name || x.host || x.what, what: x.what, turn: state.turn }].slice(-3);
+    }
+    console.info(`[Hearthtide] ${x.what}: ${went === true ? 'пришли' : went === false ? 'не пришли — обида, отношения ниже' : 'не узнали, пришли ли — без последствий'}${note ? ` (${note})` : ''}`);
+}
+function decideInv(yes) {
+    const inv = state.inv;
     if (!inv || inv.status !== 'offered') return;
-    const key = `${inv.cid}@${inv.day}`;
+    const key = inv.key;
     state.bdDecisions = { ...(state.bdDecisions || {}), [key]: yes ? 'accepted' : 'declined' };
-    const fn = (st) => { if (st.bdInv && `${st.bdInv.cid}@${st.bdInv.day}` === key) st.bdInv.status = yes ? 'accepted' : 'declined'; };
+    noteDecision('bd', key, inv.msg);
+    if (!yes) state.invDeclined = { name: inv.kind === 'bday' ? L().birthday(inv.name) : inv.name, host: inv.host, turn: state.turn };
+    const fn = (st) => { if (st.inv?.key === key) st.inv.status = yes ? 'accepted' : 'declined'; };
     fn(state);
     applyToSnapshots(fn);
     saveState();
     injectPrompts();
     renderAll();
 }
-function bdInvCardHtml() {
-    const inv = state?.bdInv;
+function invCardHtml() {
+    const inv = state?.inv;
     if (!inv || inv.status !== 'offered') return '';
-    const c = (state.cast || []).find(x => x.id === inv.cid);
-    const fresh = freshFor(`bd:${inv.cid}@${inv.day}`);
+    const bd = inv.kind === 'bday';
+    const c = bd ? (state.cast || []).find(x => x.id === inv.cid) : null;
+    const x = bd ? null : (state.extras || []).find(e => e.id === inv.xid);
+    const fresh = freshFor(`inv:${inv.key}`);
     const days = state.today != null ? inv.day - state.today : null;
-    const ties = [c?.toU && `${L().toWhom(getUserName())}: ${c.toU}`, c?.toC && `${L().toWhom(getCharName())}: ${c.toC}`].filter(Boolean).join(' · ');
+    const ties = bd ? [c?.toU && `${L().toWhom(getUserName())}: ${c.toU}`, c?.toC && `${L().toWhom(getCharName())}: ${c.toC}`].filter(Boolean).join(' · ')
+        : [inv.host && `${L().exHost}: ${inv.host}`, x?.meaning].filter(Boolean).join(' · ');
+    const pic = bd ? avaHtml(avatars()[inv.cid], inv.name) : `<span class="ht-ava ht-ava-none ht-ava-icon"><i class="fa-solid fa-champagne-glasses"></i></span>`;
     return `<div class="ht-offer ht-bdinv${fresh ? ' ht-offer-new' : ''}">
-        <div class="ht-dhead"><span class="ht-portrait">${avaHtml(avatars()[inv.cid], inv.name)}</span><div class="ht-dmain">
-            <span class="ht-dinvite"><i class="fa-solid fa-gift"></i>${esc(L().bdInvite)}</span>
+        <div class="ht-dhead"><span class="ht-portrait">${pic}</span><div class="ht-dmain">
+            <span class="ht-dinvite"><i class="fa-solid ${bd ? 'fa-gift' : 'fa-champagne-glasses'}"></i>${esc(bd ? L().bdInvite : L().exInvite)}</span>
             <b class="ht-dtitle">${esc(inv.name)}</b>
             <span class="ht-dwhen">${esc([days != null ? L().dateAt(days, '') : '', isoOf(inv.day)].filter(Boolean).join(' · '))}</span>
             ${ties ? `<span class="ht-dwhen">${esc(ties)}</span>` : ''}</div></div>
         <div class="ht-offer-actions ht-two">
-            <button class="ht-btn ht-btn-main" data-act="bd-yes"><i class="fa-solid fa-gift"></i><span>${L().evGo}</span></button>
-            <button class="ht-btn ht-btn-quiet" data-act="bd-no"><i class="fa-solid fa-xmark"></i><span>${L().decline}</span></button>
+            <button class="ht-btn ht-btn-main" data-act="inv-yes"><i class="fa-solid ${bd ? 'fa-gift' : 'fa-check'}"></i><span>${L().evGo}</span></button>
+            <button class="ht-btn ht-btn-quiet" data-act="inv-no"><i class="fa-solid fa-xmark"></i><span>${L().decline}</span></button>
         </div>
     </div>`;
 }
@@ -1157,6 +1318,11 @@ function logPast() {
         if (start >= state.today || !npcBdOn(state, c, start)) continue;
         const h = npcHoliday(c, start);
         if (!list.some(x => x.id === h.id)) list.push(h);
+    }
+    for (const x of state.extras || []) {
+        if (state.bdDecisions?.[extraKey(x.id)] !== 'accepted' || x.start + (x.days || 1) - 1 >= state.today) continue;
+        const id = `x-${x.id}`;
+        if (!list.some(h => h.id === id)) list.push({ start: x.start, days: x.days || 1, name: x.name, type: 'gathering', extra: true, xid: x.id, id });
     }
     for (const h of list) {
         if (h.start + h.days - 1 >= state.today) continue;
@@ -1473,8 +1639,16 @@ function deleteHoliday(hid) {
     if (!h) return;
     // чужой день рождения: «не пойдём» — тот же отказ, что и кнопкой приглашения; человек остаётся в списке
     const npcKey = h.npc ? npcBdKey(h.cid, h.start) : null;
-    const npcOff = (st) => { if (st.bdInv && npcBdKey(st.bdInv.cid, st.bdInv.day) === npcKey) st.bdInv.status = 'declined'; };
-    if (h.npc) {
+    if (h.extra) {
+        // принятый дополнительный праздник: «не пойдём»
+        const k = extraKey(h.xid);
+        state.bdDecisions = { ...(state.bdDecisions || {}), [k]: 'declined' };
+        const off = (st) => { if (st.inv?.key === k) st.inv.status = 'declined'; };
+        off(state);
+        applyToSnapshots(off);
+    }
+    const npcOff = (st) => { if (st.inv?.key === npcKey) st.inv.status = 'declined'; };
+    if (h.extra) { /* решено выше */ } else if (h.npc) {
         state.bdDecisions = { ...(state.bdDecisions || {}), [npcKey]: 'declined' };
         npcOff(state);
     } else if (h.birthday) {
@@ -1491,6 +1665,7 @@ function deleteHoliday(hid) {
         if (st.charNow?.hid === hid) st.charNow = null;
         if (st.charGift?.hid === hid) st.charGift = null;
         if (h.npc) npcOff(st);
+        else if (h.extra) { /* решено выше */ }
         else if (h.birthday) st.birthdayOff = { ...(st.birthdayOff || {}), [h.who]: true };
     });
     if (state.prep?.hid === hid) state.prep = null;
@@ -1512,9 +1687,10 @@ function sanitizeView(view) {
         const m = String(id || '').match(/^bday-npc-(.+)@(-?\d+)$/);
         if (!m) return false;
         const c = (state.cast || []).find(x => x.id === m[1]);
-        return !c || !!c.off || state.bdDecisions?.[npcBdKey(m[1], m[2])] === 'declined';
+        return !c || !!c.off || state.bdDecisions?.[npcBdKey(m[1], m[2])] !== 'accepted';
     };
-    const gone = (x) => (String(x.id || '').startsWith('bday-npc-') ? npcGone(x.id) : x.birthday ? !!state.birthdayOff?.[x.who] : isBanned(state, x.name));
+    const exGone = (id) => { const k = String(id).slice(2); return state.bdDecisions?.[extraKey(k)] !== 'accepted'; };
+    const gone = (x) => (String(x.id || '').startsWith('x-') ? exGone(x.id) : String(x.id || '').startsWith('bday-npc-') ? npcGone(x.id) : x.birthday ? !!state.birthdayOff?.[x.who] : isBanned(state, x.name));
     const v = { ...view };
     v.upcoming = (v.upcoming || []).filter(u => !gone(u));
     v.recaps = (v.recaps || []).filter(r => !isBanned(state, r.name));
@@ -1530,6 +1706,7 @@ function sanitizeView(view) {
 function displayName(h) {
     if (!h) return '';
     if (h.npc) return L().birthday(h.name);
+    if (h.extra) return h.name;
     if (h.birthday) return L().birthday(h.who === 'user' ? getUserName() : getCharName());
     return h.name;
 }
@@ -1561,8 +1738,13 @@ function viewSnapshot(phase) {
         pair: state.pair ? clone(state.pair) : null,
         // намеченное свидание — в инфоблоке, праздник сейчас или нет
         planned: state.date?.status === 'scheduled' ? { title: state.date.title, goal: state.date.goal, where: state.date.where, when: dateWhenText(state, state.date.at) } : null,
-        plannedBd: state.bdInv?.status === 'accepted' && state.today != null
-            && !(phase.h?.npc && phase.h.cid === state.bdInv.cid && (phase.kind === 'prep' || phase.kind === 'today')) ? { name: state.bdInv.name, when: L().dateAt(state.bdInv.day - state.today, '') } : null,
+        // принятое приглашение впереди (если это не тот праздник, что сейчас в шапке)
+        plannedBd: (() => {
+            const cur = phase.kind === 'prep' || phase.kind === 'today' ? phase.h?.id : null;
+            const h = acceptedAhead().find(x => x.id !== cur && x.start > state.today);
+            return h ? { name: displayName(h), when: L().dateAt(h.start - state.today, ''), extra: !!h.extra } : null;
+        })(),
+        evts: (() => { const t = evTarget(phase); return t ? clone(state.evts.filter(e => e.hid === t.hid)) : []; })(),
         cast: (state.cast || []).filter(c => !castBanned(state, c.name)).map(c => ({ ...clone(c), bdayIn: bdayIn(c, state.today), age: ageOf(c, state.today) })),
         recall: state.recall,
         // чей день рождения: портрет, кем приходится, сколько исполняется
@@ -1572,7 +1754,7 @@ function viewSnapshot(phase) {
         })() : null,
         ...(() => {
             const act = phase.h && (phase.kind === 'prep' || phase.kind === 'today');
-            if (!act) return { people: [], highlights: [], evts: [], care: null, charNow: null, charSteps: [], charGift: null, gifts: false };
+            if (!act) return { people: [], highlights: [], care: null, charNow: null, charSteps: [], charGift: null, gifts: false };
             const hid = phase.h.id;
             return {
                 people: clone(peopleSeen()),
@@ -1580,7 +1762,6 @@ function viewSnapshot(phase) {
                 charNow: state.charNow?.hid === hid ? state.charNow.text : null,
                 charSteps: (state.charLog?.[hid] || []).slice(-4, -1).map(x => x.text),
                 highlights: clone(state.highlights?.[hid] || []),
-                evts: clone(state.evts.filter(e => e.hid === hid)),
                 charGift: state.charGift?.hid === hid ? { text: state.charGift.text, done: state.charGift.done } : null,
                 giftTo: giftTarget(state, phase.h, getUserName(), getCharName()),
                 // у чужого дня рождения подарки — своим блоком: общий или от каждого
@@ -1609,8 +1790,9 @@ function currentRequest() {
 function injectPrompts() {
     const on = isEnabled() && state;
     const ctx = on ? ctxFor(currentRequest()) : null;
-    setExtensionPrompt(PROMPT_STATE, on ? buildStatePrompt(ctx) : '', extension_prompt_types.IN_CHAT, 4, true, extension_prompt_roles.SYSTEM);
-    setExtensionPrompt(PROMPT_TAG, on && !isChatCompletion() ? buildTagPrompt(ctx) : '', extension_prompt_types.IN_CHAT, 0, true, extension_prompt_roles.SYSTEM);
+    // scan = false: лорбук не читает наши блоки — иначе имена из «Людей» и праздника срабатывают на ключи
+    setExtensionPrompt(PROMPT_STATE, on ? buildStatePrompt(ctx) : '', extension_prompt_types.IN_CHAT, 4, false, extension_prompt_roles.SYSTEM);
+    setExtensionPrompt(PROMPT_TAG, on && !isChatCompletion() ? buildTagPrompt(ctx) : '', extension_prompt_types.IN_CHAT, 0, false, extension_prompt_roles.SYSTEM);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1643,11 +1825,11 @@ async function runConfirmSide(N) {
         const text = await sendSide(apiProfile(), buildConfirmMessages(ctxFor(null), need, chat.slice(0, N + 1)), me.ctl.signal, 600);
         if (confirmSide !== me) return;
         res = parseConfirm(text, need);
-        console.info(`[Hearthtide] проверка «позвали ли вслух»: ${text.trim().replace(/\s+/g, ' ').slice(0, 160)} → свидание ${res.date ?? '—'}, день рождения ${res.bd || 'нет'}`);
+        console.info(`[Hearthtide] проверка «позвали ли вслух»: ${text.trim().replace(/\s+/g, ' ').slice(0, 160)} → свидание ${res.date ?? '—'}, приглашение ${res.inv || 'нет'}`);
     } catch (e) {
         if (me.ctl.signal.aborted || confirmSide !== me) return;
         console.warn('[Hearthtide] проверка «позвали ли вслух» не прошла — верю отметкам основной модели:', reasonOf(e));
-        res = { failed: true, date: null, bd: null };
+        res = { failed: true, date: null, inv: null };
     } finally {
         if (confirmSide === me) confirmSide = null;
     }
@@ -1665,7 +1847,7 @@ function buildConfirmMessages(ctx, need, msgs) {
     const prev = msgs.slice(0, -1).reverse().find(m => m?.is_user && m.mes);
     const q = [];
     if (need.date) q.push(`DATE: yes or no — in the LAST MESSAGE, does ${charName} actually ask ${userName} on a date or out somewhere together — said out loud to ${userName} (or written to her/him)? Only thinking about it, planning it in their head, or a vague hint — no.`);
-    if (need.bd.length) q.push(`BDAY: a name or no — in the LAST MESSAGE, does someone actually invite ${userName} (alone or with ${charName}) to the birthday of ${need.bd.join(' or ')} — in person, by word or through someone? Only mentioning the birthday — no. If yes, answer with that person's name.`);
+    if (need.inv.length) q.push(`INVITE: one of the names below, or no — in the LAST MESSAGE, does someone actually invite ${userName} (alone or with ${charName}) to one of these — in person, by word, by a note or through someone: ${need.inv.map(x => `"${x.value}" — ${x.label}`).join('; ')}? Only mentioning it, planning or thinking of inviting — no. If yes, answer with its name exactly as quoted.`);
     return [
         { role: 'system', content: 'You check one roleplay message for an extension. Answer only with the lines asked, one per line, nothing else.' },
         { role: 'user', content: `${prev ? `[${userName}, before it]\n${clean(prev.mes).slice(-800)}\n\n` : ''}[LAST MESSAGE]\n${clean(last?.mes).slice(-3500)}\n\n${q.join('\n')}` },
@@ -1675,13 +1857,14 @@ function parseConfirm(text, need) {
     const t = String(text || '');
     const dm = t.match(/DATE\s*[:=|-]\s*(yes|no|да|нет)/i);
     const date = need.date ? (dm ? /^(yes|да)/i.test(dm[1]) : null) : null;
-    let bd = null;
-    const bm = t.match(/BDAY\s*[:=|-]\s*([^\n]+)/i);
-    if (need.bd.length && bm && !/^\s*(no|нет|none|—|-)\b/i.test(bm[1])) {
+    let inv = null;
+    const bm = t.match(/(?:INVITE|BDAY)\s*[:=|-]\s*([^\n]+)/i);
+    if (need.inv.length && bm && !/^\s*(no|нет|none|—|-)\b/i.test(bm[1])) {
         const said = bm[1].toLowerCase().replace(/ё/g, 'е');
-        bd = need.bd.find(n => said.includes(String(n).toLowerCase().replace(/ё/g, 'е').slice(0, Math.max(3, String(n).length - 2)))) || (need.bd.length === 1 && /^(yes|да)/i.test(bm[1].trim()) ? need.bd[0] : null);
+        const vals = need.inv.map(x => x.value);
+        inv = vals.find(n => said.includes(String(n).toLowerCase().replace(/ё/g, 'е').slice(0, Math.max(3, String(n).length - 2)))) || (vals.length === 1 && /^(yes|да)/i.test(bm[1].trim()) ? vals[0] : null);
     }
-    return { date, bd };
+    return { date, inv };
 }
 
 // ─── Свидание: отдельный короткий запрос помощника после каждого ответа ───
@@ -1913,7 +2096,7 @@ const ui = { open: new Map(), tab: new Map(), confirmDel: null, editing: null, o
 
 const TYPE_ICON = {
     religious: 'fa-church', folk: 'fa-wheat-awn', seasonal: 'fa-leaf', state: 'fa-flag',
-    personal: 'fa-cake-candles', family: 'fa-house-chimney', supernatural: 'fa-ghost', fast: 'fa-hourglass-half', memorial: 'fa-feather', date: 'fa-heart',
+    personal: 'fa-cake-candles', family: 'fa-house-chimney', supernatural: 'fa-ghost', fast: 'fa-hourglass-half', memorial: 'fa-feather', date: 'fa-heart', gathering: 'fa-champagne-glasses',
 };
 
 const EVENT_ICON = {
@@ -2009,7 +2192,7 @@ function reattach() {
 }
 
 /** Есть ли у последнего ответа карточки решений: свидание, ивент, повод из истории */
-const cardsDue = () => !!state && (['offered', 'active'].includes(state.date?.status) || state.bdInv?.status === 'offered' || !!offeredEvent(state) || !!(state.offers || []).length);
+const cardsDue = () => !!state && (['offered', 'active'].includes(state.date?.status) || state.inv?.status === 'offered' || !!offeredEvent(state) || !!(state.offers || []).length);
 
 function shouldShow(id) {
     const msg = chat[id];
@@ -2035,7 +2218,7 @@ function renderBlock(id) {
         bindBlock(block);
     }
     // карточки решений — только у последнего ответа, своей плашкой прямо под текстом
-    const cardsHtml = live ? dateCardHtml() + bdInvCardHtml() + eventCardHtml() + offerHtml() : '';
+    const cardsHtml = live ? dateCardHtml() + invCardHtml() + eventCardHtml() + offerHtml() : '';
     if (cardsHtml && !cards) {
         cards = document.createElement('div');
         cards.className = 'ht-cards';
@@ -2210,10 +2393,9 @@ function dateCardHtml() {
     // идёт: портрет {{char}} с кружком {{user}}, рядом полоска «как идёт», шкала, цель, мысль, живые шаги
     const lvl = dateLevel();
     const g = d.goalDone ? 'done' : goalOpen(d, lvl) ? 'open' : 'locked';
-    const whoTxt = (w) => (w === 'user' ? u : w === 'char' ? c : L().dateBoth);
     const open = openSteps(d);
     const step = (x, cls = '') => `<button class="ht-date-step ht-who-${x.who} ${cls}" data-act="date-step" data-n="${x.n}"${x.state !== 'open' ? ' disabled tabindex="-1"' : ''}>
-        <i class="fa-${x.state === 'done' ? 'solid fa-heart' : x.state === 'failed' ? 'solid fa-heart-crack' : 'regular fa-heart'}"></i><span>${esc(x.t)}</span><em>${esc(whoTxt(x.who))}</em></button>`;
+        <i class="fa-${x.state === 'done' ? 'solid fa-heart' : x.state === 'failed' ? 'solid fa-heart-crack' : 'regular fa-heart'}"></i><span>${esc(x.t)}</span></button>`;
     const slots = [];
     // закрытый в этом ответе шаг остаётся видимым зачёркнутым до следующего ответа, новый встаёт под ним
     for (let i = 0; i < DATE_OPEN; i++) {
@@ -2278,6 +2460,7 @@ function decideDate(yes) {
     const d = state.date;
     if (!d || d.status !== 'offered') return;
     state.dateDecisions = { ...(state.dateDecisions || {}), [String(d.title).toLowerCase()]: yes ? 'accepted' : 'declined' };
+    noteDecision('date', String(d.title).toLowerCase(), d.msg);
     changeDate(st => {
         // на потом — «намечено» в инфоблоке, без шкалы и шагов; прямо сейчас — начинается
         if (yes) acceptInto(st, st.date);
@@ -3015,8 +3198,8 @@ function bodyHtml(view, live, tab = 'now') {
             <span>${L().datePlanned}${view.planned.when ? ` · ${esc(view.planned.when)}` : ''}</span>
             <b>${esc(view.planned.title)}${view.planned.where ? ` · ${esc(view.planned.where)}` : ''}</b>
             ${view.planned.goal ? `<em>${esc(view.planned.goal)}</em>` : ''}</div></div>` : '';
-    const plannedBd = view.plannedBd ? `<div class="ht-planned ht-planned-bd"><i class="fa-solid fa-gift"></i><div>
-            <span>${L().bdPlanned}${view.plannedBd.when ? ` · ${esc(view.plannedBd.when)}` : ''}</span>
+    const plannedBd = view.plannedBd ? `<div class="ht-planned ht-planned-bd"><i class="fa-solid ${view.plannedBd.extra ? 'fa-champagne-glasses' : 'fa-gift'}"></i><div>
+            <span>${view.plannedBd.extra ? L().exPlanned : L().bdPlanned}${view.plannedBd.when ? ` · ${esc(view.plannedBd.when)}` : ''}</span>
             <b>${esc(view.plannedBd.name)}</b></div></div>` : '';
     return `<div class="ht-body">
         ${tabs}
@@ -3106,8 +3289,8 @@ function bindBlock(block) {
             delete avatars()[t.dataset.cid];
             saveChatDebounced();
             renderBlock(id);
-        } else if (t.dataset.act === 'bd-yes' || t.dataset.act === 'bd-no') {
-            decideBd(t.dataset.act === 'bd-yes');
+        } else if (t.dataset.act === 'inv-yes' || t.dataset.act === 'inv-no') {
+            decideInv(t.dataset.act === 'inv-yes');
         } else if (t.dataset.act === 'cast-more') {
             ui.castMore.set(ui.castTab || 'all', Number(t.dataset.n) || CAST_PAGE);
             renderAll();
@@ -3258,6 +3441,15 @@ function injectSettingsPanel() {
                     </div>
                 </section>
                 <section class="ht-set-sec">
+                    <div class="ht-set-title"><i class="fa-solid fa-dice"></i>Ивенты</div>
+                    <div class="ht-set-row" title="Случайное событие на идущем мероприятии: праздник в сам день, день рождения, свидание. В подготовке и в обычные дни ивентов нет.">
+                        <span>Случайные ивенты</span>
+                        <input type="range" id="ht-set-evchance" min="0" max="50" step="1" value="${evChanceSetting()}">
+                        <b class="ht-set-val" id="ht-set-evchance-val">${evChanceSetting() ? `${evChanceSetting()}%` : 'выкл.'}</b>
+                    </div>
+                    <small class="ht-set-note"><i class="fa-solid fa-dice"></i><span>Только на идущих мероприятиях: праздник, день рождения, свидание</span></small>
+                </section>
+                <section class="ht-set-sec">
                     <div class="ht-set-title"><i class="fa-solid fa-heart"></i>Романтика</div>
                     <div class="ht-set-row" title="Как часто чар сам зовёт на свидание после ответа. После ссоры — в 2,5 раза чаще. Свидания из самого ролплея от этого не зависят.">
                         <span>Случайные свидания</span>
@@ -3292,6 +3484,11 @@ function injectSettingsPanel() {
             document.querySelectorAll('.ht-ib, .ht-cards').forEach(x => x.remove());
             ui.nodes.clear();
             renderAll();
+        });
+        document.getElementById('ht-set-evchance')?.addEventListener('input', e => {
+            localStorage.setItem(LS.evChance, e.target.value);
+            const v = document.getElementById('ht-set-evchance-val');
+            if (v) v.textContent = +e.target.value ? `${e.target.value}%` : 'выкл.';
         });
         document.getElementById('ht-set-datechance')?.addEventListener('input', e => {
             localStorage.setItem(LS.dateChance, e.target.value);
@@ -3466,6 +3663,9 @@ function onMessageDeleted() {
     if (!isEnabled() || !state) return;
     if (side && !chat[side.N]) cancelSide();
     const len = chat.length;
+    // решения по тому, что пришло в удалённых сообщениях (ивент, приглашение, свидание), снимаются — до отката,
+    // чтобы откат их не вернул: ивент, начатый раньше, остаётся с той точки, где был принят; начатый в удалённом — пропадает
+    dropDecisionsFrom(len);
     const affected = state.snapshots.filter(s => s.beforeMsg >= len).sort((a, b) => a.beforeMsg - b.beforeMsg);
     if (affected.length) {
         restoreSnapshot(affected[0]);

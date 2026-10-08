@@ -1001,3 +1001,6 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-dgifts > i { color: var(--c, var(--ht-rom)); flex: none; }
 .ht-dgifts > span { overflow-wrap: anywhere; }
 .ht-dlog li.ht-log-gift > i { color: var(--ht-acc); }
+
+/* приглашение на дополнительный праздник — иконка вместо портрета */
+.ht-ava.ht-ava-icon { font-size: 1.2em; color: var(--ht-acc); }

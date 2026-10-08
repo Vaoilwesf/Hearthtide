@@ -83,8 +83,11 @@ export function parseSmall(text, name = 'HT') {
         askedNo: /^(no|false|нет)/i.test(String(f.asked || '').trim()),
         bdYes: /^(yes|true|да)/i.test(String(f.bd_invited || '').trim()),
         bdNo: /^(no|false|нет)/i.test(String(f.bd_invited || '').trim()),
-        // кто-то в этом ответе вслух позвал {{user}} на день рождения человека NAME
-        invite: clean(f.invite, 60),
+        // кто-то в этом ответе вслух позвал {{user}}: на день рождения человека NAME или на дополнительный праздник NAME
+        invite: clean(f.invite, 80),
+        // таймскип перепрыгнул принятое приглашение: пришли (yes) или нет (no), и коротко как
+        went: /^(yes|true|да)/i.test(String(f.went || '').trim()) ? true : /^(no|false|нет)/i.test(String(f.went || '').trim()) ? false : null,
+        wentNote: clean(f.went_note, 160),
         // один человек праздника: чего он хочет теперь — «Имя: желание»
         who: (() => {
             const m = String(f.who || '').match(/^\s*(.{2,60}?)\s*(?::|\s[—–-]\s)\s*(.+)$/);
@@ -176,6 +179,30 @@ export function parseOffers(text) {
         });
     }
     return out.slice(0, 2);
+}
+
+/**
+ * Дополнительные праздники — собрания, на которые {{user}} или {{char}} могут позвать по их жизни и сеттингу:
+ *   E | YYYY-MM-DD | ДНЕЙ | НАЗВАНИЕ | КТО_ЗОВЁТ | КОГО: user|char|both | СМЫСЛ
+ * Приходят отдельным блоком HT-EXTRA или строками E в календаре HT-CAL.
+ */
+export function parseExtras(text) {
+    const out = [];
+    for (const name of ['HT-EXTRA', 'HT-CAL']) {
+        const inner = findBlock(text, name, name === 'HT-EXTRA');
+        if (inner == null) continue;
+        for (const raw of inner.split(/\n+/)) {
+            const cols = raw.split('|').map(x => x.trim());
+            if ((cols[0] || '').replace(/^[\s\-*•]+/, '').toUpperCase() !== 'E') continue;
+            const start = parseDate(cols[1]);
+            const xname = clean(cols[3], 80);
+            if (start == null || !xname || /[<>]/.test(xname)) continue;
+            const w = String(cols[5] || '').toLowerCase();
+            out.push({ start, days: Math.max(1, Math.min(3, parseInt(cols[2]) || 1)), name: xname, host: clean(cols[4], 80),
+                whom: /^user/.test(w) ? 'user' : /^char/.test(w) ? 'char' : 'both', meaning: clean(cols[6], 240) });
+        }
+    }
+    return out.slice(0, 3);
 }
 
 /** Подготовка: people / mood / char */
@@ -427,8 +454,22 @@ export function parseRecapParts(text) {
     if (inner == null || !/\btext\s*[=:]/i.test(inner)) return null;
     const f = fields(inner);
     const list = (v) => String(v || '').split(';').map(x => clean(x, 90)).filter(Boolean).slice(0, 5);
-    const r = { done: list(f.done), gifts: list(f.gifts), best: clean(f.best, 120) };
-    return r.done.length || r.gifts.length || r.best ? r : null;
+    const w = String(f.went || '').trim();
+    // у приглашения (день рождения, дополнительный праздник): пришли ли {{char}} и {{user}}
+    const r = { done: list(f.done), gifts: list(f.gifts), best: clean(f.best, 120), went: /^(yes|да)/i.test(w) ? true : /^(no|нет)/i.test(w) ? false : null };
+    return r.done.length || r.gifts.length || r.best || r.went != null ? r : null;
+}
+
+/**
+ * Маленький тег в тексте сообщения → только дата, время, «когда» и место. Остальные поля (who=Имя, char=, invite=, gift=…)
+ * уже разобраны и сохранены; в тексте их читал бы лорбук и срабатывал на имена.
+ */
+export function slimSmallTag(text) {
+    return String(text ?? '').replace(/<!--\s*HT(?![\w-])([\s\S]*?)-->/gi, (all, inner) => {
+        const f = fields(inner);
+        const keep = ['date', 'time', 'when', 'place'].filter(k => f[k] != null && String(f[k]).trim()).map(k => `${k}=${String(f[k]).trim()}`);
+        return keep.length ? `<!-- HT ${keep.join(' | ')} -->` : '';
+    });
 }
 
 /**
@@ -439,8 +480,8 @@ export function parseRecapParts(text) {
 export function stripBlocks(text) {
     let t = String(text ?? '');
     t = t.replace(/```[a-z]*\s*(?:<!--\s*)?HT(?:-[A-Z]+)?\b[\s\S]*?```/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT|CAST|DATE-UP|DATE)\b[\s\S]*?-->/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT|CAST|DATE-UP|DATE)\b(?![\s\S]*-->)[\s\S]*$/i, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT|CAST|DATE-UP|DATE|EXTRA)\b[\s\S]*?-->/gi, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT|CAST|DATE-UP|DATE|EXTRA)\b(?![\s\S]*-->)[\s\S]*$/i, '');
     t = t.replace(/^\s*HT(?:-[A-Z]+)?\b[\s:]+[^\n]*$/gim, '');
     return t.replace(/\s+$/, '');
 }

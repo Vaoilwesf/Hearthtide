@@ -84,8 +84,8 @@ function addStep(d, t, who, turn) {
     const slot = freeSlot(d);
     if (slot < 0) return false;
     if (d.steps.some(s => s.state === 'open' && normT(s.t) === normT(t))) return false;
-    // шаги — только {{char}} и общие: что делает {{user}}, решает игрок
-    d.steps.push({ n: d.nextN++, t, who: who === 'char' ? 'char' : 'both', state: 'open', slot, turn, note: null });
+    // шаги — только действия {{char}}: что делает {{user}}, решает игрок
+    d.steps.push({ n: d.nextN++, t, who: 'char', state: 'open', slot, turn, note: null });
     return true;
 }
 

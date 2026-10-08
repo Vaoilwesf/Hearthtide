@@ -3,6 +3,7 @@
 
 import { nextOccurrence, dayPart, fromDayNum } from './dates.js';
 import { isKin, castBanned } from './cast.js';
+import { acceptedExtras, extrasDue } from './invites.js';
 
 // За сколько дней начинается подготовка: ИИ указывает сам для каждого праздника,
 // это — запасные значения, если не указал
@@ -47,22 +48,19 @@ export function namesMatch(a, b) {
 
 export function holidayId(h) {
     if (h.npc) return `bday-npc-${h.cid}@${h.start}`;
+    if (h.extra) return `x-${h.xid}`;
     if (h.birthday) return `bday-${h.who}-${h.start}`;
     return `${String(h.name).toLowerCase().replace(/\s+/g, '-').slice(0, 40)}@${h.start}`;
 }
 
 // ─── День рождения человека из истории — свой, небольшой праздник ───
-// Родня любого из двоих и близкие (отношения от 40) — сами; остальные — только если позвали и игрок принял.
-// Отказ или «убрать» в инфоблоке — этот день рождения больше не показываем.
-export const NPC_BD_AHEAD = 30;          // дальше месяца вперёд не показываем — список «Дальше» не засоряется
-export const NPC_BD_CLOSE = 40;
+// Появляется, только когда именинник (или кто-то от него) позвал и игрок принял приглашение (invites.js).
+// Пока не звали — праздника нет, даже у родни: модель не должна «сходить» туда раньше приглашения.
+export const NPC_BD_AHEAD = 30;
 export const npcBdKey = (cid, start) => `${cid}@${start}`;
 export function npcBdOn(state, c, start) {
     if (!c?.id || !c.bday || c.off || (c.name && castBanned(state, c.name))) return false;
-    const dec = state.bdDecisions?.[npcBdKey(c.id, start)];
-    if (dec === 'declined') return false;
-    if (dec === 'accepted') return true;
-    return isKin(c.group) || (c.rel?.user ?? 0) >= NPC_BD_CLOSE || (c.rel?.char ?? 0) >= NPC_BD_CLOSE;
+    return state.bdDecisions?.[npcBdKey(c.id, start)] === 'accepted';
 }
 export function npcHoliday(c, start) {
     const h = { start, days: 1, name: c.name || c.toU || c.toC || '?', who: `npc:${c.id}`, npc: true, cid: c.id,
@@ -115,6 +113,7 @@ export function allHolidays(state) {
             }
         }
         for (const h of npcBirthdays(state)) if (!list.some(x => x.id === h.id)) list.push(h);
+        for (const h of acceptedExtras(state)) if (!list.some(x => x.id === h.id)) list.push(h);
     }
     return list.sort((a, b) => a.start - b.start);
 }
@@ -199,6 +198,8 @@ function requestForRaw(state, phase, skip = null) {
     }
     // Люди истории (кто кому кем, отношения) — изредка, если ничего важнее не нужно
     if ((state.turn || 0) - (state.lastCastTurn ?? -99) >= 8) { if (ok('cast')) return 'cast'; }
+    // Дополнительные праздники (собрания по работе, общине и т. п.) — изредка, когда впереди ни одного
+    if (extrasDue(state)) { if (ok('extras')) return 'extras'; }
     return null;
 }
 
@@ -235,6 +236,9 @@ export function sideNeeds(state, phase) {
     if ((state.holidays || []).some(x => x.needMeaning && !isBanned(state, x.name))) n.add('mean');
     n.add('new');   // поводы из истории ищем при каждом запросе — это почти ничего не стоит
     n.add('cast');  // новые люди истории и перемены в отношениях — тоже
+    if (extrasDue(state)) n.add('extras');
+    // таймскип перепрыгнул принятое приглашение — пришли ли туда
+    if ((state.skipAsk || []).length) n.add('went');
     // перепись: изредка — по большому окну сообщений, сначала родня обеих сторон и те, кого чаще называют
     const sinceCensus = turn - (state.lastCensusTurn ?? -99);
     if (sinceCensus >= CENSUS_EVERY || ((state.cast || []).length < 3 && sinceCensus >= 6)) n.add('census');
@@ -259,7 +263,7 @@ export const CENSUS_DEPTH = 30;
 /** Отправлять ли отдельный запрос после этого ответа */
 export function sideDue(state, phase, needs) {
     // то, без чего инфоблок пустой или неверный, — сразу
-    if (['recap', 'cal', 'mean', 'day', 'replan', 'census', 'date', 'daterecap', 'dateplan'].some(k => needs.has(k))) return true;
+    if (['recap', 'cal', 'mean', 'day', 'replan', 'census', 'date', 'daterecap', 'dateplan', 'went'].some(k => needs.has(k))) return true;
     // пара ещё не ясна — спросить сразу, но не чаще раза в 5 ответов, если помощник её не дал
     if (needs.has('bond') && (state.turn || 0) - (state.bondSide ?? -99) >= 5) return true;
     const since = (state.turn || 0) - (state.lastSideTurn ?? -99);
@@ -305,8 +309,9 @@ export function openEvent(state, hid) {
 export function offeredEvent(state) {
     return (state.evts || []).find(e => e.status === 'offered') || null;
 }
-/** Шанс случайного ивента после ответа, в процентах: в праздник чаще, в подготовке реже */
-export const EVENT_CHANCE = { today: 35, prep: 15 };
+/** Шанс случайного ивента после ответа, в процентах (по умолчанию; меняется в настройках).
+ *  Ивенты — только на идущих мероприятиях: праздник в сам день, день рождения, свидание */
+export const EVENT_CHANCE_DEFAULT = 20;
 export const EVENT_COOLDOWN = 3;
 
 /** Сколько часов до намеченного свидания (отрицательное — срок прошёл); null — неизвестно */
