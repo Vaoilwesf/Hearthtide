@@ -192,7 +192,6 @@ export function sideNeeds(state, phase) {
     if (!state.dateRoll && (!state.date || ds === 'ended' || ds === 'missed')) n.add('datewatch');
     // ход свидания, его начало и итог — отдельным коротким запросом каждый ответ (runDateSide), не здесь
     // приглашение пришло от основной модели — помощник проверяет, что позвали вслух, а не только подумали
-    if (ds === 'pending' || state.bdInv?.status === 'pending') n.add('confirm');
     // кубик выпал — план свидания составляет помощник: по карточке, персоне, лорбуку и истории
     if (state.dateRoll && !state.datePlan && !['active', 'offered', 'scheduled', 'pending'].includes(ds)) n.add('dateplan');
     return n;
@@ -207,7 +206,7 @@ export const CENSUS_DEPTH = 30;
 /** Отправлять ли отдельный запрос после этого ответа */
 export function sideDue(state, phase, needs) {
     // то, без чего инфоблок пустой или неверный, — сразу
-    if (['recap', 'cal', 'mean', 'day', 'replan', 'census', 'date', 'daterecap', 'dateplan', 'confirm'].some(k => needs.has(k))) return true;
+    if (['recap', 'cal', 'mean', 'day', 'replan', 'census', 'date', 'daterecap', 'dateplan'].some(k => needs.has(k))) return true;
     // пара ещё не ясна — спросить сразу, но не чаще раза в 5 ответов, если помощник её не дал
     if (needs.has('bond') && (state.turn || 0) - (state.bondSide ?? -99) >= 5) return true;
     const since = (state.turn || 0) - (state.lastSideTurn ?? -99);

@@ -122,7 +122,16 @@ export function buildStatePrompt(ctx) {
         const day = b.days === 0 ? 'is today' : b.days === 1 ? 'is tomorrow' : `is in ${b.days} days, not sooner`;
         if (inv?.status === 'accepted') lines.push(`${b.name}'s birthday ${day}${ties ? ` (${ties})` : ''}. ${userName} accepted the invitation; ${charName} knows${b.days === 0 ? ` — today they are expected; lead there when the scene allows` : ''}.`);
         else if (inv?.status === 'declined') lines.push(`${b.name}'s birthday ${day}. ${userName} declined the invitation — ${b.name} takes it in their own way; don't push it.`);
-        else lines.push(`${b.name}'s birthday ${day}${ties ? ` (${ties})` : ''}. Whether ${b.name} brings it up or invites — and whom — follows how they get on (with ${userName} ${b.relU}, with ${charName} ${b.relC}) and how they are tied: family and close friends of either one are usually asked; on bad terms they keep quiet or leave someone out.${b.nudge && !inv ? ` This reply, if the scene allows: ${b.name} or someone close to them brings it up.` : ''}${!inv && b.days <= 3 ? ` Only if in this reply someone actually invites ${userName} to it out loud, add invite=${b.name} to the HT line.` : ''}`);
+        else {
+            // близкие любому из двоих (родня, друг, тёплые отношения) по обычаю зовут обоих — и делают это вслух, не дожидаясь дня
+            const close = b.kin || b.relU >= 20 || b.relC >= 20;
+            const invite = close && b.days <= 5 && b.nudge;
+            lines.push(`${b.name}'s birthday ${day}${ties ? ` (${ties})` : ''}. ${close
+                ? `${b.name} is close to ${b.relC >= b.relU ? charName : userName}, so by custom ${b.name} invites ${charName} and ${userName} together — whoever ${b.name} is to ${userName} on their own.`
+                : `Whether ${b.name} brings it up or invites — and whom — follows how they get on (with ${userName} ${b.relU}, with ${charName} ${b.relC}); on bad terms they keep quiet or leave someone out.`}${invite
+                ? ` This reply: ${b.name}, or someone close to them, invites ${charName} and ${userName} to it — in person, by a word passed on or a note; plainly, with the day${b.days <= 1 ? '' : ' and the time'}. If the scene is urgent, the next calm moment.`
+                : b.nudge ? ` This reply, if the scene allows: ${b.name} or someone close to them brings it up.` : ''}${b.days <= 5 ? ` If someone actually invites ${userName} to it out loud in this reply, add invite=${b.name} to the HT line.` : ''}`);
+        }
     }
 
     // Воспоминание по кнопке «вспомнить» — один раз
@@ -552,8 +561,6 @@ export function buildSideMessages(ctx, needs, src) {
     const evOpen = h && (phase.kind === 'today' || phase.kind === 'prep') ? openEvent(state, h.id) : null;
     if (evOpen?.status === 'invited') sf.push(`ev=joined if ${userName} accepted the invitation "${evOpen.title}", ev=declined if refused; leave out if not decided yet`);
     else if (evOpen) sf.push(`ev=done with ev_note=its outcome in one sentence once "${evOpen.title}" is over in the story${evOpen.kind === 'party' ? '' : `; ev=skipped if ${userName} turned away`}`);
-    if (needs.has('confirm') && state.date?.status === 'pending') sf.push(`asked=yes|no — in the message marked [NEW], did ${charName} actually ask ${userName} on the date (${state.date.title}) out loud, to ${userName}? Only thought of it, planned it or hinted — no`);
-    if (needs.has('confirm') && state.bdInv?.status === 'pending') sf.push(`bd_invited=yes|no — in the message marked [NEW], did someone actually invite ${userName} to ${state.bdInv.name}'s birthday out loud? Only mentioned or thought of it — no`);
     if (needs.has('mean') && ctx.meaningFor) sf.push(`mean=what "${ctx.meaningFor}" is and how it is kept in this era and place, one sentence`);
     if (needs.has('bond')) sf.push(`bond=FRIENDSHIP/ROMANCE: how ${charName} and ${userName} stand by the card, persona and story, two numbers −100…100 — friendship (enmity … 0 neutral … very close), romance (hatred or exes … 0 none … deep love); spouses, lovers, rivals and strangers all differ; bond_note=a few words on how they are now`);
     const keys = (x) => (x.startsWith('bond=') ? 'bond=F/R | bond_note=…' : `${x.split('=')[0]}=…`);

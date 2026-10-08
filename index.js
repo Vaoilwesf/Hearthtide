@@ -340,9 +340,10 @@ function castForPrompt() {
     const castBdays = cast.map(c => ({ c, days: bdayIn(c, state.today) })).filter(x => x.days != null && x.days <= 7)
         .sort((a, b) => a.days - b.days).slice(0, 2)
         .map(({ c, days }) => ({
-            cid: c.id, name: c.name || c.toU || c.toC, days, relU: c.rel?.user ?? 0, relC: c.rel?.char ?? 0, toU: c.toU, toC: c.toC,
+            cid: c.id, name: c.name || c.toU || c.toC, days, relU: c.rel?.user ?? 0, relC: c.rel?.char ?? 0, toU: c.toU, toC: c.toC, kin: isKin(c.group),
             // ближе к дню — чаще всплывает в разговоре
-            nudge: (state.turn || 0) % (days <= 2 ? 2 : 3) === 0,
+            // ближе к дню — чаще; позвали уже — не подталкиваем
+            nudge: !state.bdInv && (state.turn || 0) % (days <= 2 ? 2 : 3) === 0,
         }));
     const castSeen = cast.filter(c => (c.name ? seenInStory(c.name, text) : [c.toU, c.toC].some(r => r && seenInStory(r, text)))
         || castBdays.some(b => b.name === (c.name || c.toU || c.toC))).slice(0, 6);
@@ -544,16 +545,21 @@ function processReply(N) {
     const castIn = [parseCast(src), sideText ? parseCast(sideText) : null].filter(Boolean);
     const planIn = sideText && sideAsked.includes('dateplan') ? parseDateBlock(sideText) : null;
     let dateIn = parseDateBlock(src) || (sideText && sideAsked.includes('datewatch') ? parseDateBlock(sideText) : null);
-    // {{char}} позвал по плану помощника (date_asked=yes) — приглашение из плана; место и время — тоже из плана
+    // Позвали ли вслух — короткий отдельный запрос «да/нет» (при помощнике). Нет ответа — ждём его; запрос упал — верим основной модели
+    const conf = apiOn() ? (msg.extra?.ht_confirm?.[coreHash(text)] || null) : null;
+    // {{char}} позвал по плану помощника — приглашение из плана: место и время тоже из плана.
+    // Отметку date_asked модели часто забывают — поэтому годится и подтверждение «да» из проверки
     const plan = hadDateRoll ? state.datePlan : null;
-    if (plan && !dateIn?.started && (dateIn || small?.dateAsked)) {
+    if (plan && !dateIn?.started && (dateIn || small?.dateAsked || conf?.date === true)) {
         dateIn = { ...plan, steps: [], started: false, ...(dateIn ? { title: dateIn.title || plan.title, hook: dateIn.hook || plan.hook } : {}) };
     }
-    // помощник проверил: {{char}} только подумал о свидании — приглашения нет, кубик остаётся (позовёт позже)
-    if (dateIn && !dateIn.started && sideSmall?.askedNo && !sideAsked.includes('datewatch')) {
-        console.info('[Hearthtide] свидание: персонаж только подумал о нём — приглашения нет');
+    // проверка сказала «только подумал» — приглашения нет, кубик остаётся (позовёт позже)
+    if (dateIn && !dateIn.started && conf?.date === false && !sideAsked.includes('datewatch')) {
+        console.info('[Hearthtide] свидание: проверка — персонаж только подумал о нём, приглашения нет');
         dateIn = null;
     }
+    // ещё ждём проверку — карточку не показываем, но и кубик не перебрасываем
+    const dateWait = apiOn() && !conf && !!dateIn && !dateIn.started;
     const beat = sideText ? parseBeat(sideText) : null;
     // Строки H, пришедшие без запроса календаря, — тоже повод из истории: решает игрок
     if (cal && !askedCal && !cal.setting && cal.holidays.length) {
@@ -695,14 +701,21 @@ function processReply(N) {
         else if (dec === 'accepted') acceptInto(state, d);
         // история договорилась на потом — сразу намечено
         else if (!dateIn.started && (state.dateDecisions?.[String(d.title).toLowerCase()] === undefined) && sideAsked.includes('datewatch') && d.at && !d.at.now) d.status = 'scheduled';
-        // приглашение от основной модели при помощнике — карточка и уведомление только после проверки, что позвали вслух
-        else if (!dateIn.started && d.status === 'offered' && apiOn() && !sideSmall?.askedYes) d.status = 'pending';
+        // при помощнике карточка и уведомление — только когда проверка ответила (или упала)
+        else if (dateWait && d.status === 'offered') d.status = 'pending';
         if (d.status !== 'declined') state.date = d;
         state.dateRoll = false;
     }
 
     // ── Приглашение на день рождения человека из истории: по факту (invite=), проверка помощником, решение игрока ──
-    handleBdInvite(small, sideSmall);
+    handleBdInvite(small, conf);
+    // что проверить коротким запросом после этого ответа: позвал ли {{char}} на свидание, позвал ли кто-то на день рождения
+    confirmNeed = apiOn() && !conf ? {
+        N, hash: coreHash(text),
+        date: !!(dateIn && !dateIn.started) || (hadDateRoll && !!state.datePlan && state.date?.status !== 'active'),
+        bd: state.bdInv ? [] : (castForPrompt().castBdays || []).filter(b => b.days <= 7).map(b => b.name),
+    } : null;
+    if (confirmNeed && !confirmNeed.date && !confirmNeed.bd.length) confirmNeed = null;
 
     // ── Подготовка, день праздника, итог — привязываем к текущей фазе ──
     let phase = phaseOf(state);
@@ -980,29 +993,29 @@ function applyDateRecap(st, id, text, best) {
     st.dateRecapFor = null;
 }
 // ─── Приглашение на день рождения человека из истории ───
-function handleBdInvite(small, sideSmall) {
+function handleBdInvite(small, conf) {
     // день рождения прошёл — в «Текущий год» (если ходили), приглашение закрыто
     const old = state.bdInv;
     if (old && state.today != null && state.today > old.day) {
         if (old.status === 'accepted') recordBday(state, old);
         state.bdInv = null;
     }
-    const name = small?.invite;
+    // при помощнике — по проверке (модели часто забывают отметку invite=); без помощника или если проверка упала — по отметке
+    const name = apiOn() && conf && !conf.failed ? conf.bd : small?.invite;
     if (name && !state.bdInv) {
-        const c = findCast(state, name);
+        const c = findCast(state, name) || (state.cast || []).find(x => [x.name, x.toU, x.toC].some(v => v && String(v).toLowerCase() === String(name).toLowerCase()));
         const days = c ? bdayIn(c, state.today) : null;
         if (c && days != null && days <= 7) {
-            state.bdInv = { cid: c.id, name: c.name || name, day: state.today + days, status: apiOn() ? 'pending' : 'offered', turn: state.turn };
+            const inv = { cid: c.id, name: c.name || name, day: state.today + days, status: 'offered', turn: state.turn };
+            const dec = state.bdDecisions?.[`${inv.cid}@${inv.day}`];
+            if (dec) inv.status = dec;
+            state.bdInv = inv;
+            console.info(`[Hearthtide] приглашение на день рождения: ${inv.name}${dec ? ` (решение уже было: ${dec})` : ''}`);
         } else console.info(`[Hearthtide] приглашение на день рождения «${name}» пропущено: ${c ? 'день рождения не скоро' : 'такого человека нет в списке'}`);
     }
     const inv = state.bdInv;
     if (!inv) return;
-    if (inv.status === 'pending') {
-        if (sideSmall?.bdYes) inv.status = 'offered';
-        else if (sideSmall?.bdNo || state.turn - inv.turn > 2) { console.info('[Hearthtide] приглашение на день рождения: вслух не звали'); state.bdInv = null; return; }
-    }
-    const dec = state.bdDecisions?.[`${inv.cid}@${inv.day}`];
-    if (dec && inv.status === 'offered') inv.status = dec;
+    if (inv.status === 'pending') inv.status = 'offered';            // из прошлой версии
     if (inv.status === 'offered' && state.turn - inv.turn > 6) state.bdInv = null;      // не ответили — забылось
 }
 function recordBday(st, inv) {
@@ -1520,6 +1533,65 @@ let sideErr = null;         // { N, why } — последний запрос у
 
 const sideLoading = () => !!side && side.N === lastProcessedMsg();
 
+// ─── Позвали ли вслух: крошечный запрос «да/нет» после ответа ───
+// Раньше это была строчка в большом задании помощника — модель её пропускала, и приглашения тихо пропадали.
+let confirmNeed = null;      // { N, hash, date, bd: [имена] } — что проверить после этого ответа
+let confirmSide = null;
+async function runConfirmSide(N) {
+    const need = confirmNeed;
+    if (!apiOn() || !isEnabled() || !need || need.N !== N || N !== lastProcessedMsg()) return;
+    const msg = chat[N];
+    if (!msg || coreHash(msg.mes) !== need.hash || msg.extra?.ht_confirm?.[need.hash]) return;
+    if (confirmSide?.hash === need.hash) return;                  // уже спрашиваем
+    confirmSide?.ctl.abort();
+    const me = { N, hash: need.hash, ctl: new AbortController() };
+    confirmSide = me;
+    let res;
+    try {
+        const text = await sendSide(apiProfile(), buildConfirmMessages(ctxFor(null), need, chat.slice(0, N + 1)), me.ctl.signal, 600);
+        if (confirmSide !== me) return;
+        res = parseConfirm(text, need);
+        console.info(`[Hearthtide] проверка «позвали ли вслух»: ${text.trim().replace(/\s+/g, ' ').slice(0, 160)} → свидание ${res.date ?? '—'}, день рождения ${res.bd || 'нет'}`);
+    } catch (e) {
+        if (me.ctl.signal.aborted || confirmSide !== me) return;
+        console.warn('[Hearthtide] проверка «позвали ли вслух» не прошла — верю отметкам основной модели:', reasonOf(e));
+        res = { failed: true, date: null, bd: null };
+    } finally {
+        if (confirmSide === me) confirmSide = null;
+    }
+    const m = chat[N];
+    if (!m || coreHash(m.mes) !== me.hash || N !== lastProcessedMsg()) return;
+    m.extra = m.extra || {};
+    m.extra.ht_confirm = { [me.hash]: res };
+    processReply(N);
+}
+
+function buildConfirmMessages(ctx, need, msgs) {
+    const { userName, charName } = ctx;
+    const clean = (t) => String(t || '').replace(/<!--[\s\S]*?-->/g, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    const last = msgs[msgs.length - 1];
+    const prev = msgs.slice(0, -1).reverse().find(m => m?.is_user && m.mes);
+    const q = [];
+    if (need.date) q.push(`DATE: yes or no — in the LAST MESSAGE, does ${charName} actually ask ${userName} on a date or out somewhere together — said out loud to ${userName} (or written to her/him)? Only thinking about it, planning it in their head, or a vague hint — no.`);
+    if (need.bd.length) q.push(`BDAY: a name or no — in the LAST MESSAGE, does someone actually invite ${userName} (alone or with ${charName}) to the birthday of ${need.bd.join(' or ')} — in person, by word or through someone? Only mentioning the birthday — no. If yes, answer with that person's name.`);
+    return [
+        { role: 'system', content: 'You check one roleplay message for an extension. Answer only with the lines asked, one per line, nothing else.' },
+        { role: 'user', content: `${prev ? `[${userName}, before it]\n${clean(prev.mes).slice(-800)}\n\n` : ''}[LAST MESSAGE]\n${clean(last?.mes).slice(-3500)}\n\n${q.join('\n')}` },
+    ];
+}
+function parseConfirm(text, need) {
+    const t = String(text || '');
+    const dm = t.match(/DATE\s*[:=|-]\s*(yes|no|да|нет)/i);
+    const date = need.date ? (dm ? /^(yes|да)/i.test(dm[1]) : null) : null;
+    let bd = null;
+    const bm = t.match(/BDAY\s*[:=|-]\s*([^\n]+)/i);
+    if (need.bd.length && bm && !/^\s*(no|нет|none|—|-)\b/i.test(bm[1])) {
+        const said = bm[1].toLowerCase().replace(/ё/g, 'е');
+        bd = need.bd.find(n => said.includes(String(n).toLowerCase().replace(/ё/g, 'е').slice(0, Math.max(3, String(n).length - 2)))) || (need.bd.length === 1 && /^(yes|да)/i.test(bm[1].trim()) ? need.bd[0] : null);
+    }
+    return { date, bd };
+}
+
 // ─── Свидание: отдельный короткий запрос помощника после каждого ответа ───
 // Только про свидание: вердикт по каждому шагу, новые шаги, настроение, мысль {{char}}, начало, конец, итог.
 // Раньше это было одним из многих заданий большого запроса, шёл он не каждый ответ — и ход свидания терялся.
@@ -1579,6 +1651,7 @@ function cancelSide() {
 
 /** Решить, нужен ли запрос после ответа N, и отправить */
 function maybeSide(N, force = false, extra = []) {
+    runConfirmSide(N);
     runDateSide(N);
     if (!apiOn() || !state || generating) return;
     const msg = chat[N];
