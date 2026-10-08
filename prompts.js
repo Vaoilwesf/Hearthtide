@@ -209,7 +209,7 @@ export function buildStatePrompt(ctx) {
 
 // ─── Пасха на нужный год: считает расширение, ИИ только выбирает, подходит ли она миру ───
 function easterHint(ctx) {
-    if (ctx.state.today == null || (ctx.eraMode === 'modern' && ctx.faithMode === 'secular')) return '';
+    if (ctx.state.today == null || noFaith(ctx.state)) return '';
     const { y, m } = fromDayNum(ctx.state.today);
     if (y < 33 || y > 2300) return '';
     const one = (yy) => {
@@ -222,14 +222,17 @@ function easterHint(ctx) {
     return ` If Christian feasts belong here — Easter ${years.map(one).join('; ')}; movable feasts count from it.`;
 }
 
-// ─── Какие праздники брать: зависит от эпохи и веры из настроек ───
+/** Модель сказала, что живут без веры — церковных праздников и Пасхи не предлагаем */
+const noFaith = (state) => /(none|no faith|secular|atheis|non-?religious|нет\b|нету|без веры|светск|атеи|неверу|нерелиги)/i.test(String(state.setting?.faith || ''));
+
+// ─── Какие праздники брать: зависит от эпохи (настройка чата) и веры (её определяет модель по началу чата) ───
 function holidayGuide(ctx) {
     if (ctx.eraMode !== 'modern') {
         return `The setting decides the calendar: card, world info and lore first, history second. Weigh faiths as the setting does — old gods, spirits or magic get their nights and rites on par with church feasts; include folk, seasonal and local customs.`;
     }
-    const faith = ctx.faithMode === 'secular'
-        ? `No religious feasts at all — these characters live secular lives.`
-        : `Religious feasts: only the biggest ones of the main faith of the place and of the characters (e.g. Orthodox Christmas on Jan 7, Easter on its correct date that year) — not every church feast.`;
+    const faith = noFaith(ctx.state)
+        ? `No religious feasts — these characters and the people around them live without a faith.`
+        : `Religious feasts: only if the characters or the people around them actually live by a faith, as the card, persona and story show — then only the biggest feasts of that faith (e.g. Orthodox Christmas on Jan 7, Easter on its correct date that year), not every church feast; if nothing shows a faith, none.`;
     return `MODERN SETTING: only what most people in this country actually celebrate today — major public holidays and days off, big festive days everyone knows, and personal dates. Skip minor official days, professional days, awareness and memorial days, and niche imported holidays, unless one matters to these characters personally. For Russia, for example: New Year (Dec 31 and the January holidays), Defender of the Fatherland Day (Feb 23), International Women's Day (Mar 8), Spring and Labour Day (May 1), Victory Day (May 9), Russia Day (Jun 12), National Unity Day (Nov 4); also widely kept: Valentine's Day, Maslenitsa, Knowledge Day (Sep 1). ${faith} Take the character card and lore into account.`;
 }
 
@@ -487,7 +490,7 @@ S | ERA_AND_YEAR | FAITH | PLACE${askMode ? ' | MODE' : ''}
 H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP
 ${needB ? `B | user | MM-DD | PREP\nB | char | MM-DD | PREP\n` : ''}${gap ? `X | YYYY-MM-DD | NAME | TYPE\n` : ''}E | YYYY-MM-DD | DAYS | NAME | HOST | FOR | MEANING
 -->
-- S: the era by name and the year${ctx.eraMode === 'modern' ? '' : ', as people of that time would say it (our reckoning in brackets only if theirs differs)'} — not a bare date; FAITH — ${ctx.eraMode === 'modern' && ctx.faithMode === 'secular' ? 'secular' : 'the faith(s) people actually live by'}; PLACE — the kind of place and its proper name exactly as the story gives it (never invent a name the story doesn't use).${askMode ? ' MODE — present if the story is set in our real world today, otherwise past (history, fantasy, other worlds).' : ''}
+- S: the era by name and the year${ctx.eraMode === 'modern' ? '' : ', as people of that time would say it (our reckoning in brackets only if theirs differs)'} — not a bare date; FAITH — the faith(s) these characters and the people around them actually live by, judged from the card, persona and the start of the story; none if they live without one; PLACE — the kind of place and its proper name exactly as the story gives it (never invent a name the story doesn't use).${askMode ? ' MODE — present if the story is set in our real world today, otherwise past (history, fantasy, other worlds).' : ''}
 - H: the next 4 holidays from the current date, in date order, decided briskly${known.length ? `, continuing after: ${known.join(', ')}` : ''}. Only days people there already keep — never something still to happen in the story (a disaster, a death, a battle). ${holidayGuide(ctx)} Compute movable feasts properly for that year and calendar.${easterHint(ctx)} Occasions the story itself has set up or announced come first. Also add personal and family occasions the story gives grounds for (birthdays and name days of the characters and people close to them, weddings, anniversaries, a newborn's naming, memorial days of relatives, a housewarming) — only dates the card, lore or story actually gives, never guessed. DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | family | supernatural | fast | memorial. PREP = how many days before it people actually start getting ready or feel it coming (0 for a minor day; a great feast may be weeks). Birthdays of ${userName} and ${charName} go only in B lines, never as H; birthdays of other people are tracked separately — not as H.${needB ? `\n- B: birthdays of ${userName} and ${charName} only if the card, persona or story states them; otherwise leave that line out — never guess.` : ''}${gap ? `\n- X: holidays the time skip jumped over, ${gap.from} to ${gap.to}, by the same rules.` : ''}${ctx.passed?.length ? `\n- Already passed this year, don't repeat: ${ctx.passed.join(', ')}.` : ''}${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}
 - E: ${extrasText(ctx)}
 - All of it in ${lang}: translate holiday names even if the story's world speaks another language.`;

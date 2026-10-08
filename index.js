@@ -29,12 +29,10 @@ const LS = {
     enabled: 'hearthtide_enabled',
     position: 'hearthtide_position',   // top | middle | bottom — внутри ответа бота
     showPrev: 'hearthtide_showPrev',   // показывать в предыдущих ответах
-    era: 'hearthtide_era',             // ancient | modern — какие праздники подбирать
-    faith: 'hearthtide_faith',         // faith | secular — только для современности
     lang: 'hearthtide_lang',           // ru | en — язык инфоблока
     api: 'hearthtide_api',             // профиль подключения для отдельного запроса: auto — тот, что выбран в таверне
     depth: 'hearthtide_depth',         // сколько последних сообщений читает отдельный запрос
-    eraMap: 'hearthtide_era_map',      // эпоха и вера — отдельно для каждого персонажа или группы
+    eraMap: 'hearthtide_era_map',      // прошлые версии: эпоха для каждого персонажа (теперь — в самом чате)
     dateChance: 'hearthtide_date_chance', // шанс, что чар сам позовёт на свидание после ответа (%)
     dateLevel: 'hearthtide_date_level',   // сложность свиданий: easy | hard
     evChance: 'hearthtide_ev_chance',
@@ -58,7 +56,7 @@ const datePaceSetting = () => { const v = lsGet(LS.datePace, 'auto'); return ['s
 const evChanceSetting = () => { const n = Number(lsGet(LS.evChance, String(EVENT_CHANCE_DEFAULT))); return isNaN(n) ? EVENT_CHANCE_DEFAULT : Math.max(0, Math.min(50, n)); };
 const dateChanceSetting = () => { const n = Number(lsGet(LS.dateChance, '6')); return isNaN(n) ? 6 : Math.max(0, Math.min(30, n)); };
 
-// ─── Эпоха и вера запоминаются для каждого персонажа (и группы) ───
+// ─── Эпоха — своя у каждого чата (хранится в состоянии чата); вера — определяется сама по началу чата ───
 function charKey() {
     const gid = globalThis.SillyTavern?.getContext?.()?.groupId;
     if (gid) return `g:${gid}`;
@@ -68,17 +66,13 @@ function charKey() {
 function eraMap() {
     try { return JSON.parse(localStorage.getItem(LS.eraMap) || '{}') || {}; } catch (e) { return {}; }
 }
-function setCharSetting(field, value) {
-    const key = charKey();
-    if (!key) { localStorage.setItem(field === 'era' ? LS.era : LS.faith, value); return; }
-    const map = eraMap();
-    map[key] = { ...(map[key] || {}), [field]: value };
-    if (value === 'auto') delete map[key][field];
-    localStorage.setItem(LS.eraMap, JSON.stringify(map));
+function setChatEra(value) {
+    if (!state) return;
+    state.eraMode = ['ancient', 'modern'].includes(value) ? value : 'auto';
+    saveState();
 }
-// Эпоху нового персонажа определяет ИИ по карточке в первом календаре (auto), пока игрок не выберет сам
-const eraMode = () => eraMap()[charKey()]?.era || (charKey() ? 'auto' : lsGet(LS.era, 'ancient'));
-const faithMode = () => eraMap()[charKey()]?.faith || lsGet(LS.faith, 'faith');
+// Эпоху нового чата определяет ИИ по началу чата в первом календаре (auto), пока игрок не выберет сам
+const eraMode = () => state?.eraMode || 'auto';
 const langMode = () => lsGet(LS.lang, 'ru');
 const L = () => strings(langMode());
 
@@ -196,6 +190,8 @@ function loadState() {
     state = chat_metadata[META_KEY];
     const def = defaultState();
     for (const k of Object.keys(def)) if (state[k] === undefined) state[k] = def[k];
+    // эпоха — теперь своя у каждого чата: старый чат берёт ту, что была у персонажа, новый определяет сам
+    if (state.eraMode === undefined) state.eraMode = state.setting ? (eraMap()[charKey()]?.era || 'auto') : 'auto';
     // старые итоги праздников → в воспоминания
     if (!state.flashbacks.length && state.recaps?.length) {
         state.flashbacks = state.recaps.map((r, i) => ({ id: `fb-old-${i}`, title: r.name, text: r.text, when: null, kind: 'holiday' }));
@@ -285,7 +281,6 @@ function ctxFor(request = null) {
         eraMode: eraMode(),
         api: apiOn(),
         lang: L().promptLang,
-        faithMode: faithMode(),
     };
 }
 
@@ -528,9 +523,13 @@ function langOk(v) {
     return langMode() === 'en' ? (lat || !cyr) : (cyr || !lat);
 }
 
+/** Приветствие (до первого сообщения игрока): его свайпы ничего не запускают — всё начинается с первого ответа бота */
+const isOpening = (N) => !chat.slice(0, N).some(m => m?.is_user);
+
 function processReply(N) {
     const msg = chat[N];
     if (!state || !msg || msg.is_user || msg.is_system || !msg.mes) return;
+    if (isOpening(N)) return;
 
     const snap = state.snapshots.find(s => s.beforeMsg === N);
     if (snap) restoreSnapshot(snap);
@@ -668,11 +667,12 @@ function processReply(N) {
         }
         if (cal.holidays.length < before) slip = true;
         // эпоха «по карточке»: ИИ сказал, наши это дни или нет — запоминаем для персонажа
-        if (cal.setting?.mode && eraMode() === 'auto') { setCharSetting('era', cal.setting.mode); syncCharSettings(); }
+        if (cal.setting?.mode && eraMode() === 'auto') { setChatEra(cal.setting.mode); syncCharSettings(); }
         if (cal.setting) {
             for (const k of ['era', 'faith', 'place']) if (cal.setting[k] && !langOk(cal.setting[k])) { cal.setting[k] = null; slip = true; }
             state.setting = { ...(state.setting || {}), ...Object.fromEntries(Object.entries(cal.setting).filter(([, v]) => v)) };
             if (cal.setting.place) state.place = state.setting.place = tidyPlace(cal.setting.place);
+            syncCharSettings();                     // вера в настройках — та, что определила модель
         }
         mergeHolidays(cal.holidays);
         for (const [who, md] of Object.entries(cal.birthdays)) state.birthdays[who] = md;
@@ -1977,6 +1977,7 @@ function cancelSide() {
 
 /** Решить, нужен ли запрос после ответа N, и отправить */
 function maybeSide(N, force = false, extra = []) {
+    if (isOpening(N)) return;
     runConfirmSide(N);
     runDateSide(N);
     if (!apiOn() || !state || generating) return;
@@ -2214,7 +2215,7 @@ const cardsDue = () => !!state && (['offered', 'active'].includes(state.date?.st
 
 function shouldShow(id) {
     const msg = chat[id];
-    if (!isEnabled() || !state || !msg || msg.is_user || msg.is_system) return false;
+    if (!isEnabled() || !state || !msg || msg.is_user || msg.is_system || isOpening(id)) return false;
     const live = id === lastBotIndex();
     return live ? true : (showPrev() && !!msg.extra?.ht);
 }
@@ -2227,7 +2228,7 @@ function renderBlock(id) {
     let block = el.querySelector('.ht-ib');
     let cards = el.querySelector('.ht-cards');
     const view = sanitizeView(state && msg && !msg.is_user && !msg.is_system ? (live ? liveView() : msg.extra?.ht) : null);
-    const show = isEnabled() && view && (live || showPrev());
+    const show = isEnabled() && view && (live || showPrev()) && !isOpening(id);
     if (!show) { block?.remove(); cards?.remove(); ui.nodes.delete(id); return; }
 
     if (!block) {
@@ -3446,17 +3447,12 @@ function injectSettingsPanel() {
                     <div class="ht-set-title"><i class="fa-solid fa-hourglass-half"></i>Мир <small id="ht-era-who"></small></div>
                     <div class="ht-set-row"><span>Эпоха</span>
                         <select id="ht-set-era" class="text_pole">
-                            <option value="auto" ${eraMode() === 'auto' ? 'selected' : ''}>по карточке</option>
+                            <option value="auto" ${eraMode() === 'auto' ? 'selected' : ''}>по началу чата</option>
                             <option value="ancient" ${eraMode() === 'ancient' ? 'selected' : ''}>прошлое и вымышленные миры</option>
                             <option value="modern" ${eraMode() === 'modern' ? 'selected' : ''}>наши дни</option>
                         </select>
                     </div>
-                    <div class="ht-set-row" id="ht-row-faith" ${eraMode() === 'modern' ? '' : 'style="display:none"'}><span>Праздники</span>
-                        <select id="ht-set-faith" class="text_pole">
-                            <option value="faith" ${faithMode() === 'faith' ? 'selected' : ''}>с верой</option>
-                            <option value="secular" ${faithMode() === 'secular' ? 'selected' : ''}>светские</option>
-                        </select>
-                    </div>
+                    <small class="ht-set-note"><i class="fa-solid fa-hands-praying"></i><span id="ht-faith-now"></span></small>
                 </section>
                 <section class="ht-set-sec">
                     <div class="ht-set-title"><i class="fa-solid fa-dice"></i>Ивенты</div>
@@ -3562,13 +3558,8 @@ function injectSettingsPanel() {
         syncCharSettings();
         updateDateWhy();
         document.getElementById('ht-set-era')?.addEventListener('change', e => {
-            setCharSetting('era', e.target.value);
-            const row = document.getElementById('ht-row-faith');
-            if (row) row.style.display = e.target.value === 'modern' ? '' : 'none';
-            rebuildCalendar();
-        });
-        document.getElementById('ht-set-faith')?.addEventListener('change', e => {
-            setCharSetting('faith', e.target.value);
+            if (!state) loadState();
+            setChatEra(e.target.value);
             rebuildCalendar();
         });
         document.getElementById('ht-set-prev')?.addEventListener('change', e => {
@@ -3613,19 +3604,17 @@ async function pingProfile() {
     }
 }
 
-// Эпоха и вера в настройках — для текущего персонажа
+// Эпоха и вера в настройках — для текущего чата
 function syncCharSettings() {
     const era = document.getElementById('ht-set-era');
-    const faith = document.getElementById('ht-set-faith');
     if (era) era.value = eraMode();
-    if (faith) faith.value = faithMode();
-    const row = document.getElementById('ht-row-faith');
-    if (row) row.style.display = eraMode() === 'modern' ? '' : 'none';
     const who = document.getElementById('ht-era-who');
-    if (who) who.textContent = charKey() ? `· ${getCharName()}` : '';
+    if (who) who.textContent = chat.length ? '· этот чат' : '';
+    const faith = document.getElementById('ht-faith-now');
+    if (faith) faith.textContent = `Вера: ${state?.setting?.faith || 'определится по началу чата'} — по карточке, персоне и истории`;
 }
 
-// Новый персонаж: эпоха не наследуется от прошлого — её определит ИИ по карточке в первом календаре
+// Новый чат: эпоха не наследуется — её определит ИИ по началу чата в первом календаре
 function noteCharSettings() {
     syncCharSettings();
 }
