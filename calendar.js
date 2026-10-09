@@ -242,8 +242,12 @@ export function sideNeeds(state, phase) {
     // перепись: изредка — по большому окну сообщений, сначала родня обеих сторон и те, кого чаще называют
     const sinceCensus = turn - (state.lastCensusTurn ?? -99);
     if (sinceCensus >= CENSUS_EVERY || ((state.cast || []).length < 3 && sinceCensus >= 6)) n.add('census');
-    // пара {{char}} и {{user}} ещё не ясна — начальные значения по карточке и персоне
-    if (!state.pair) n.add('bond');
+    // пара {{char}} и {{user}}: не ясна — начальные значения по карточке и персоне; ясна — обновить, если изменилась
+    n.add('bond');
+    // мысль {{char}} о празднике и его подарок — тоже помощник, основная модель только пишет историю
+    if (charDue(state, phase)) n.add('char');
+    // свой подарок {{user}} имениннику — из его же слов
+    if (h?.npc && (phase.kind === 'prep' || phase.kind === 'today') && !state.userGift?.[h.id]?.done && !giftJoint(state, h)) n.add('ugift');
     // свидание: заметить, если история сама к нему пришла (предлагает его основная модель — прямо в ответе)
     const ds = state.date?.status;
     if (!state.dateRoll && (!state.date || ds === 'ended' || ds === 'missed')) n.add('datewatch');
@@ -265,7 +269,7 @@ export function sideDue(state, phase, needs) {
     // то, без чего инфоблок пустой или неверный, — сразу
     if (['recap', 'cal', 'mean', 'day', 'replan', 'census', 'date', 'daterecap', 'dateplan', 'went'].some(k => needs.has(k))) return true;
     // пара ещё не ясна — спросить сразу, но не чаще раза в 5 ответов, если помощник её не дал
-    if (needs.has('bond') && (state.turn || 0) - (state.bondSide ?? -99) >= 5) return true;
+    if (needs.has('bond') && !state.pair && (state.turn || 0) - (state.bondSide ?? -99) >= 5) return true;
     const since = (state.turn || 0) - (state.lastSideTurn ?? -99);
     if (phase.kind === 'prep') return needs.has('prep') || since >= SIDE_EVERY.prep;   // новый день — тоже
     if (phase.kind === 'today') return since >= SIDE_EVERY.today;
@@ -292,10 +296,11 @@ export function hasGifts(state, h) {
 export function charDue(state, phase) {
     if (!phase.h || (phase.kind !== 'prep' && phase.kind !== 'today')) return false;
     const care = state.care?.[phase.h.id];
-    if (care === 'high') return true;
-    if (care === 'normal') {
+    // мысль — не в каждом ответе: важный праздник — раз в 2 ответа, обычный — раз в 4
+    const every = care === 'high' ? 2 : care === 'normal' ? 4 : 0;
+    if (every) {
         const cur = state.charNow?.hid === phase.h.id ? state.charNow : null;
-        return !cur || (state.turn || 0) - (cur.turn || 0) >= 3;
+        return !cur || (state.turn || 0) - (cur.turn || 0) >= every;
     }
     return false;
 }

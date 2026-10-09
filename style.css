@@ -1032,3 +1032,5 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-dlearn-cols p { margin: 0; }
 .ht-dlasts { white-space: nowrap; }
 .ht-dlasts > i { margin-right: 4px; }
+.ht-dlearn-old-h { display: block; margin: 5px 0 2px; font-size: 0.85em; color: var(--ht-mute); text-transform: lowercase; }
+.ht-dlearn-old { opacity: 0.6; }

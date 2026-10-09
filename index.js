@@ -203,6 +203,8 @@ function loadState() {
     migrateCast(state, getUserName(), getCharName());
     // свидание из прошлой версии: шаги разом и шкала с 35 % → живые шаги
     migrateDate(state);
+    // узнанное друг о друге — теперь общее для пары; из прошлой версии берём то, что было в последнем свидании
+    if (!state.pairKnown) state.pairKnown = { char: [...(state.date?.learned?.char || [])], user: [...(state.date?.learned?.user || [])] };
     // приглашение на день рождения из прошлой версии → общее приглашение
     if (state.bdInv) {
         const b = state.bdInv;
@@ -361,10 +363,12 @@ function castForPrompt() {
     // «глазок» выключен — человек не попадает в промпт (но и не вносится заново)
     const cast = (state.cast || []).filter(c => !c.off && !castBanned(state, c.name));
     if (!cast.length) return { castSeen: [] };
-    const text = recentStoryText(8);
-    // кого зовут или кто именинник сейчас — тоже «рядом», даже если в последних сообщениях его не называли
+    // только те, кто в последних 4 сообщениях, — не больше четырёх; люди праздника уже описаны своей строкой
+    const text = recentStoryText(4);
     const near = new Set([state.inv?.cid, state.invRoll?.cid].filter(Boolean));
-    const castSeen = cast.filter(c => near.has(c.id) || (c.name ? seenInStory(c.name, text) : [c.toU, c.toC].some(r => r && seenInStory(r, text)))).slice(0, 6);
+    const holiday = new Set((state.people || []).map(p => String(p.name || '').toLowerCase()));
+    const castSeen = cast.filter(c => near.has(c.id) || ((!c.name || !holiday.has(c.name.toLowerCase()))
+        && (c.name ? seenInStory(c.name, text) : [c.toU, c.toC].some(r => r && seenInStory(r, text))))).slice(0, 4);
     return { castSeen };
 }
 
@@ -779,6 +783,14 @@ function processReply(N) {
         const jump = hoursBetween(dd.seenAt || dd.startAt, nowAt);
         const why = (w) => { dd.endWhy = w; console.info(`[Hearthtide] свидание закончилось: ${w}`); return endNow(); };
         if (up) {
+            // узнанное — общее для пары, переживает свидание: известное раньше не «узнают» заново
+            const pk = state.pairKnown || (state.pairKnown = { char: [], user: [] });
+            const nk = (t) => String(t || '').toLowerCase().replace(/ё/g, 'е').replace(/[^\p{L}\d ]+/gu, ' ').replace(/\s+/g, ' ').trim();
+            const known = (who, t) => (pk[who] || []).some(y => nk(y) === nk(t) || nk(y).includes(nk(t)) || nk(t).includes(nk(y)));
+            const dup = (up.learn || []).filter(x => known(x.who, x.t));
+            if (dup.length) console.info(`[Hearthtide] свидание: уже известно — пропущено: ${dup.map(x => x.t).join(' / ')}`);
+            up.learn = (up.learn || []).filter(x => !known(x.who, x.t));
+            for (const x of up.learn) { (pk[x.who] = pk[x.who] || []).push(x.t); if (pk[x.who].length > 30) pk[x.who] = pk[x.who].slice(-30); }
             const r = applyDateUp(dd, up, state.turn, lvl);
             if (r.ignoredGoal) console.info('[Hearthtide] свидание: цель ещё закрыта — GOAL пропущен');
             console.info(`[Hearthtide] свидание: ${up.phase || 'без STATE'}${up.why ? ` (${up.why})` : ''} · ${dd.score}% · сделано ${doneCount(dd)} · открыто ${openSteps(dd).length}${jump ? ` · прошло ${jump.toFixed(1)} ч` : ''}`);
@@ -821,12 +833,12 @@ function processReply(N) {
     }
 
     // ── Приглашение (день рождения, дополнительный праздник): прозвучало вслух — по проверке или по invite= ──
-    handleInvite(small, conf, N);
+    handleInvite(small, conf, N, text);
     // что проверить коротким запросом после этого ответа: позвал ли {{char}} на свидание, позвал ли кто-то на праздник
     confirmNeed = apiOn() && !conf ? {
         N, hash: coreHash(text),
         date: !!(dateIn && !dateIn.started) || (hadDateRoll && !!state.datePlan && state.date?.status !== 'active'),
-        inv: inviteWatch(text, hadInvRoll),
+        inv: inviteWatch(text, hadInvRoll, small?.invite),
     } : null;
     if (confirmNeed && !confirmNeed.date && !confirmNeed.inv.length) confirmNeed = null;
 
@@ -1131,6 +1143,11 @@ function tidyDateUp(up) {
     for (const k of ['vibe', 'thought', 'recap', 'best', 'why']) up[k] = ok(fix(up[k]));
     up.moments = (up.moments || []).map(m => ok(fix(m))).filter(Boolean);
     up.gifts = (up.gifts || []).map(g => ({ from: fix(g.from), what: ok(fix(g.what)) })).filter(g => g.what);
+    // купленное на месте и съеденное, выпитое, выкуренное — не подарок (модели это путают)
+    const SPENT = /(кофе|чай|кака[оу]|напит|сок|лимонад|газировк|вод[аыуе]\b|пив|вин[оау]\b|коктейл|водк|виск|пончик|булк|булоч|пирож|сэндвич|бургер|шаурм|хот-?дог|морожен|перекус|еда\b|обед|ужин|завтрак|снек|чипс|сигарет|сигар|зажигалк|жвачк|coffee|tea\b|drink|soda|beer|wine|cocktail|donut|doughnut|bun\b|snack|sandwich|burger|ice cream|meal|lunch|dinner|cigarette|cigar|lighter|gum\b)/i;
+    const spent = up.gifts.filter(g => SPENT.test(g.what));
+    if (spent.length) console.info(`[Hearthtide] свидание: не подарки (еда, напитки, сигареты) — пропущены: ${spent.map(g => g.what).join(' / ')}`);
+    up.gifts = up.gifts.filter(g => !SPENT.test(g.what));
     const learner = (w) => {
         const x = String(w || '').toLowerCase().replace(/ё/g, 'е');
         if (/^(char|чар)/.test(x) || (stem(c).length >= 3 && x.startsWith(stem(c)))) return 'char';
@@ -1188,18 +1205,24 @@ function inviteMatch(name) {
         || all.find(c => c.kind === 'extra' && (namesMatch(c.name, name) || (c.host && namesMatch(c.host, name))))
         || null;
 }
-function handleInvite(small, conf, N) {
+function handleInvite(small, conf, N, text = '') {
     const old = state.inv;
     if (old && state.today != null && state.today > old.day) state.inv = null;                       // день прошёл
     if (state.inv?.status === 'offered' && state.turn - state.inv.turn > 6) {                       // не ответили — забылось
         console.info(`[Hearthtide] приглашение «${state.inv.name}» осталось без ответа — забылось`);
         state.inv = null;
     }
-    // при помощнике — по проверке (модели часто забывают отметку invite=); без помощника или если проверка упала — по отметке
-    const said = apiOn() && conf && !conf.failed ? conf.inv : small?.invite;
-    if (!said || state.inv?.status === 'offered') return;
+    if (state.inv?.status === 'offered') return;
+    // При помощнике — только по проверке «позвали ли вслух»: пока она не ответила, карточки нет
+    // (основная модель ставит invite= заранее, раз её попросили позвать, — отсюда карточки раньше приглашения в тексте).
+    // Без помощника или если проверка упала — по отметке, но только если в самом тексте есть имя и слова приглашения.
+    if (apiOn() && !conf) { if (small?.invite) console.info(`[Hearthtide] приглашение «${small.invite}»: жду проверку «позвали ли вслух»`); return; }
+    const byCheck = apiOn() && !conf.failed;
+    const said = byCheck ? conf.inv : small?.invite;
+    if (!said) return;
     const c = inviteMatch(said);
     if (!c) { console.info(`[Hearthtide] приглашение «${said}» пропущено: ${INVITE_AHEAD.bday} дней вперёд нет такого дня рождения или праздника`); return; }
+    if (!byCheck && !textInvites(text, c)) { console.info(`[Hearthtide] приглашение «${said}» пропущено: в тексте ответа его нет (имя и слова приглашения), только отметка модели`); return; }
     const inv = { kind: c.kind, key: c.key, cid: c.cid || null, xid: c.xid || null, name: c.name, host: c.host, whom: c.whom || 'both', day: c.day, status: 'offered', turn: state.turn, msg: N };
     const dec = state.bdDecisions?.[c.key];
     if (dec) inv.status = dec;                                // игрок уже решал (свайп, пересборка) — его решение в силе
@@ -1208,8 +1231,13 @@ function handleInvite(small, conf, N) {
     console.info(`[Hearthtide] приглашение: ${c.kind === 'bday' ? 'день рождения' : 'праздник'} «${c.name}» на ${isoOf(c.day)}${dec ? ` (решение уже было: ${dec})` : ''}`);
 }
 /** Кого проверить «позвали ли вслух»: выпавшее приглашение и тех, о ком в ответе говорят вместе со словами о приглашении */
-const INVITE_WORDS = /(пригла|зов[уеё]|позов|позвал|ждём|ждем|придёшь|придешь|приходи|invit|come to|join us|expect you)/i;
-function inviteWatch(text, rolled) {
+const INVITE_WORDS = /(пригла|зов[уеё]|позов|позвал|ждём|ждем|жду\b|придёшь|придешь|придёте|придете|приходи|invit|come to|join us|expect you)/i;
+/** В тексте ответа и правда зовут: есть имя (именинника, праздника или того, кто зовёт) и слова приглашения */
+function textInvites(text, c) {
+    const t = String(text || '').replace(/<!--[\s\S]*?-->/g, ' ').toLowerCase().replace(/ё/g, 'е');
+    return INVITE_WORDS.test(t) && [c.name, c.host].some(v => v && seenInStory(v, t));
+}
+function inviteWatch(text, rolled, marked = null) {
     if (state.inv?.status === 'offered') return [];
     const t = String(text || '').toLowerCase().replace(/ё/g, 'е');
     const asks = INVITE_WORDS.test(t);
@@ -1217,7 +1245,8 @@ function inviteWatch(text, rolled) {
     for (const c of inviteCandidates(state, true)) {
         if (state.bdDecisions?.[c.key] && c.key !== rolled?.key) continue;
         const named = [c.name, c.host].some(v => v && seenInStory(v, t));
-        if (c.key === rolled?.key || (asks && named)) out.push({ value: c.name, label: c.kind === 'bday' ? `${c.name}'s birthday` : `${c.name}${c.host ? ` (held by ${c.host})` : ''}` });
+        // проверяем выпавшее, отмеченное моделью (invite=) и тех, кого в ответе называют вместе со словами приглашения
+        if (c.key === rolled?.key || (marked && inviteMatch(marked)?.key === c.key) || (asks && named)) out.push({ value: c.name, label: c.kind === 'bday' ? `${c.name}'s birthday` : `${c.name}${c.host ? ` (held by ${c.host})` : ''}` });
     }
     return out.slice(0, 4);
 }
@@ -2428,9 +2457,12 @@ function dateLastsText(d) {
 function learnedHtml(d) {
     const c = getCharName(), u = getUserName();
     const lc = d.learned?.char || [], lu = d.learned?.user || [];
-    const col = (who, list) => `<div><b>${esc(L().knows(who))}</b>${list.length ? `<ul>${list.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : `<p class="ht-mute">${esc(L().learnedNone)}</p>`}</div>`;
+    // узнанное на прошлых свиданиях — приглушённо, ниже
+    const before = (who, now) => (state.pairKnown?.[who] || []).filter(x => !now.includes(x)).slice(-5);
+    const bc = before('char', lc), bu = before('user', lu);
+    const col = (who, list, old) => `<div><b>${esc(L().knows(who))}</b>${list.length ? `<ul>${list.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : old.length ? '' : `<p class="ht-mute">${esc(L().learnedNone)}</p>`}${old.length ? `<span class="ht-dlearn-old-h">${esc(L().learnedBefore)}</span><ul class="ht-dlearn-old">${old.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div>`;
     return `<details class="ht-dlearn"><summary><i class="fa-solid fa-lightbulb"></i>${esc(L().dateLearned)}${lc.length + lu.length ? `<em>${lc.length + lu.length}</em>` : ''}<i class="fa-solid fa-chevron-down ht-dlog-chev"></i></summary>
-        <div class="ht-dlearn-cols">${col(c, lc)}${col(u, lu)}</div></details>`;
+        <div class="ht-dlearn-cols">${col(c, lc, bc)}${col(u, lu, bu)}</div></details>`;
 }
 function dateCardHtml() {
     const d = state?.date;
@@ -2480,11 +2512,7 @@ function dateCardHtml() {
             <p class="ht-dgoal-text">${esc(d.goal.charAt(0).toUpperCase() + d.goal.slice(1))}</p>
             <p class="ht-dgoal-how"><i class="fa-solid ${g === 'done' ? 'fa-circle-check' : g === 'open' ? 'fa-lock-open' : 'fa-lock'}"></i><span>${esc(goalHow)}</span></p>
         </div>` : '';
-    // ход свидания — свёрнут: для памяти, инфоблок не растягивает
-    const LOG_ICON = { done: 'fa-check', failed: 'fa-xmark', moment: 'fa-star', gift: 'fa-gift', goal: 'fa-bullseye', up: 'fa-arrow-trend-up', down: 'fa-arrow-trend-down' };
-    const log = (d.log || []).slice().reverse().map(x => `<li class="ht-log-${x.kind}"><i class="fa-solid ${LOG_ICON[x.kind] || 'fa-circle'}"></i>
-        <span>${esc(x.t || L().dateLogKind[x.kind] || '')}</span><b>${x.delta > 0 ? '+' : ''}${x.delta}%</b></li>`).join('');
-    const logBox = log ? `<details class="ht-dlog"><summary><i class="fa-solid fa-list-ul"></i>${L().dateLog}<em>${(d.log || []).length}</em><i class="fa-solid fa-chevron-down ht-dlog-chev"></i></summary><ol>${log}</ol></details>` : '';
+    // ход свидания в инфоблоке не показываем — его помнит модель (журнал идёт в промпт, пока свидание идёт)
     return `<div class="ht-offer ht-date ht-date-on${fresh ? ' ht-offer-new' : ''}${dateLoading() ? ' ht-date-busy' : ''}" style="--v:${d.score};--c:${tone}">
         <span class="ht-dhearts" aria-hidden="true">${'<i class="fa-solid fa-heart"></i>'.repeat(hearts)}</span>
         <div class="ht-dhead">${portrait}
@@ -2504,7 +2532,6 @@ function dateCardHtml() {
         ${d.thought ? `<p class="ht-dthought"><i class="fa-solid fa-comment-dots"></i><span><b>${L().dateThinks}</b>«${esc(d.thought.replace(/^[«"“]+|[»"”]+$/g, ''))}»</span></p>` : ''}
         <div class="ht-dsec"><i class="fa-solid fa-shoe-prints"></i>${L().dateSteps}</div>
         <div class="ht-date-steps">${slots.join('') || `<p class="ht-mute">${L().dateNoSteps}</p>`}</div>
-        ${logBox}
         ${learnedHtml(d)}
         <div class="ht-offer-actions ht-one"><button class="ht-btn ht-btn-quiet" data-act="date-end"><i class="fa-solid fa-flag-checkered"></i><span>${L().dateFinish}</span></button></div>
     </div>`;

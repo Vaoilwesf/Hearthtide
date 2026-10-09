@@ -4,7 +4,7 @@
 import { isoOf, fromDayNum, easterJulian, easterGregorian } from './dates.js';
 import { hasGifts, charDue, isIntimate, openEvent, dateHoursLeft, giftJoint } from './calendar.js';
 import { openSteps, goalOpen, DATE_OPEN, DATE_MOMENTS } from './romance.js';
-import { ageOf } from './cast.js';
+import { ageOf, relLevel } from './cast.js';
 
 const PART_EN = { morning: 'morning', day: 'daytime', evening: 'evening', night: 'night' };
 
@@ -80,8 +80,12 @@ function charGiftActive(ctx) {
 const userGiftOf = (state, h) => (h?.npc && !giftJoint(state, h) ? state.userGift?.[h.id] || null : null);
 
 // ─── 1. Состояние календаря (поглубже в контексте) ───
+/** В этом ответе уже есть главная просьба (позвать, ивент, свидание) — второстепенные подталкивания не добавляем */
+const busyReply = (state) => !!(state.invRoll || state.dateRoll || state.evRoll || state.date?.status === 'active' || (state.skipAsk || []).length);
+
 export function buildStatePrompt(ctx) {
     const { state, phase, userName, charName } = ctx;
+    const busy = busyReply(state);
     const s = state.setting || {};
     const lines = ['[Hearthtide — the world\'s calendar and festive life; background for the story, not its topic]'];
     const where = [s.era && `Setting: ${s.era}`, s.faith && `faith: ${s.faith}`, (state.place || s.place) && `place: ${state.place || s.place}`, state.when && `date: ${state.when}`].filter(Boolean);
@@ -126,7 +130,7 @@ export function buildStatePrompt(ctx) {
             // чужой день рождения — свой распорядок у именинника; {{char}} и {{user}} — гости, а не хозяева дня
             const about = npcAbout(ctx, h);
             lines.push(`It is ${h.name}'s day${about ? ` (${about})` : ''}: a small household occasion, kept by ${h.name} and their close ones on their own schedule${plan?.where ? ` (${plan.where})` : ''}; ${npcExpect(ctx, h)}. When the scene allows, the day draws ${charName} and ${userName} in — a reminder, someone sent for them, time to set off with a gift; the story's own events come first, and if they can't come, it goes on without them. Follow the day's order — don't jump ahead.`);
-        } else lines.push(`The holiday keeps its own course: ${charName} and the people around follow today's plan as custom expects — they gather, call, wait, come to fetch ${userName}, carry on without ${userName} if need be. The story's own events come first and can move or shorten a part, but they don't cancel the day; once a scene settles, the day pulls them back in. Follow the day's order — don't jump ahead.`);
+        } else lines.push(`The holiday keeps its own course: people follow today's plan as custom expects — and carry on without ${userName} if need be. The story's own events come first and may move or shorten a part, not cancel the day. Follow the day's order — don't jump ahead.`);
         if (h.birthday && h.who === 'user') lines.push(`It is ${userName}'s birthday: the prepared surprise comes out today.`);
     }
     if (phase.kind === 'after' && phase.ended) {
@@ -145,7 +149,7 @@ export function buildStatePrompt(ctx) {
         // Подарок персонажа
         if (charGiftActive(ctx)) {
             const g = state.charGift?.hid === h.id ? state.charGift.text : null;
-            const near = phase.kind === 'today' || phase.daysTo <= 2;
+            const near = !busy && (phase.kind === 'today' || phase.daysTo <= 2);
             const joint = giftJoint(state, h);
             lines.push(joint
                 ? `${charName} and ${userName} give ${h.name} one gift together: ${g || 'not decided yet'} — ${charName} moves ${charName}'s share in small steps when the scene allows (an idea, asking ${userName}'s view, finding or making it); ${userName}'s say and share are ${userName}'s own.${near && !state.charGift?.done ? ` Time is short: ${g ? 'the next step' : `${charName} brings up what to give`} in this reply if the scene allows.` : ''}`
@@ -155,12 +159,12 @@ export function buildStatePrompt(ctx) {
         const ug = userGiftOf(state, h);
         if (ug?.text) lines.push(`${userName}'s own gift for ${h.name}: ${ug.text}${ug.done ? ' — already given' : ''} (${userName}'s choice; never move it on ${userName}'s behalf — when ${userName} gives it, ${h.name} and those around react).`);
         // Кто уже отличился — помним до конца праздника
-        const hl = (state.highlights?.[h.id] || []).slice(-5);
+        const hl = (state.highlights?.[h.id] || []).slice(-3);
         if (hl.length) lines.push(`So far: ${hl.map(x => `${x.name} — ${x.text}`).join(' · ')}.`);
         // Люди: по одной строке на человека
-        const people = (ctx.peopleSeen || state.people || []).filter(p => p.now).slice(0, 4);
+        const people = (ctx.peopleSeen || state.people || []).filter(p => p.now).slice(0, 3);
         if (people.length) {
-            lines.push(`People: ${people.map(p => `${p.name} (${p.group}) — wants: ${p.now}${p.gift ? `; gift: ${p.gift}` : ''}`).join(' · ')}. They live their own lives and act on what they want; one may cross paths with the scene.`);
+            lines.push(`People: ${people.map(p => `${p.name} (${p.group}) — wants: ${p.now}${p.gift ? `; gift: ${p.gift}` : ''}`).join(' · ')}. They live their own lives.`);
         }
     }
 
@@ -178,7 +182,14 @@ export function buildStatePrompt(ctx) {
 
     // Люди истории, которые сейчас рядом: кто кому кем приходится и как ладят (0 — вражда, 100 — близки)
     if (ctx.castSeen?.length) {
-        lines.push(`Who is who: ${ctx.castSeen.map(c => `${c.name || c.toU || c.toC} (to ${userName}: ${c.toU || c.who || '—'}; to ${charName}: ${c.toC || '—'}) — with ${userName} ${c.rel?.user ?? 0}${c.note?.user ? ` (${c.note.user})` : ''}, with ${charName} ${c.rel?.char ?? 0}${c.note?.char ? ` (${c.note.char})` : ''}${c.rom?.user ? `; romance with ${userName}: ${c.rom.user}` : ''}${c.rom?.char ? `; romance with ${charName}: ${c.rom.char}` : ''}`).join(' · ')}. Relations −100…100, 0 neutral; they show in how people speak and act.`);
+        // коротко: кем приходится и как ладят словами (числа модели не нужны — по ним она не пишет)
+        const REL = { enmity: 'enmity', conflict: 'in conflict', cool: 'cool', neutral: 'even', warm: 'warm', close: 'close' };
+        const how = (c, k) => c.note?.[k] || REL[relLevel(c.rel?.[k] ?? 0)];
+        lines.push(`Who is who (it shows in how they speak and act): ${ctx.castSeen.map(c => {
+            const ties = [c.toU && `${userName}'s ${c.toU}`, c.toC && `${charName}'s ${c.toC}`].filter(Boolean).join(', ');
+            const rom = [c.rom?.user && `romance with ${userName}: ${c.rom.user}`, c.rom?.char && `romance with ${charName}: ${c.rom.char}`].filter(Boolean).join('; ');
+            return `${c.name || c.toU || c.toC}${ties ? ` (${ties})` : ''} — with ${userName}: ${how(c, 'user')}; with ${charName}: ${how(c, 'char')}${rom ? `; ${rom}` : ''}`;
+        }).join(' · ')}.`);
     }
     // Приглашения: на дни рождения людей истории и дополнительные праздники
     lines.push(...inviteLines(ctx));
@@ -196,13 +207,13 @@ export function buildStatePrompt(ctx) {
         else lines.push(`${userName} joins: ${ev.title}${who}${ev.hook ? ` (it began: ${ev.hook})` : ''}. ${ev.turn >= state.turn - 1 ? 'Carry on from where it began' : 'Let it unfold'} over the next replies; ${userName} still makes every own choice.`);
     }
     // Кто может зайти в этот ответ — по очереди из людей праздника (дёшево, без отдельного запроса)
-    if (!state.beat && state.nudge) {
+    if (!busy && !state.beat && state.nudge) {
         lines.push(state.nudge.name
             ? `If the scene allows, ${state.nudge.name} can come into this reply, acting on what they want (${state.nudge.now})${phase.kind === 'today' ? ` or drawing ${userName} into what the day holds now` : ''} — in person or by word; one person, never a crowd.`
             : `If the scene allows, someone the occasion involves — kin or those its custom calls for — can come into this reply; one person, never a crowd.`);
     }
     // Что праздник может принести в этот ответ — придумал отдельный запрос по истории
-    if (state.beat) lines.push(`This reply, if the scene allows (it comes first; skip it if it doesn't fit): ${state.beat}`);
+    if (!busy && state.beat) lines.push(`This reply, if the scene allows (it comes first; skip it if it doesn't fit): ${state.beat}`);
     if (active) {
         lines.push(`If ${userName} is away from people (road, wilds, danger), the feast stays distant. The calendar never overrides the scene: an urgent or dramatic moment always comes first. Never write ${userName}'s thoughts, feelings, words or choices.`);
     }
@@ -283,9 +294,19 @@ ${bare.length ? `Listed without roles yet: ${bare.join(', ')} — send C lines f
 
 // ═══ Свидания ═══
 /** Что узнали друг о друге и сколько длится свидание — словами для модели */
-function dateKnown(ctx, d) {
-    const lc = (d.learned?.char || []).slice(-6), lu = (d.learned?.user || []).slice(-6);
+/** Что они знают друг о друге (за все свидания). full — всё (помощнику), иначе коротко (основной модели) */
+function dateKnown(ctx, d, full = false) {
+    const pk = ctx.state.pairKnown || {};
+    const all = (who) => [...new Set([...(pk[who] || []), ...(d?.learned?.[who] || [])])].slice(full ? -30 : -6);
+    const lc = all('char'), lu = all('user');
     return [lc.length && `${ctx.charName} knows about ${ctx.userName}: ${lc.join('; ')}`, lu.length && `${ctx.userName} knows about ${ctx.charName}: ${lu.join('; ')}`].filter(Boolean).join('. ');
+}
+/** Прошлые свидания — коротко: название и итог */
+function pastDates(state, n, len) {
+    return (state.datesDone || []).filter(x => x.id !== state.date?.id).slice(-n).map(x => {
+        const r = (state.recaps || []).find(y => y.hid === x.id)?.text || '';
+        return `${x.title}${r ? ` — ${r.length > len ? `${r.slice(0, len).replace(/\s+\S*$/, '')}…` : r}` : ''}`;
+    });
 }
 function dateLasts(state, d) {
     const a = d?.startAt;
@@ -345,7 +366,11 @@ function dateStateLines(ctx) {
     const how = fails > dones ? (d.score < 10 ? 'badly' : 'poorly') : d.score >= 60 ? 'wonderfully' : d.score >= 30 ? 'well' : fails ? 'unevenly, a little awkward' : 'it is just warming up';
     const gifts = (d.gifts || []).map(g => `${g.from ? `${g.from}: ` : ''}${g.what}`);
     const known = dateKnown(ctx, d), lasts = dateLasts(state, d);
-    out.push(`${userName} and ${charName} are on a date${lasts ? ` (it has lasted ${lasts} of story time)` : ''}: ${d.title}${d.where ? `, ${d.where}` : ''}.${d.startTurn >= state.turn - 1 ? ' It begins now.' : ''}${gifts.length ? ` Gifts so far: ${gifts.join('; ')}.` : ''}${goal}${open.length ? ` ${charName}'s next steps (tasks ${charName} carries out — gently, one at a time, as the scene allows): ${open.map(s => s.t).join('; ')}.` : ''} So far: ${how}${d.vibe ? ` (${d.vibe})` : ''} — ${charName}'s mood, boldness and warmth follow it.${d.thought ? ` ${charName} thinks: ${d.thought}` : ''}${known ? ` ${known} — only this is known; nothing beyond it.` : ''} ${userName} decides everything of ${userName}'s own.`);
+    // что уже было на этом свидании — модели (в инфоблоке этого нет)
+    const sofar = (d.log || []).filter(x => ['done', 'moment', 'gift', 'failed'].includes(x.kind) && x.t).slice(-4).map(x => x.t);
+    // прошлые свидания — только в начале нового, коротко
+    const past = d.startTurn >= state.turn - 2 ? pastDates(state, 2, 110) : [];
+    out.push(`${userName} and ${charName} are on a date${lasts ? ` (it has lasted ${lasts} of story time)` : ''}: ${d.title}${d.where ? `, ${d.where}` : ''}.${d.startTurn >= state.turn - 1 ? ' It begins now.' : ''}${gifts.length ? ` Gifts so far: ${gifts.join('; ')}.` : ''}${goal}${open.length ? ` ${charName}'s next steps (tasks ${charName} carries out — gently, one at a time, as the scene allows): ${open.map(s => s.t).join('; ')}.` : ''} So far: ${how}${d.vibe ? ` (${d.vibe})` : ''} — ${charName}'s mood, boldness and warmth follow it.${d.thought ? ` ${charName} thinks: ${d.thought}` : ''}${sofar.length ? ` On this date so far: ${sofar.join('; ')}.` : ''}${past.length ? ` Earlier dates: ${past.join(' · ')}.` : ''}${known ? ` ${known} — they remember it; only this is known, nothing beyond it.` : ''} ${userName} decides everything of ${userName}'s own.`);
     // подходит к концу — закруглить по-человечески, а не оборвать
     if (d.closing != null) out.push(`The date is drawing to its close: let it wind down naturally over this reply or the next — a last moment together, goodbyes, seeing ${userName} home — never cut off mid-scene; if ${userName} keeps it going, it goes on.`);
     else out.push(`The date goes on until the story itself brings it to a close — don't end it on your own.`);
@@ -388,8 +413,8 @@ Judge what happens ${scope} — read ${main ? 'the whole reply' : 'every [NEW] m
 - One STEP line for EVERY open step above, by its number: done — ${charName} did it, or something close to it in spirit; failed — tried, but met a refusal, coldness or a bad reaction; open — not yet (no note). NOTE for done or failed: what came of it, past tense, one line, real names.
 - NEW: ${need > 0 ? `exactly ${need} new step${need > 1 ? 's' : ''}` : 'one for each step you mark done or failed'}, so that ${DATE_OPEN} stay open. ${stepFlow(ctx, d)} After a failed step, one NEW step softens the moment. Never chores, errands or anything off the date. ${stepForm(ctx)} Never (user), (char) or {{…}}.${(d.rejected || []).length ? ` Rejected earlier as repeats or not tasks — don't send these again: ${d.rejected.slice(-4).join(' / ')}.` : ''}
 - MOMENT: up to ${DATE_MOMENTS} notable things that happened outside the open steps — a confession, a kiss, an embrace, a brave or tender gesture; one line each, past tense, real names. None if nothing stood out.
-- GIFT: only a real thing handed from one to the other (a flower, a trinket, a keepsake, food made for them) — who gave it and what it is, a few words; never a kiss, a touch, a word or an act. Up to ${DATE_MOMENTS}; skip the gifts already counted.
-- LEARN: up to 3 new things they found out about each other in these messages — char: what ${charName} learned about ${userName}; user: what ${userName} learned about ${charName}. Only what was actually said or shown, a few words each, no guesses, nothing already known.${dateKnown(ctx, d) ? ` Already known: ${dateKnown(ctx, d)}.` : ''}
+- GIFT: only a present — a thing given as a gift, meant to be kept or to mark the moment: who gave it and what it is, a few words. Not a gift: food, drink, cigarettes or anything bought, ordered, paid for or shared on the spot; everyday small favours; a kiss, a touch, a word or an act. Up to ${DATE_MOMENTS}; skip the gifts already counted; none is the usual answer.
+- LEARN: up to 3 new things they found out about each other in these messages — char: what ${charName} learned about ${userName}; user: what ${userName} learned about ${charName}. Only what was actually said or shown, a few words each, no guesses, nothing already known.${dateKnown(ctx, d, true) ? ` Already known (from this and earlier dates): ${dateKnown(ctx, d, true)}.` : ''}${pastDates(state, 3, 160).length ? `\nEarlier dates: ${pastDates(state, 3, 160).join(' · ')}.` : ''}
 - MOOD only if it clearly went better or worse beyond the steps. VIBE: how the date goes overall. THOUGHT: ${charName}'s private thought about the date now, in ${charName}'s own manner, under 15 words.
 - GOAL | yes only when the story itself reaches the goal.
 Text in ${lang}.`;
@@ -462,7 +487,7 @@ function datePlanRule(ctx) {
     const past = (state.datesDone || []).slice(-3).map(d => d.title);
     return `${DATE_FORMAT}
 Plan the date ${charName} will ask ${userName} on in the next reply. ${dateSense(ctx)}
-${dateFields(ctx)}${past.length ? ` Different from: ${past.join(' / ')}.` : ''} In ${langOf(ctx)}.`;
+${dateFields(ctx)}${past.length ? ` Different from: ${past.join(' / ')}.` : ''}${dateKnown(ctx, null, true) ? ` What they already know about each other: ${dateKnown(ctx, null, true)} — the plan may build on it.` : ''} In ${langOf(ctx)}.`;
 }
 
 /** Помощнику, второй проход: сверить план с записями лорбука о выбранном месте */
@@ -479,7 +504,7 @@ function dateAskRule(ctx) {
     const { state, userName, charName } = ctx;
     const pl = state.datePlan;
     const p = state.pair || {};
-    return `${state.dateRollTry ? 'REQUIRED — your last reply skipped it. ' : ''}This reply ${charName} asks ${userName} on a date ${charName} has in mind: ${pl.title}${pl.where ? ` — ${pl.where}` : ''}, ${dateAtText(state, pl.at)}${pl.goal ? `; meant to ${pl.goal}` : ''}.${pl.hook ? ` How: ${pl.hook}` : ''} Ask in ${charName}'s own way, as fits who ${charName} is and how they stand (friendship ${p.f ?? 0}, romance ${p.r ?? 0}): openly, shyly, in passing or as a half-joke, at a moment that fits the scene. Write only the asking; ${userName} answers. Add date_asked=yes to the HT line only if ${charName} actually said it to ${userName} in this reply — not if ${charName} only thought of it. If the scene is urgent or dangerous, don't ask yet and add nothing.`;
+    return `${state.dateRollTry ? 'REQUIRED — your last reply skipped it. ' : ''}This reply ${charName} asks ${userName} on a date ${charName} has in mind: ${pl.title}${pl.where ? ` — ${pl.where}` : ''}, ${dateAtText(state, pl.at)}${pl.goal ? `; meant to ${pl.goal}` : ''}.${pl.hook ? ` How: ${pl.hook}` : ''} Ask in ${charName}'s own way, as fits who ${charName} is and how they stand (friendship ${p.f ?? 0}, romance ${p.r ?? 0}): openly, shyly, in passing or as a half-joke, at a moment that fits the scene. Write only the asking; ${userName} answers.${ctx.api ? '' : ` Add date_asked=yes to the HT line only if ${charName} actually said it to ${userName} in this reply — not if ${charName} only thought of it.`} If the scene is urgent or dangerous, don't ask yet${ctx.api ? '' : ' and add nothing'}.`;
 }
 
 /** Основной модели без плана: придумать и позвать самой */
@@ -548,7 +573,7 @@ function inviteAskRule(ctx) {
     const d = r.day - state.today;
     const when = d === 0 ? 'today' : d === 1 ? 'tomorrow' : `on ${isoOf(r.day)}, in ${d} days`;
     const what = r.kind === 'bday' ? `${r.name}'s birthday` : r.name;
-    return `${r.tries ? 'REQUIRED — your last reply skipped it. ' : ''}This reply: ${r.host || r.name}${r.kind === 'bday' ? ', or someone close to them,' : ''} invites ${whomOf(ctx, r.whom || 'both')} to ${what} — ${when}${r.kind === 'bday' ? '' : `${r.meaning ? ` (${r.meaning})` : ''}`}: in person, by a word passed on or a note, as fits the era and how they get on; plainly, with the day${d <= 1 ? '' : ' and the time'}. Only the invitation — nothing of the occasion itself happens yet; ${userName} answers. If the scene is urgent or dangerous, the next calm moment. Once someone actually invites ${userName} out loud in this reply, add invite=${r.name} to the HT line.`;
+    return `${r.tries ? 'REQUIRED — your last reply skipped it. ' : ''}This reply: ${r.host || r.name}${r.kind === 'bday' ? ', or someone close to them,' : ''} invites ${whomOf(ctx, r.whom || 'both')} to ${what} — ${when}${r.kind === 'bday' ? '' : `${r.meaning ? ` (${r.meaning})` : ''}`}: in person, by a word passed on or a note, as fits the era and how they get on; plainly, with the day${d <= 1 ? '' : ' and the time'}. Only the invitation — nothing of the occasion itself happens yet; ${userName} answers. If the scene is urgent or dangerous, the next calm moment.${ctx.api ? '' : ` Once someone actually invites ${userName} out loud in this reply, add invite=${r.name} to the HT line.`}`;
 }
 
 function prepRule(ctx) {
@@ -607,7 +632,7 @@ export function buildTagPrompt(ctx) {
     const pr = state.pair;
     const out = [`[Hearthtide tag — required]
 End every reply with one hidden line:
-<!-- HT date=YYYY-MM-DD | time=HH:MM | when=DATE_TEXT${pr ? '' : ' | bond=F/R | bond_note=…'} -->
+<!-- HT date=YYYY-MM-DD | time=HH:MM | when=DATE_TEXT${pr || ctx.api ? '' : ' | bond=F/R | bond_note=…'} -->
 date: in-world date, numeric, in the story's own calendar (fictional months → 1–12). time: in-world clock now. when: the day and month as the story says it, short. Add place=KIND NAME (the settlement or area: its kind word and name as the story says them, not a building) when ${userName} moves or it's wrong${ctx.placeUnnamed ? ` — and THIS reply, because the current place has no name yet: the name the story gives it, or a fitting one` : ''}.
 All text values in these comments: ${lang} only.`];
 
@@ -615,8 +640,11 @@ All text values in these comments: ${lang} only.`];
     if (ctx.fixPlace) out.push(`Add place=… to the HT line THIS reply: the current place rewritten in ${lang}.`);
     if (ctx.fixSetting) out.push(`ALSO add after the HT line: <!-- HT-CAL\nS | ERA_AND_YEAR | FAITH | PLACE\n--> — the current setting rewritten in ${lang}.`);
     if (state.missed > 0) out.push(`Your previous reply had no HT line — include it now.`);
+    // С помощником основная модель пишет историю, а служебные отметки (пара, мысль {{char}}, подарки, люди праздника,
+    // «пришли ли», приглашения вслух) ставит помощник по истории — промпт истории не засоряется
+    const lean = !!ctx.api;
     // {{char}} и {{user}}: дружба / романтика — пока не ясно, в каждом ответе; дальше — когда меняется (и изредка сверить)
-    out.push(pr
+    if (!lean) out.push(pr
         ? `Add bond=F/R | bond_note=… to the HT line when this reply changes how ${charName} and ${userName} stand (now ${pr.f}/${pr.r}${pr.note ? `, ${pr.note}` : ''})${ctx.bondStale ? ' — and THIS reply even if unchanged' : ''}.`
         : `${ctx.bondMiss ? 'REQUIRED — your last reply had no bond. ' : ''}bond=F/R: how ${charName} and ${userName} stand now by the card, persona and story, two numbers −100…100 — friendship (enmity … 0 … very close), romance (hatred or exes … 0 none … deep love); spouses, lovers, rivals and strangers all differ. bond_note: a few words of your own, in ${lang}. If they are family to each other by blood or upbringing (siblings, parent and child and the like), add bond_kin=yes and romance 0.`);
     const dt = state.date?.status === 'active' ? state.date : null;
@@ -624,36 +652,36 @@ All text values in these comments: ${lang} only.`];
     if (state.evRoll && ctx.evTarget) out.push(eventOfferRule(ctx));
     // приглашение выпало — его произносят в этом ответе; таймскип перепрыгнул принятое — решить, пришли ли
     if (state.invRoll) out.push(inviteAskRule(ctx));
-    else if (ctx.inviteWatch?.length) out.push(`If someone in this reply actually invites ${userName} out loud to ${ctx.inviteWatch.join(' or ')}, add invite=NAME to the HT line.`);
+    else if (!lean && ctx.inviteWatch?.length) out.push(`If someone in this reply actually invites ${userName} out loud to ${ctx.inviteWatch.join(' or ')}, add invite=NAME to the HT line.`);
     const sk = (state.skipAsk || [])[0];
-    if (sk) out.push(`Add went=yes|no | went_note=… to the HT line: ${sk.what} (${isoOf(sk.day)}) passed during the time skip, and ${userName} had accepted the invitation. Decide as fits the story whether ${charName} and ${userName} went; went_note: a few words on how it went or why not. No need to describe it in the story — at most a passing mention.`);
+    if (sk && !lean) out.push(`Add went=yes|no | went_note=… to the HT line: ${sk.what} (${isoOf(sk.day)}) passed during the time skip, and ${userName} had accepted the invitation. Decide as fits the story whether ${charName} and ${userName} went; went_note: a few words on how it went or why not. No need to describe it in the story — at most a passing mention.`);
     if (state.dateRoll && !dt) out.push(state.datePlan ? dateAskRule(ctx) : dateOfferRule(ctx));
     // без помощника ход свидания ведёт основная модель — по своему же ответу
     const dateLive = state.date?.status === 'active' || (state.date?.status === 'scheduled' && (dateHoursLeft(state) ?? 99) <= 30);
     if (!ctx.api && dateLive) out.push(`ALSO add after the HT line:\n${dateUpRule(ctx, true)}`);
     if (!ctx.api && state.dateRecapFor && !dateLive) out.push(`ALSO add after the HT line: ${dateRecapRule(ctx)}`);
-    if (charDue(state, phase)) {
+    if (!lean && charDue(state, phase)) {
         out.push(`Add char=… to the HT line: a short thought of ${charName}'s about the holiday right now, in ${charName}'s own voice, the way people speak in this era, setting and story, under 12 words — about the feast, the people in it or what is coming, never a description of what ${charName} is doing; a new thought each time, not echoing earlier ones.`);
     }
     // один человек праздника за ответ: чего он хочет теперь — желания людей живут вместе с историей
-    const ppl = (phase.kind === 'prep' || phase.kind === 'today') && h ? (state.people || []).filter(p => p.name) : [];
+    const ppl = !lean && (phase.kind === 'prep' || phase.kind === 'today') && h ? (state.people || []).filter(p => p.name) : [];
     if (ppl.length) {
         const next = ppl[(state.whoIdx || 0) % ppl.length];
         out.push(`Only if this reply showed something new about what ${next.name}${ppl.length > 1 ? ` (or whoever of ${ppl.map(p => p.name).join(', ')} the reply showed)` : ''} plans or wants FOR THE HOLIDAY ITSELF (a gift, a dish, a rite, someone they wait for), add who=NAME: that plan, a few words — never their mood or matters unrelated to the holiday. Otherwise leave who out.`);
     }
-    if (charGiftActive(ctx)) {
+    if (!lean && charGiftActive(ctx)) {
         if (giftJoint(state, h)) out.push(`Add gift=… to the HT line: the current step with ${charName} and ${userName}'s joint gift for ${h.name}, under 8 words — what ${charName} did or what the two settled on in this story, never ${userName}'s part decided for ${userName}. Add gift_done=true once it is given. Leave gift out until there is a real step.`);
         else out.push(`Add gift=… to the HT line: ${charName}'s current step with a gift for ${giftTarget(state, h, userName, charName)}, under 8 words, no reason clause; it moves as the story does (idea → finding or making → ready and hidden → given). Add gift_done=true once it is given. Leave gift out until there is a real step — never write that it isn't decided.`);
     }
     // свой подарок {{user}} — только записать то, что {{user}} сам написал; игрок мог вписать его сам
-    if (h?.npc && (phase.kind === 'prep' || phase.kind === 'today') && !giftJoint(state, h)) {
+    if (!lean && h?.npc && (phase.kind === 'prep' || phase.kind === 'today') && !giftJoint(state, h)) {
         const ug = state.userGift?.[h.id];
         if (!ug?.done) out.push(`If ${userName}'s own latest message names, gets or gives ${userName}'s gift for ${h.name}, add ugift=what it is (and ugift_done=true once given) — only what ${userName} wrote, never your guess.`);
     }
     const evOpen = ctx.evTarget ? openEvent(state, ctx.evTarget.hid) : null;
     if (evOpen?.status === 'invited') out.push(`Add ev=joined to the HT line if ${userName} accepts the invitation, ev=declined if not.`);
     else if (evOpen) out.push(`When "${evOpen.title}" ends, add ev=done | ev_note=its outcome in one sentence to the HT line${evOpen.kind === 'party' ? '' : `; ev=skipped if ${userName} turned away`}.`);
-    // С отдельным запросом основная модель ведёт только время, шаг персонажа, подарок и ивент — остальное он
+    // С отдельным запросом основная модель ведёт только время и ивент — остальное помощник
     if (ctx.api) {
         out.push('Never skip, mention or explain these comments.');
         return out.join('\n');
@@ -738,7 +766,10 @@ export function buildSideMessages(ctx, needs, src) {
     const sk = (state.skipAsk || [])[0];
     if (needs.has('went') && sk) sf.push(`went=yes or no: ${sk.what} (${isoOf(sk.day)}) passed during a time skip after ${userName} accepted the invitation — did ${charName} and ${userName} go, as fits the story; went_note=a few words on how it went or why not`);
     if (needs.has('mean') && ctx.meaningFor) sf.push(`mean=what "${ctx.meaningFor}" is and how it is kept in this era and place, one sentence`);
-    if (needs.has('bond')) sf.push(`bond=FRIENDSHIP/ROMANCE: how ${charName} and ${userName} stand by the card, persona and story, two numbers −100…100 — friendship (enmity … 0 neutral … very close), romance (hatred or exes … 0 none … deep love); spouses, lovers, rivals and strangers all differ; bond_note=a few words on how they are now; bond_kin=yes only if they are family to each other by blood or upbringing (then romance 0)`);
+    const pr = state.pair;
+    if (needs.has('bond') && pr) sf.push(`bond=FRIENDSHIP/ROMANCE only if the latest messages clearly changed how ${charName} and ${userName} stand (now ${pr.f}/${pr.r}${pr.note ? `, ${pr.note}` : ''}; both −100…100); bond_note=a few words on how they are now; leave both out if nothing changed`);
+    if (needs.has('ugift') && h) sf.push(`ugift=only if ${userName}'s own messages name, get or give ${userName}'s own gift for ${h.name} — what it is, as ${userName} wrote it; ugift_done=true once given; never a guess`);
+    if (needs.has('bond') && !pr) sf.push(`bond=FRIENDSHIP/ROMANCE: how ${charName} and ${userName} stand by the card, persona and story, two numbers −100…100 — friendship (enmity … 0 neutral … very close), romance (hatred or exes … 0 none … deep love); spouses, lovers, rivals and strangers all differ; bond_note=a few words on how they are now; bond_kin=yes only if they are family to each other by blood or upbringing (then romance 0)`);
     const keys = (x) => (x.startsWith('bond=') ? 'bond=F/R | bond_note=… | bond_kin=…' : x.startsWith('went=') ? 'went=… | went_note=…' : `${x.split('=')[0]}=…`);
     if (sf.length) task.push(`<!-- HT-S ${sf.map(keys).join(' | ')} -->\n${sf.map(x => `- ${x}`).join('\n')}`);
 
