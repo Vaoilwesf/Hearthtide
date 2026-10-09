@@ -282,6 +282,20 @@ ${bare.length ? `Listed without roles yet: ${bare.join(', ')} — send C lines f
 }
 
 // ═══ Свидания ═══
+/** Что узнали друг о друге и сколько длится свидание — словами для модели */
+function dateKnown(ctx, d) {
+    const lc = (d.learned?.char || []).slice(-6), lu = (d.learned?.user || []).slice(-6);
+    return [lc.length && `${ctx.charName} knows about ${ctx.userName}: ${lc.join('; ')}`, lu.length && `${ctx.userName} knows about ${ctx.charName}: ${lu.join('; ')}`].filter(Boolean).join('. ');
+}
+function dateLasts(state, d) {
+    const a = d?.startAt;
+    if (!a || a.day == null || state.today == null) return '';
+    const h = (state.today - a.day) * 24 + (state.clock ?? 12) - (a.clock ?? 12);
+    if (h < 0) return '';
+    const m = Math.round(h * 60);
+    return m < 60 ? `${Math.max(1, m)} min` : h < 24 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${Math.floor(h / 24)} days`;
+}
+
 /** Темп романтики словами — для модели */
 const paceText = (ctx, d) => ({
     slow: `slow-burn: small, careful steps — words, glances, light touches; closeness is earned slowly`,
@@ -330,7 +344,8 @@ function dateStateLines(ctx) {
     const fails = (d.steps || []).filter(x => x.state === 'failed').length, dones = (d.steps || []).filter(x => x.state === 'done').length;
     const how = fails > dones ? (d.score < 10 ? 'badly' : 'poorly') : d.score >= 60 ? 'wonderfully' : d.score >= 30 ? 'well' : fails ? 'unevenly, a little awkward' : 'it is just warming up';
     const gifts = (d.gifts || []).map(g => `${g.from ? `${g.from}: ` : ''}${g.what}`);
-    out.push(`${userName} and ${charName} are on a date: ${d.title}${d.where ? `, ${d.where}` : ''}.${d.startTurn >= state.turn - 1 ? ' It begins now.' : ''}${gifts.length ? ` Gifts so far: ${gifts.join('; ')}.` : ''}${goal}${open.length ? ` ${charName}'s next steps (tasks ${charName} carries out — gently, one at a time, as the scene allows): ${open.map(s => s.t).join('; ')}.` : ''} So far: ${how}${d.vibe ? ` (${d.vibe})` : ''} — ${charName}'s mood, boldness and warmth follow it.${d.thought ? ` ${charName} thinks: ${d.thought}` : ''} ${userName} decides everything of ${userName}'s own.`);
+    const known = dateKnown(ctx, d), lasts = dateLasts(state, d);
+    out.push(`${userName} and ${charName} are on a date${lasts ? ` (it has lasted ${lasts} of story time)` : ''}: ${d.title}${d.where ? `, ${d.where}` : ''}.${d.startTurn >= state.turn - 1 ? ' It begins now.' : ''}${gifts.length ? ` Gifts so far: ${gifts.join('; ')}.` : ''}${goal}${open.length ? ` ${charName}'s next steps (tasks ${charName} carries out — gently, one at a time, as the scene allows): ${open.map(s => s.t).join('; ')}.` : ''} So far: ${how}${d.vibe ? ` (${d.vibe})` : ''} — ${charName}'s mood, boldness and warmth follow it.${d.thought ? ` ${charName} thinks: ${d.thought}` : ''}${known ? ` ${known} — only this is known; nothing beyond it.` : ''} ${userName} decides everything of ${userName}'s own.`);
     // подходит к концу — закруглить по-человечески, а не оборвать
     if (d.closing != null) out.push(`The date is drawing to its close: let it wind down naturally over this reply or the next — a last moment together, goodbyes, seeing ${userName} home — never cut off mid-scene; if ${userName} keeps it going, it goes on.`);
     else out.push(`The date goes on until the story itself brings it to a close — don't end it on your own.`);
@@ -358,6 +373,7 @@ STEP | <number> | <done, failed or open> | <what came of it>
 NEW | <task for ${charName}> | <${charName}'s thought>
 MOMENT | <what happened>
 GIFT | <who gave> | <the thing given>
+LEARN | <char or user> | <what they found out>
 MOOD | <up or down>
 VIBE | <how it goes, 2–5 words>
 THOUGHT | <${charName}'s thought>
@@ -373,6 +389,7 @@ Judge what happens ${scope} — read ${main ? 'the whole reply' : 'every [NEW] m
 - NEW: ${need > 0 ? `exactly ${need} new step${need > 1 ? 's' : ''}` : 'one for each step you mark done or failed'}, so that ${DATE_OPEN} stay open. ${stepFlow(ctx, d)} After a failed step, one NEW step softens the moment. Never chores, errands or anything off the date. ${stepForm(ctx)} Never (user), (char) or {{…}}.${(d.rejected || []).length ? ` Rejected earlier as repeats or not tasks — don't send these again: ${d.rejected.slice(-4).join(' / ')}.` : ''}
 - MOMENT: up to ${DATE_MOMENTS} notable things that happened outside the open steps — a confession, a kiss, an embrace, a brave or tender gesture; one line each, past tense, real names. None if nothing stood out.
 - GIFT: only a real thing handed from one to the other (a flower, a trinket, a keepsake, food made for them) — who gave it and what it is, a few words; never a kiss, a touch, a word or an act. Up to ${DATE_MOMENTS}; skip the gifts already counted.
+- LEARN: up to 3 new things they found out about each other in these messages — char: what ${charName} learned about ${userName}; user: what ${userName} learned about ${charName}. Only what was actually said or shown, a few words each, no guesses, nothing already known.${dateKnown(ctx, d) ? ` Already known: ${dateKnown(ctx, d)}.` : ''}
 - MOOD only if it clearly went better or worse beyond the steps. VIBE: how the date goes overall. THOUGHT: ${charName}'s private thought about the date now, in ${charName}'s own manner, under 15 words.
 - GOAL | yes only when the story itself reaches the goal.
 Text in ${lang}.`;

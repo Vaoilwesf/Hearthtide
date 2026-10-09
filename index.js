@@ -1131,6 +1131,13 @@ function tidyDateUp(up) {
     for (const k of ['vibe', 'thought', 'recap', 'best', 'why']) up[k] = ok(fix(up[k]));
     up.moments = (up.moments || []).map(m => ok(fix(m))).filter(Boolean);
     up.gifts = (up.gifts || []).map(g => ({ from: fix(g.from), what: ok(fix(g.what)) })).filter(g => g.what);
+    const learner = (w) => {
+        const x = String(w || '').toLowerCase().replace(/ё/g, 'е');
+        if (/^(char|чар)/.test(x) || (stem(c).length >= 3 && x.startsWith(stem(c)))) return 'char';
+        if (/^(user|юзер|игрок)/.test(x) || (stem(u).length >= 3 && x.startsWith(stem(u)))) return 'user';
+        return null;
+    };
+    up.learn = (up.learn || []).map(x => ({ who: x.who || learner(x.whoRaw), t: ok(fix(x.t)) })).filter(x => x.t && x.who);
     return up;
 }
 const dateParts = (d) => ({
@@ -1138,6 +1145,7 @@ const dateParts = (d) => ({
     // подарки — только вещи; поцелуи, признания и прочее — моменты
     gifts: (d.gifts || []).map(g => (g.from ? `${g.from}: ${g.what}` : g.what)).slice(-4),
     moments: (d.log || []).filter(x => x.kind === 'moment').map(x => x.t).slice(-4),
+    learned: [...(d.learned?.char || []).slice(-3), ...(d.learned?.user || []).slice(-3)],
     goal: d.goal ? `${d.goal} — ${d.goalDone ? L().goalState.done : L().goalMissed}` : null,
     best: d.best || null,
 });
@@ -2411,6 +2419,19 @@ function dateWhenText(st, at) {
     return L().dateAt(d, hh);
 }
 
+/** Сколько уже длится свидание — по времени истории (от начала до текущего часа ролплея) */
+function dateLastsText(d) {
+    const h = hoursBetween(d?.startAt, { day: state.today, clock: state.clock });
+    return h == null || h < 0 ? '' : L().dateLasts(h);
+}
+/** «Узнали друг о друге»: свёрнуто, два столбика — что знает {{char}} о {{user}} и {{user}} о {{char}} */
+function learnedHtml(d) {
+    const c = getCharName(), u = getUserName();
+    const lc = d.learned?.char || [], lu = d.learned?.user || [];
+    const col = (who, list) => `<div><b>${esc(L().knows(who))}</b>${list.length ? `<ul>${list.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : `<p class="ht-mute">${esc(L().learnedNone)}</p>`}</div>`;
+    return `<details class="ht-dlearn"><summary><i class="fa-solid fa-lightbulb"></i>${esc(L().dateLearned)}${lc.length + lu.length ? `<em>${lc.length + lu.length}</em>` : ''}<i class="fa-solid fa-chevron-down ht-dlog-chev"></i></summary>
+        <div class="ht-dlearn-cols">${col(c, lc)}${col(u, lu)}</div></details>`;
+}
 function dateCardHtml() {
     const d = state?.date;
     if (!d || (d.status !== 'offered' && d.status !== 'active')) return '';
@@ -2471,6 +2492,7 @@ function dateCardHtml() {
             <div class="ht-dmain">
                 <b class="ht-dtitle">${esc(d.title)}</b>
                 ${d.where ? `<span class="ht-dwhen"><i class="fa-solid fa-location-dot"></i>${esc(d.where)}</span>` : ''}
+                ${dateLastsText(d) ? `<span class="ht-dwhen ht-dlasts"><i class="fa-regular fa-clock"></i>${esc(dateLastsText(d))}</span>` : ''}
                 <span class="ht-dvibe">${esc(d.vibe || L().dateVibeStart)}</span>
                 ${d.closing != null ? `<span class="ht-dclosing"><i class="fa-solid fa-hourglass-end"></i>${esc(L().dateClosing)}</span>` : ''}
             </div>
@@ -2483,6 +2505,7 @@ function dateCardHtml() {
         <div class="ht-dsec"><i class="fa-solid fa-shoe-prints"></i>${L().dateSteps}</div>
         <div class="ht-date-steps">${slots.join('') || `<p class="ht-mute">${L().dateNoSteps}</p>`}</div>
         ${logBox}
+        ${learnedHtml(d)}
         <div class="ht-offer-actions ht-one"><button class="ht-btn ht-btn-quiet" data-act="date-end"><i class="fa-solid fa-flag-checkered"></i><span>${L().dateFinish}</span></button></div>
     </div>`;
 }
@@ -2686,7 +2709,7 @@ function recapSpoiler(text, parts, date = false) {
 function recapPartsHtml(p) {
     if (!p) return '';
     const row = (icon, items, title) => items?.length ? `<li title="${esc(title)}"><i class="fa-solid ${icon}"></i><span>${items.map(esc).join(' · ')}</span></li>` : '';
-    return `<ul class="ht-recap-parts">${row('fa-bullseye', p.goal ? [p.goal] : [], L().dateGoalMain)}${row('fa-list-check', p.done, L().recapDone)}${row('fa-heart', p.moments, L().moments)}${row('fa-gift', p.gifts, L().gifts)}${row('fa-star', p.best ? [p.best] : [], L().recapBest)}</ul>`;
+    return `<ul class="ht-recap-parts">${row('fa-bullseye', p.goal ? [p.goal] : [], L().dateGoalMain)}${row('fa-list-check', p.done, L().recapDone)}${row('fa-heart', p.moments, L().moments)}${row('fa-gift', p.gifts, L().gifts)}${row('fa-lightbulb', p.learned, L().dateLearned)}${row('fa-star', p.best ? [p.best] : [], L().recapBest)}</ul>`;
 }
 
 // Правка человека — отдельным окном поверх таверны: перерисовки чата его не сбрасывают,

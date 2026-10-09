@@ -381,7 +381,7 @@ export function parseAt(v) {
 export function parseDateUp(text) {
     const inner = findBlock(text, 'HT-DATE-UP');
     if (inner == null) return null;
-    const up = { start: false, phase: null, why: null, done: [], fail: [], add: [], moments: [], gifts: [], mood: 0, vibe: null, thought: null, goal: false, recap: null, best: null };
+    const up = { start: false, phase: null, why: null, done: [], fail: [], add: [], moments: [], gifts: [], learn: [], mood: 0, vibe: null, thought: null, goal: false, recap: null, best: null };
     const num = (v) => { const m = String(v || '').match(/^\s*(?:№|#|s)?\s*(\d{1,3})\b/i); return m ? +m[1] : null; };
     const yes = (v) => /^(yes|true|да|1)\b/i.test(String(v || '').trim());
     // «done|failed|open», «up|down», «on|ending|over» — образец, а не ответ
@@ -415,6 +415,11 @@ export function parseDateUp(text) {
             // NEW | шаг | мысль {{char}} (прежний вид: NEW | шаг | char|both)
             const who = /^(char|both|user|чар|оба|вместе)$/i.test(String(rest[1] || '').trim());
             if (t) up.add.push({ t, thought: stepText(who ? rest[2] : rest[1], 140) });
+        } else if (k === 'LEARN') {
+            // LEARN | char | что {{char}} узнал о {{user}} · LEARN | user | что {{user}} узнал о {{char}}
+            // кто узнал: char / user — или имя (сверяется с именами при разборе в index.js)
+            const fact = stepText(cols[2], 120);
+            if (fact && cols[1] && !/[<>]/.test(cols[1])) up.learn.push({ whoRaw: clean(cols[1], 40), t: fact });
         } else if (k === 'MOMENT') {
             const t = stepText(cols.slice(1).join(' — '), 160);
             if (t) up.moments.push(t);

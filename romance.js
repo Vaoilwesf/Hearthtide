@@ -104,6 +104,7 @@ export function newDate(d, turn, started) {
         id: `d-${turn}-${idOf(d.title)}`,
         title: d.title, goal: shortGoal(d.goal), hook: d.hook || null, where: d.where || null, at: d.at || null,
         steps: [], nextN: 1, score: 0, goalDone: false, thought: null, vibe: null, notes: [], log: [], gifts: [], closing: null,
+        learned: { char: [], user: [] },          // что {{char}} узнал о {{user}} и наоборот — только сказанное или показанное
         status: started ? 'active' : 'offered',
         turn, startTurn: started ? turn : null, lastUpdate: turn, result: null,
     };
@@ -172,6 +173,15 @@ export function applyDateUp(d, up, turn, level) {
     for (const m of (up.moments || []).slice(0, DATE_MOMENTS)) {
         if (d.log.some(x => x.kind === 'moment' && normT(x.t) === normT(m))) continue;
         d.score += L.moment; note('moment', m, L.moment); moved = true;
+    }
+    // что узнали друг о друге — без повторов, по 10 на каждого
+    d.learned = d.learned || { char: [], user: [] };
+    for (const x of up.learn || []) {
+        const list = d.learned[x.who] || (d.learned[x.who] = []);
+        if (list.some(y => normT(y) === normT(x.t) || normT(y).includes(normT(x.t)))) continue;
+        list.push(x.t);
+        if (list.length > 10) d.learned[x.who] = list.slice(-10);
+        moved = true;
     }
     // подарки — только вещи, которые кто-то кому-то вручил; отдельно от моментов
     d.gifts = d.gifts || [];
