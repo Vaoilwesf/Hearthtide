@@ -7,8 +7,8 @@ export const PAIR_DEFAULT = { f: 0, r: 0, note: null, scale: 2 };   // друж�
 
 // Сложность свиданий: сколько дают шаг, срыв, «лучше/хуже» и цель; сколько шагов и успеха нужно, чтобы цель открылась
 export const DATE_LEVELS = {
-    easy: { step: 9, fail: -6, up: 4, down: -4, goal: 15, moment: 6, gift: 9, goalSteps: 5, goalScore: 40 },
-    hard: { step: 6, fail: -10, up: 3, down: -6, goal: 10, moment: 4, gift: 6, goalSteps: 7, goalScore: 55 },
+    easy: { step: 9, fail: -6, up: 4, down: -4, goal: 15, moment: 6, gift: 9, miss: -5, missBig: -12, goalSteps: 5, goalScore: 40 },
+    hard: { step: 6, fail: -10, up: 3, down: -6, goal: 10, moment: 4, gift: 6, miss: -8, missBig: -16, goalSteps: 7, goalScore: 55 },
 };
 export const levelOf = (k) => DATE_LEVELS[k] || DATE_LEVELS.easy;
 /**
@@ -62,6 +62,10 @@ export function stepRepeats(d, t) {
         return n >= 2 && n / Math.max(1, Math.min(A.size, B.size)) >= 0.5;
     });
 }
+/** Промах {{char}} (не понравилось {{user}}) — минус и к отношениям пары, сразу: небольшой / серьёзный */
+export const MISS_PAIR = { small: { f: -1, r: -2 }, big: { f: -3, r: -5 } };
+/** Шаг, который висит дольше стольких ответов и так и не случился, — момент упущен, место освобождается */
+export const STEP_STALE = 5;
 /** Сколько шагов открыто одновременно */
 export const DATE_OPEN = 4;
 /** Моментов (поцелуй, признание, смелый жест) — не больше стольких за ответ; подарков — столько же */
@@ -162,12 +166,17 @@ export function applyDateUp(d, up, turn, level) {
         if (!s) return;
         s.state = st; s.note = x.note || null; s.endTurn = turn;
         d.score += delta;
-        if (x.note) d.notes.push({ t: x.note, ok: st === 'done', turn });
+        if (x.note && st !== 'dropped') d.notes.push({ t: x.note, ok: st === 'done', turn });
         note(st, x.note || s.t, delta);
         moved = true;
     };
     for (const x of up.done || []) close(x, 'done', L.step);
     for (const x of up.fail || []) close(x, 'failed', L.fail);
+    // момент упущен — шаг уходит без очков, место освобождается под новый
+    for (const x of up.missed || []) close(x, 'dropped', 0);
+    for (const s of openSteps(d)) {
+        if (turn - (s.turn ?? turn) >= STEP_STALE) { s.state = 'dropped'; s.endTurn = turn; s.note = null; moved = true; }
+    }
     for (const a of up.add || []) if (addStep(d, a.t, a.who, turn, a.thought)) moved = true;
     // значимое вне шагов (признание, поцелуй, смелый жест) — тоже засчитывается
     for (const m of (up.moments || []).slice(0, DATE_MOMENTS)) {
@@ -182,6 +191,14 @@ export function applyDateUp(d, up, turn, level) {
         list.push(x.t);
         if (list.length > 10) d.learned[x.who] = list.slice(-10);
         moved = true;
+    }
+    // промахи {{char}}: {{user}} это не понравилось — минус к свиданию (и к отношениям пары — в index.js)
+    const missed = [];
+    for (const m of (up.missteps || []).slice(0, 2)) {
+        if (d.log.some(x => x.kind === 'misstep' && normT(x.t) === normT(m.t))) continue;
+        const delta = m.big ? L.missBig : L.miss;
+        d.score += delta; note('misstep', m.t, delta); moved = true;
+        missed.push(m);
     }
     // подарки — только вещи, которые кто-то кому-то вручил; отдельно от моментов
     d.gifts = d.gifts || [];
@@ -209,7 +226,7 @@ export function applyDateUp(d, up, turn, level) {
     // старые закрытые шаги не копим
     const closed = d.steps.filter(s => s.state !== 'open');
     if (closed.length > 16) d.steps = [...closed.slice(-16), ...openSteps(d)];
-    return { moved, phase: up.phase || null, ignoredGoal };
+    return { moved, phase: up.phase || null, ignoredGoal, missteps: missed };
 }
 
 /** Шаг отмечен игроком вручную */

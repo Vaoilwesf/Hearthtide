@@ -11,7 +11,7 @@ import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
 import { slimSmallTag, parseExtras, parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseDateUp, parseRecapParts, stripBlocks } from './tag.js';
-import { PAIR_DEFAULT, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, levelOf, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN, DATE_SKIP_END, DATE_SKIP_HARD, DATE_CLOSE_TURNS, DATE_QUIET, goalNeed, paceAuto, stepKinds } from './romance.js';
+import { PAIR_DEFAULT, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, levelOf, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN, DATE_SKIP_END, DATE_SKIP_HARD, DATE_CLOSE_TURNS, DATE_QUIET, goalNeed, paceAuto, stepKinds, MISS_PAIR } from './romance.js';
 import { CAST_GROUPS, KIN_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast, nameCandidates } from './cast.js';
 import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE_DEFAULT, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday, giftJoint } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, buildDateSideMessages, buildDateRefillMessages, giftTarget, hName } from './prompts.js';
@@ -793,6 +793,15 @@ function processReply(N) {
             for (const x of up.learn) { (pk[x.who] = pk[x.who] || []).push(x.t); if (pk[x.who].length > 30) pk[x.who] = pk[x.who].slice(-30); }
             const r = applyDateUp(dd, up, state.turn, lvl);
             if (r.ignoredGoal) console.info('[Hearthtide] свидание: цель ещё закрыта — GOAL пропущен');
+            // промах {{char}} — {{user}} не понравилось: отношения пары тоже ниже, сразу (а не только по итогу)
+            for (const m of r.missteps || []) {
+                const p = state.pair;
+                if (!p) continue;
+                const k = MISS_PAIR[m.big ? 'big' : 'small'];
+                p.f = Math.max(-100, p.f + k.f);
+                if (!p.kin) p.r = Math.max(-100, p.r + k.r);
+                console.info(`[Hearthtide] свидание: промах (${m.big ? 'серьёзный' : 'небольшой'}) — ${m.t} · дружба ${k.f}, романтика ${k.r}`);
+            }
             console.info(`[Hearthtide] свидание: ${up.phase || 'без STATE'}${up.why ? ` (${up.why})` : ''} · ${dd.score}% · сделано ${doneCount(dd)} · открыто ${openSteps(dd).length}${jump ? ` · прошло ${jump.toFixed(1)} ч` : ''}`);
             dd.lastSeen = state.turn;
             dd.seenAt = nowAt;
@@ -813,6 +822,17 @@ function processReply(N) {
     }
     // итог, дописанный после конца свидания
     if (up?.recap && state.dateRecapFor && !dateEnded) applyDateRecap(state, state.dateRecapFor, up.recap, up.best);
+    // после второго и дальше свиданий: «что знают друг о друге» — сжатая сводка вместо длинного списка
+    if (up?.know && (up.know.char.length || up.know.user.length)) {
+        const pk = state.pairKnown || (state.pairKnown = { char: [], user: [] });
+        for (const who of ['char', 'user']) {
+            const list = up.know[who].slice(0, 6);
+            if (!list.length) continue;
+            console.info(`[Hearthtide] что знают друг о друге (${who === 'char' ? getCharName() : getUserName()}): ${(pk[who] || []).length} → ${list.length} — ${list.join('; ')}`);
+            pk[who] = list;
+        }
+        state.knowTurn = state.turn;
+    }
     if (state.dateRecapFor && state.turn - (state.dateRecapTurn ?? state.turn) > 3) state.dateRecapFor = null;   // не дождались — без итога
     if (['offered', 'pending'].includes(state.date?.status) && state.turn - state.date.turn > 4) state.date = null;   // не ответили — забылось
     if (dateIn && !['active', 'offered', 'scheduled', 'pending'].includes(state.date?.status)
@@ -1155,6 +1175,8 @@ function tidyDateUp(up) {
         return null;
     };
     up.learn = (up.learn || []).map(x => ({ who: x.who || learner(x.whoRaw), t: ok(fix(x.t)) })).filter(x => x.t && x.who);
+    up.missteps = (up.missteps || []).map(m => ({ ...m, t: ok(fix(m.t)) })).filter(m => m.t);
+    if (up.know) for (const who of ['char', 'user']) up.know[who] = (up.know[who] || []).map(t => ok(fix(t))).filter(Boolean);
     return up;
 }
 const dateParts = (d) => ({
@@ -2582,13 +2604,11 @@ function showDateToast(d) {
     const el = document.createElement('div');
     el.className = `ht-date-toast ht-date-${d.result}`;
     el.setAttribute('role', 'status');
-    const sign = (n) => (n > 0 ? `+${n}` : `${n}`);
     el.innerHTML = `<div class="ht-date-toast-card">
         <div class="ht-date-hearts"><i class="fa-solid fa-heart"></i><i class="fa-solid fa-heart"></i><i class="fa-solid fa-heart"></i></div>
         <span>${esc(L().dateOver)}</span>
         <b>${esc(L().dateResult[d.result])}</b>
         <p>${esc(d.title)} · ${d.score}%</p>
-        ${d.delta && (d.delta.r || d.delta.f) ? `<p class="ht-date-delta"><i class="fa-solid fa-heart"></i> ${esc(L().romance)} ${sign(d.delta.r)} · <i class="fa-solid fa-handshake"></i> ${esc(L().friendship)} ${sign(d.delta.f)}</p>` : ''}
     </div>`;
     const close = () => { el.classList.add('ht-out'); setTimeout(() => el.remove(), 300); };
     el.addEventListener('click', close);

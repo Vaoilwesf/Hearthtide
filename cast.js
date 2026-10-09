@@ -81,6 +81,8 @@ export function romLevel(n) {
     return 'deep';
 }
 
+/** Образец вместо значения («NAME», «<name>», «TO_USER») */
+const STUB = /^(name|имя|group|to[_ ]?user|to[_ ]?char|birthday|with[_ ]?user|with[_ ]?char|how[_ ]?user|how[_ ]?char|<.*>|\?+)$/i;
 /** «никто», «нет», «—» в роли — значит связи нет: пустое поле */
 const NO_TIE = /^(никто|никем|нет|не родня|чужой|чужая|none|nobody|no one|no tie|n\/a|—|-)$/i;
 export const tieOf = (v) => (v && !NO_TIE.test(String(v).trim()) ? v : null);
@@ -153,11 +155,15 @@ export function migrateCast(state, userName, charName) {
         }
         if (!c.note) c.note = { user: null, char: null };
         c.toU = tieOf(c.toU); c.toC = tieOf(c.toC);
+        if (STUB.test(String(c.name || '').trim())) c.name = null;
+        for (const k of ['toU', 'toC']) if (STUB.test(String(c[k] || '').trim())) c[k] = null;
         if (c.rom && typeof c.rom.user === 'number') c.rom = { user: null, char: null };
         if (!c.rom) c.rom = { user: null, char: null };
         // общие дети и внуки (сын или дочь обоим) раньше попадали в родню одной стороны
         if ((state.castVer ?? 0) < 4 && !c.edited && (c.group === 'kin_user' || c.group === 'kin_char') && sharedChild(c)) c.group = 'kin_both';
     }
+    // ни имени, ни роли (модель прислала пустую строку образца) — такой записи не место в списке
+    if (state.cast) state.cast = state.cast.filter(c => c.edited || c.name || c.toU || c.toC);
     state.castVer = 4;
 }
 

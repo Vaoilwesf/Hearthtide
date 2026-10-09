@@ -142,7 +142,8 @@ export function buildStatePrompt(ctx) {
         // Персонаж: насколько праздник для него важен
         const care = state.care?.[h.id];
         const steps = (state.charLog?.[h.id] || []).slice(-3).map(x => x.text);
-        const trail = steps.length ? ` On ${charName}'s mind lately: ${steps.join(' / ')}.` : '';
+        // прошлые мысли {{char}} — только помощнику (чтобы не повторялся); основная модель озвучивала их дословно
+        const trail = ctx.side && steps.length ? ` Earlier thoughts (don't repeat): ${steps.join(' / ')}.` : '';
         if (care === 'high') lines.push(`${charName} cares about this a lot.${trail} ${charName} acts on it in small steps across replies when the scene allows.`);
         else if (care === 'normal') lines.push(`For ${charName} it matters moderately.${trail}`);
         else if (care === 'low') lines.push(`For ${charName} it means little — a passing remark at most.`);
@@ -283,9 +284,10 @@ function castRule(ctx) {
     const hint = (ctx.castHint || []).map(x => `${x.name} (${x.n})`);
     const bare = (state.cast || []).filter(c => c.name && !c.toU && !c.toC && !c.edited).map(c => c.name);
     return `<!-- HT-CAST
-C | NAME | GROUP | TO_USER | TO_CHAR | BIRTHDAY | WITH_USER | WITH_CHAR | HOW_USER | HOW_CHAR
-R | NAME | WITH_USER | WITH_CHAR | HOW_USER | HOW_CHAR
+C | <name or ?> | <group> | <to user> | <to char> | <birthday> | <with user> | <with char> | <how with user> | <how with char>
+R | <name> | <with user> | <with char> | <how with user> | <how with char>
 -->
+Fill in the fields; never copy the <…> placeholders or field names into them.
 C: people of the story not in the list yet (not ${userName}, not ${charName}), once each. NAME: the person's own name only — never a role as a name; if the story hasn't named them yet, write ? — but add such an unnamed person only if they are close kin or have actually appeared in the story. GROUP: kin_user (${userName}'s own blood family) | kin_char (${charName}'s own blood family) | kin_both (family to both: their shared children or grandchildren, or a child of one whom the other raises or treats as their own — TO_USER and TO_CHAR then say who they are to each) | friend | acquaintance | other. TO_USER / TO_CHAR: who they are to ${userName} and to ${charName}, a word or two each, in ${langOf(ctx)}; leave it empty if there is no tie — never "nobody". Work out kinship from the card, persona, lore and story — never guess what they don't support. BIRTHDAY: DD.MM or DD.MM.YYYY only if stated, else empty. WITH_USER / WITH_CHAR: how they get on, −100 (enmity) … 0 (neutral) … 100 (very close). HOW_USER / HOW_CHAR: how they are with each, 2–4 words of your own, specific to these two people — not a generic label, in ${langOf(ctx)}.
 R: only someone whose relations clearly changed in the latest messages — the new numbers and words.${ctx.census ? `
 Census: go through the card, persona, world info and the whole story above and list everyone who matters and isn't listed yet, up to 10 C lines — kin of both sides first, then those the story names most often.` : ''}
@@ -362,15 +364,16 @@ function dateStateLines(ctx) {
     const both = [];
     const goal = d.goal ? ` Its goal: ${d.goal}${d.goalDone ? ' — reached.' : goalOpen(d, ctx.dateLevel) ? ` — UNLOCKED: they have grown close enough. In this reply or the next, ${charName} takes the lead and moves to it — acts on it as fits the story, their pace and how they stand; ${userName} answers.` : ' — not yet; first more closeness.'}` : '';
     // шкала растёт с нуля, поэтому «плохо» — это срывы, а не малый процент в начале
-    const fails = (d.steps || []).filter(x => x.state === 'failed').length, dones = (d.steps || []).filter(x => x.state === 'done').length;
+    const fails = (d.steps || []).filter(x => x.state === 'failed').length + (d.log || []).filter(x => x.kind === 'misstep').length, dones = (d.steps || []).filter(x => x.state === 'done').length;
     const how = fails > dones ? (d.score < 10 ? 'badly' : 'poorly') : d.score >= 60 ? 'wonderfully' : d.score >= 30 ? 'well' : fails ? 'unevenly, a little awkward' : 'it is just warming up';
     const gifts = (d.gifts || []).map(g => `${g.from ? `${g.from}: ` : ''}${g.what}`);
     const known = dateKnown(ctx, d), lasts = dateLasts(state, d);
     // что уже было на этом свидании — модели (в инфоблоке этого нет)
-    const sofar = (d.log || []).filter(x => ['done', 'moment', 'gift', 'failed'].includes(x.kind) && x.t).slice(-4).map(x => x.t);
+    const sofar = (d.log || []).filter(x => ['done', 'moment', 'gift', 'failed', 'misstep'].includes(x.kind) && x.t).slice(-4)
+        .map(x => (x.kind === 'misstep' ? `${userName} didn't like it: ${x.t}` : x.t));
     // прошлые свидания — только в начале нового, коротко
     const past = d.startTurn >= state.turn - 2 ? pastDates(state, 2, 110) : [];
-    out.push(`${userName} and ${charName} are on a date${lasts ? ` (it has lasted ${lasts} of story time)` : ''}: ${d.title}${d.where ? `, ${d.where}` : ''}.${d.startTurn >= state.turn - 1 ? ' It begins now.' : ''}${gifts.length ? ` Gifts so far: ${gifts.join('; ')}.` : ''}${goal}${open.length ? ` ${charName}'s next steps (tasks ${charName} carries out — gently, one at a time, as the scene allows): ${open.map(s => s.t).join('; ')}.` : ''} So far: ${how}${d.vibe ? ` (${d.vibe})` : ''} — ${charName}'s mood, boldness and warmth follow it.${d.thought ? ` ${charName} thinks: ${d.thought}` : ''}${sofar.length ? ` On this date so far: ${sofar.join('; ')}.` : ''}${past.length ? ` Earlier dates: ${past.join(' · ')}.` : ''}${known ? ` ${known} — they remember it; only this is known, nothing beyond it.` : ''} ${userName} decides everything of ${userName}'s own.`);
+    out.push(`${userName} and ${charName} are on a date${lasts ? ` (it has lasted ${lasts} of story time)` : ''}: ${d.title}${d.where ? `, ${d.where}` : ''}.${d.startTurn >= state.turn - 1 ? ' It begins now.' : ''}${gifts.length ? ` Gifts so far: ${gifts.join('; ')}.` : ''}${goal}${open.length ? ` ${charName}'s next steps (tasks ${charName} carries out — gently, one at a time, as the scene allows): ${open.map(s => s.t).join('; ')}.` : ''} So far: ${how}${d.vibe ? ` (${d.vibe})` : ''} — ${charName}'s mood, boldness and warmth follow it.${sofar.length ? ` On this date so far: ${sofar.join('; ')}.` : ''}${past.length ? ` Earlier dates: ${past.join(' · ')}.` : ''}${known ? ` ${known} — they remember it; only this is known, nothing beyond it.` : ''} ${userName} decides everything of ${userName}'s own.`);
     // подходит к концу — закруглить по-человечески, а не оборвать
     if (d.closing != null) out.push(`The date is drawing to its close: let it wind down naturally over this reply or the next — a last moment together, goodbyes, seeing ${userName} home — never cut off mid-scene; if ${userName} keeps it going, it goes on.`);
     else out.push(`The date goes on until the story itself brings it to a close — don't end it on your own.`);
@@ -394,10 +397,11 @@ function dateUpRule(ctx, main = false) {
     const time = ctx.dateTime ? `\n${ctx.dateTime}` : '';
     return `<!-- HT-DATE-UP
 STATE | <on, ending or over> | <why, a few words>
-STEP | <number> | <done, failed or open> | <what came of it>
+STEP | <number> | <done, failed, missed or open> | <what came of it>
 NEW | <task for ${charName}> | <${charName}'s thought>
 MOMENT | <what happened>
 GIFT | <who gave> | <the thing given>
+MISSTEP | <what ${charName} did or said> | <small or big>
 LEARN | <char or user> | <what they found out>
 MOOD | <up or down>
 VIBE | <how it goes, 2–5 words>
@@ -410,9 +414,10 @@ ${list || '(none yet)'}
 
 Judge what happens ${scope} — read ${main ? 'the whole reply' : 'every [NEW] message to its very end'}:
 - STATE, always: on — they are still on the date; ending — it is winding down (saying goodbye, heading home, about to part); over — it has ended: they parted, went their separate ways, or the story skipped past it. WHY: what in the story shows it. A quarrel, a pause, a change of place or a talk about other things is still on. Never over just because the [NEW] messages are short or quiet.
-- One STEP line for EVERY open step above, by its number: done — ${charName} did it, or something close to it in spirit; failed — tried, but met a refusal, coldness or a bad reaction; open — not yet (no note). NOTE for done or failed: what came of it, past tense, one line, real names.
+- One STEP line for EVERY open step above, by its number: done — ${charName} did it, or something close to it in spirit; missed — the moment for it has passed: the scene has moved on and it no longer fits (no note); failed — tried, but met a refusal, coldness or a bad reaction; open — not yet (no note). NOTE for done or failed: what came of it, past tense, one line, real names.
 - NEW: ${need > 0 ? `exactly ${need} new step${need > 1 ? 's' : ''}` : 'one for each step you mark done or failed'}, so that ${DATE_OPEN} stay open. ${stepFlow(ctx, d)} After a failed step, one NEW step softens the moment. Never chores, errands or anything off the date. ${stepForm(ctx)} Never (user), (char) or {{…}}.${(d.rejected || []).length ? ` Rejected earlier as repeats or not tasks — don't send these again: ${d.rejected.slice(-4).join(' / ')}.` : ''}
 - MOMENT: up to ${DATE_MOMENTS} notable things that happened outside the open steps — a confession, a kiss, an embrace, a brave or tender gesture; one line each, past tense, real names. None if nothing stood out.
+- MISSTEP: up to 2 things ${charName} said or did in these messages (outside the open steps) that ${userName} plainly didn't like — as ${userName}'s own reply shows: pulled back, went cold, got annoyed or hurt, cut it short. small or big. Judge only by ${userName}'s actual reaction, never guess it; none is the usual answer.
 - GIFT: only a present — a thing given as a gift, meant to be kept or to mark the moment: who gave it and what it is, a few words. Not a gift: food, drink, cigarettes or anything bought, ordered, paid for or shared on the spot; everyday small favours; a kiss, a touch, a word or an act. Up to ${DATE_MOMENTS}; skip the gifts already counted; none is the usual answer.
 - LEARN: up to 3 new things they found out about each other in these messages — char: what ${charName} learned about ${userName}; user: what ${userName} learned about ${charName}. Only what was actually said or shown, a few words each, no guesses, nothing already known.${dateKnown(ctx, d, true) ? ` Already known (from this and earlier dates): ${dateKnown(ctx, d, true)}.` : ''}${pastDates(state, 3, 160).length ? `\nEarlier dates: ${pastDates(state, 3, 160).join(' · ')}.` : ''}
 - MOOD only if it clearly went better or worse beyond the steps. VIBE: how the date goes overall. THOUGHT: ${charName}'s private thought about the date now, in ${charName}'s own manner, under 15 words.
@@ -461,7 +466,12 @@ function dateRecapRule(ctx) {
     const d = ctx.state.date?.id === ctx.state.dateRecapFor ? ctx.state.date : null;
     const facts = d ? [(d.gifts || []).length && `gifts: ${d.gifts.map(g => `${g.from ? `${g.from}: ` : ''}${g.what}`).join('; ')}`,
         (d.log || []).some(x => x.kind === 'moment') && `moments: ${(d.log || []).filter(x => x.kind === 'moment').map(x => x.t).slice(-4).join('; ')}`].filter(Boolean) : [];
-    return `<!-- HT-DATE-UP\nRECAP | <text> | <best moment>\n-->\nThe date "${last?.title || ''}" is over: text — how it went for ${ctx.userName} and ${ctx.charName}, one or two sentences, only what the story showed; best moment — the one worth remembering, a few words.${facts.length ? ` Facts: ${facts.join(' · ')}.` : ''} In ${langOf(ctx)}.`;
+    // со второго свидания: всё, что знают друг о друге, — переписать короче, только главное
+    const pk = ctx.state.pairKnown || {};
+    const squeeze = (ctx.state.datesDone || []).length >= 2 && ((pk.char || []).length + (pk.user || []).length) >= 4;
+    const knowRule = squeeze ? `
+Then rewrite everything they know about each other into a short summary — KNOW lines, up to 6 per person, only what matters most (merge close facts, drop small details): char — what ${ctx.charName} knows about ${ctx.userName}; user — what ${ctx.userName} knows about ${ctx.charName}. Now known: ${dateKnown(ctx, null, true)}.` : '';
+    return `<!-- HT-DATE-UP\nRECAP | <text> | <best moment>${squeeze ? '\nKNOW | <char or user> | <fact>' : ''}\n-->\nThe date "${last?.title || ''}" is over: text — how it went for ${ctx.userName} and ${ctx.charName}, one or two sentences, only what the story showed; best moment — the one worth remembering, a few words.${facts.length ? ` Facts: ${facts.join(' · ')}.` : ''}${knowRule} In ${langOf(ctx)}.`;
 }
 
 // ─── Приглашение на свидание ───
@@ -736,7 +746,7 @@ export function buildSideMessages(ctx, needs, src) {
     if (src.persona) sys.push(`[${userName}]\n${src.persona}`);
     if (src.lore) sys.push(`[World info]\n${src.lore}`);
     // заметки без указаний основной модели — помощнику нужны только факты
-    const notes = buildStatePrompt({ ...ctx, state: { ...state, beat: null, mentionNow: false, recall: null } })
+    const notes = buildStatePrompt({ ...ctx, side: true, state: { ...state, beat: null, mentionNow: false, recall: null } })
         .split('\n').filter(l => !/^(This reply|If .+ is away from people|If the scene allows)/.test(l)).join('\n');
     sys.push(`[Calendar notes so far]\n${notes}`);
     // точная дата обязательна: от неё считаются все даты в блоках

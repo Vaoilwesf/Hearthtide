@@ -317,14 +317,16 @@ export function parseCast(text) {
     for (const raw of inner.split(/\n+/)) {
         const cols = raw.split('|').map(x => x.trim());
         const kind = (cols[0] || '').replace(/^[\s\-*•]+/, '').replace(/[:.]+$/, '').toUpperCase();   // «- C», «C:» — тоже C
+        // модель иногда переписывает образец как есть: «NAME», «<name or ?>», «TO_USER» — это пусто, а не имя
+        const stub = (v) => !v || /^[?？]+$/.test(v) || /[<>]/.test(v) || /^(name|имя|group|to[_ ]?user|to[_ ]?char|birthday|with[_ ]?user|with[_ ]?char|how[_ ]?user|how[_ ]?char|none|n\/a|unknown|неизвестно)$/i.test(String(v).trim());
         const nm = clean(cols[1], 60);
-        const name = nm && !/^[?？]+$/.test(nm) ? nm : null;
+        const name = stub(nm) ? null : nm;
         if (kind === 'C') {
             const g = String(cols[2] || '').toLowerCase().replace(/[\s-]+/g, '_');
             const group = /^kin_?b|both|общ|shared/.test(g) ? 'kin_both' : /^kin_?c|char/.test(g) ? 'kin_char' : /^kin|^rel|род|сем|famil/.test(g) ? 'kin_user'
                 : /^fri|друг|подруг/.test(g) ? 'friend' : /^acq|знак/.test(g) ? 'acquaintance' : 'other';
             const bd = String(cols[5] || '').trim().match(/^(\d{1,2})[./-](\d{1,2})(?:[./-](-?\d{1,5}))?$/);
-            const toU = clean(cols[3], 60), toC = clean(cols[4], 60);
+            const toU = stub(clean(cols[3], 60)) ? null : clean(cols[3], 60), toC = stub(clean(cols[4], 60)) ? null : clean(cols[4], 60);
             if (!name && !toU && !toC) continue;
             add.push({
                 name, group, toU, toC,
@@ -381,11 +383,11 @@ export function parseAt(v) {
 export function parseDateUp(text) {
     const inner = findBlock(text, 'HT-DATE-UP');
     if (inner == null) return null;
-    const up = { start: false, phase: null, why: null, done: [], fail: [], add: [], moments: [], gifts: [], learn: [], mood: 0, vibe: null, thought: null, goal: false, recap: null, best: null };
+    const up = { start: false, phase: null, why: null, done: [], fail: [], missed: [], add: [], moments: [], gifts: [], learn: [], missteps: [], know: null, mood: 0, vibe: null, thought: null, goal: false, recap: null, best: null };
     const num = (v) => { const m = String(v || '').match(/^\s*(?:№|#|s)?\s*(\d{1,3})\b/i); return m ? +m[1] : null; };
     const yes = (v) => /^(yes|true|да|1)\b/i.test(String(v || '').trim());
     // «done|failed|open», «up|down», «on|ending|over» — образец, а не ответ
-    const echo = (raw) => /\b(done\s*\|\s*failed|up\s*\|\s*down|on\s*\|\s*ending|ending\s*\|\s*over|char\s*\|\s*both)\b/i.test(raw);
+    const echo = (raw) => /\b(done\s*\|\s*failed|up\s*\|\s*down|on\s*\|\s*ending|ending\s*\|\s*over|char\s*\|\s*both|small\s*\|\s*big)\b/i.test(raw) || /<[^>]*>/.test(raw);
     for (const raw of inner.split(/\n+/)) {
         if (echo(raw)) continue;
         const cols = raw.split('|').map(x => x.trim());
@@ -403,6 +405,8 @@ export function parseDateUp(text) {
             if (n == null) continue;
             if (/^(done|yes|сделан|выполн|да)/.test(v)) up.done.push({ n, note: stepText(cols[3], 160) });
             else if (/^(fail|failed|no|сорв|провал|нет)/.test(v)) up.fail.push({ n, note: stepText(cols[3], 160) });
+            // момент упущен: сцена ушла дальше, шаг больше не к месту
+            else if (/^(miss|missed|passed|gone|drop|stale|упущ|прош|неакту)/.test(v)) up.missed.push({ n });
         } else if (k === 'DONE' || k === 'FAIL') {
             const n = num(cols[1]);
             if (n != null) (k === 'DONE' ? up.done : up.fail).push({ n, note: stepText(cols[2], 160) });
@@ -415,6 +419,18 @@ export function parseDateUp(text) {
             // NEW | шаг | мысль {{char}} (прежний вид: NEW | шаг | char|both)
             const who = /^(char|both|user|чар|оба|вместе)$/i.test(String(rest[1] || '').trim());
             if (t) up.add.push({ t, thought: stepText(who ? rest[2] : rest[1], 140) });
+        } else if (k === 'MISSTEP') {
+            // MISSTEP | что сделал {{char}} | small|big — {{user}} это явно не понравилось
+            const t = stepText(cols[1], 140);
+            if (t) up.missteps.push({ t, big: /^(big|serious|bad|сильн|серьёз|серьез|круп)/i.test(String(cols[2] || '').trim()) });
+        } else if (k === 'KNOW') {
+            // KNOW | char|user | факт — новая сжатая сводка того, что они знают друг о друге (заменяет прежнюю)
+            const w = String(cols[1] || '').toLowerCase();
+            const fact = stepText(cols[2], 120);
+            if (fact && /^(char|user|чар|юзер)/.test(w)) {
+                up.know = up.know || { char: [], user: [] };
+                up.know[/^(char|чар)/.test(w) ? 'char' : 'user'].push(fact);
+            }
         } else if (k === 'LEARN') {
             // LEARN | char | что {{char}} узнал о {{user}} · LEARN | user | что {{user}} узнал о {{char}}
             // кто узнал: char / user — или имя (сверяется с именами при разборе в index.js)
