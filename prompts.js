@@ -288,9 +288,9 @@ const paceText = (ctx, d) => ({
     fast: `fast-burn: bolder, quicker steps toward closeness`,
 }[d?.pace] || `an even pace: closeness grows step by step, as the story allows`);
 /** Чем должны быть шаги: заметные шаги к цели, разные по виду, каждый вырастает из предыдущего */
-const stepFlow = (ctx, d) => `Steps are beats toward the goal, not tiny gestures: each is a different kind of closeness — physical (a touch, an embrace, a kiss) or spoken (a question, a confession, a compliment, a shared memory), mixed as the goal needs; never two open steps of the same kind (not two touches of the hand, not two talks), never the same act in other words. A new step grows out of what was just done — it carries that moment one step further, the way the scene is going. Pace: ${paceText(ctx, d)}.`;
+const stepFlow = (ctx, d) => `Steps are beats toward the goal, not tiny gestures: each is a different kind of closeness — physical or spoken, mixed as the goal needs; never two open steps of the same kind, never the same act in other words. They go from general to particular and from gentle to bolder: early on — getting to know each other, light and easy; closer and bolder only as the story gets there. Build ONLY on what the story has already shown: never on something about ${ctx.userName} the story hasn't revealed yet (what ${ctx.userName} does, likes, feels or has lived through) — first find it out, then the next step may build on the answer. A new step grows out of what was just done or learned. Pace: ${paceText(ctx, d)}.`;
 /** Как писать шаг свидания: задача для {{char}}, одна форма — глагол в неопределённой форме + что / кому */
-const stepForm = (ctx) => `Each step is a task for ${ctx.charName} to carry out next — written as a to-do: ${ctx.lang === 'Russian' ? 'an infinitive verb first, then whom / what (like a to-do list item)' : 'a bare verb first, then whom / what (like a to-do list item)'}, 3–8 words, real names; never narration — no past, present or future tense, no "${ctx.charName} will…", no "${ctx.charName} does…". Only ${ctx.charName}'s own actions — never a step for ${ctx.userName} or for both of them: what ${ctx.userName} does is the player's choice.`;
+const stepForm = (ctx) => `Each step is a short, general task for ${ctx.charName}, like a to-do item: ${ctx.lang === 'Russian' ? 'an infinitive verb first' : 'a bare verb first'}, 2–5 words, no names unless needed, no details of how (the props, the exact movement, the words — ${ctx.charName} decides that in the story); never narration — no past, present or future tense, no "${ctx.charName} will…". Only ${ctx.charName}'s own actions — never a step for ${ctx.userName} or for both: what ${ctx.userName} does is the player's choice. The third field of a NEW line: ${ctx.charName}'s brief private thought about that step, in ${ctx.charName}'s own voice, manner and words as the card and the story's style have them, under 10 words — honest and in the moment, not a description.`;
 const whoName = (ctx, w) => (w === 'user' ? ctx.userName : w === 'char' ? ctx.charName : 'either of them');
 /** Когда назначено — словами для модели */
 export function dateAtText(state, at) {
@@ -344,7 +344,7 @@ function dateUpRule(ctx, main = false) {
     const lang = langOf(ctx);
     const scope = main ? 'in this reply' : 'in the messages marked [NEW]';
     if (d.status === 'scheduled') {
-        return `<!-- HT-DATE-UP\nSTART\nNEW | <task for ${charName}>\n-->\nFill in the lines, never copy the <…> placeholders. Only if the date "${d.title}" (planned ${dateAtText(state, d.at)}; goal: ${d.goal || 'to be together'}) has actually begun ${scope}: START, then ${DATE_OPEN} NEW first steps toward the goal. ${stepFlow(ctx, d)} ${stepForm(ctx)} Never chores or anything off the date. Otherwise write nothing.`;
+        return `<!-- HT-DATE-UP\nSTART\nNEW | <task for ${charName}> | <${charName}'s thought>\n-->\nFill in the lines, never copy the <…> placeholders. Only if the date "${d.title}" (planned ${dateAtText(state, d.at)}; goal: ${d.goal || 'to be together'}) has actually begun ${scope}: START, then ${DATE_OPEN} NEW first steps toward the goal. ${stepFlow(ctx, d)} ${stepForm(ctx)} Never chores or anything off the date. Otherwise write nothing.`;
     }
     const open = openSteps(d);
     const list = open.map(s => `${s.n}. ${s.t}`).join('\n');
@@ -355,7 +355,7 @@ function dateUpRule(ctx, main = false) {
     return `<!-- HT-DATE-UP
 STATE | <on, ending or over> | <why, a few words>
 STEP | <number> | <done, failed or open> | <what came of it>
-NEW | <task for ${charName}>
+NEW | <task for ${charName}> | <${charName}'s thought>
 MOMENT | <what happened>
 GIFT | <who gave> | <the thing given>
 MOOD | <up or down>
@@ -390,7 +390,7 @@ export function buildDateRefillMessages(ctx, src, k) {
             src.card && `[${charName}]\n${src.card}`,
             `[Story — latest messages]\n${src.story || '—'}`,
             `The date: ${d.title}${d.where ? `, ${d.where}` : ''}; goal: ${d.goal || '—'}.\nStill open:\n${open || '—'}\nAlready done or tried:\n${done || '—'}`,
-            `Write exactly ${k} line${k > 1 ? 's' : ''} like:\nNEW | <task for ${charName}>\nEach leads toward the goal and grows out of the last thing done and what is happening right now. ${stepFlow(ctx, d)} Never chores or anything off the date. ${stepForm(ctx)}${(d.rejected || []).length ? ` Rejected as repeats — don't send again: ${d.rejected.slice(-4).join(' / ')}.` : ''} In ${langOf(ctx)}.`,
+            `Write exactly ${k} line${k > 1 ? 's' : ''} like:\nNEW | <task for ${charName}> | <${charName}'s thought>\nEach leads toward the goal and grows out of the last thing done and what is happening right now. ${stepFlow(ctx, d)} Never chores or anything off the date. ${stepForm(ctx)}${(d.rejected || []).length ? ` Rejected as repeats — don't send again: ${d.rejected.slice(-4).join(' / ')}.` : ''} In ${langOf(ctx)}.`,
         ].filter(Boolean).join('\n\n') },
     ];
 }

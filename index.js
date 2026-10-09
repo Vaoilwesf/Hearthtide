@@ -760,16 +760,17 @@ function processReply(N) {
         dd.pace = ps !== 'auto' ? ps : (dd.paceAuto ?? (dd.paceAuto = paceAuto(state.pair?.r)));
         dd.need = goalNeed(lvl, dd.pace);
         // один раз: открытые шаги из прошлых версий — не задачи («Лёша уберёт…») или повторы одного вида — убираем, места дозапросим
-        if (!dd.taskV) {
-            const c = getCharName();
+        if ((dd.taskV || 0) < 2) {
+            const c = getCharName(), u = getUserName();
             const kept = [];
             for (const st of openSteps(dd)) {
                 const kinds = stepKinds(st.t);
                 const dup = kinds.length && kept.some(k => stepKinds(k.t).some(x => kinds.includes(x)));
-                if (taskForm(st.t, c) && !dup) kept.push(st);
+                const short = taskForm(st.t, c, u);
+                if (short && !dup) { st.t = short; kept.push(st); }
                 else { st.state = 'dropped'; console.info(`[Hearthtide] свидание: старый шаг убран (${dup ? 'повтор' : 'не задача'}): ${st.t}`); }
             }
-            dd.taskV = 1;
+            dd.taskV = 2;
         }
         // Конец свидания — только по истории: «подходит к концу» → конец, или таймскип. Одно «over» без предпосылок
         // лишь помечает «подходит к концу»; конец — если следующий ответ его подтвердит. Так свидание не обрывается.
@@ -1082,10 +1083,29 @@ function acceptInto(st, d) {
  * Шаг свидания — в форме задачи: глагол в неопределённой форме впереди (можно после наречия), без имени {{char}} в начале.
  * Не подходит — null (такой шаг не принимаем, на его место дозапрашиваем новый).
  */
-function taskForm(t, charName) {
+function taskForm(t, charName, userName = '') {
     let x = String(t || '').trim().replace(/[.;!]+$/, '');
     if (!x) return null;
+    // подробности «как именно» после запятой — пусть решает {{char}} в ролплее: «Коснуться пальцев, пододвигая…» → «Коснуться пальцев»
+    // режем только хвост-подробность (деепричастие, «чтобы», «-ing»); «что / как / почему» — это суть шага, остаётся
+    const m = x.match(/^(.+?)\s*[,—–:(]\s*(\S+)/);
+    if (m && m[1].split(/\s+/).length >= 2
+        && (/^(чтобы|while|so|to|by)$/i.test(m[2]) || /[а-яё]+(?:я|ясь|ав|ив|ыв|яв|вши|вшись)$/i.test(m[2]) || /^[a-z]+ing$/i.test(m[2]))) x = m[1].trim();
+    // имя {{user}} в каждом шаге не нужно: «Коснуться пальцев Нины» → «Коснуться пальцев»
+    const un = String(userName || '').toLowerCase().replace(/ё/g, 'е').split(/\s+/)[0];
+    if (un.length >= 3) {
+        const stem = un.length > 3 ? un.slice(0, -1) : un;
+        const isName = (w) => { const v = w.toLowerCase().replace(/ё/g, 'е').replace(/[^\p{L}]/gu, ''); return v.startsWith(stem) && v.length <= stem.length + 3; };
+        // только в конце шага — из середины имя не вырезаем, иначе ломается смысл
+        const out = x.split(/\s+/);
+        if (isName(out[out.length - 1])) {
+            out.pop();
+            if (/^(к|ко|с|со|у|для|о|об|обо|на|за|от|перед|to|with|for)$/i.test(out[out.length - 1] || '')) out.pop();   // «рядом с Ниной» → «рядом»
+            if (out.length >= 2) x = out.join(' ');
+        }
+    }
     const words = x.split(/\s+/);
+    if (words.length > 6) return null;                     // шаг — коротко и общо
     const first = words[0].toLowerCase().replace(/ё/g, 'е');
     const cname = String(charName || '').toLowerCase().replace(/ё/g, 'е');
     if (cname && first.startsWith(cname.slice(0, Math.max(3, cname.length - 2)))) return null;
@@ -1103,9 +1123,9 @@ function tidyDateUp(up) {
         .replace(/\s*\((?:user|char|both|юзер|чар|оба|вместе|игрок)\)\s*/gi, ' ').replace(/\s{2,}/g, ' ').trim() || null : null);
     const ok = (t) => (t && langOk(t) ? t : null);
     // шаг — задача для {{char}}: «Подарить Анне венок», а не «Ярослав дарит / подарит / подарил»
-    const added = (up.add || []).map(a => ok(fix(a.t))).filter(Boolean);
-    up.add = added.map(t => ({ t: taskForm(t, c), who: 'char' })).filter(a => a.t);
-    const bad = added.filter(t => !taskForm(t, c));
+    const added = (up.add || []).map(a => ({ t: ok(fix(a.t)), thought: ok(fix(a.thought)) })).filter(a => a.t);
+    up.add = added.map(a => ({ t: taskForm(a.t, c, u), thought: a.thought ? a.thought.replace(/^[«"“*_]+|[»"”*_]+$/g, '') : null, who: 'char' })).filter(a => a.t);
+    const bad = added.filter(a => !taskForm(a.t, c, u)).map(a => a.t);
     if (bad.length) console.info(`[Hearthtide] свидание: шаги не в форме задачи — пропущены, дозапрошу: ${bad.join(' / ')}`);
     for (const x of [...(up.done || []), ...(up.fail || [])]) x.note = ok(fix(x.note));
     for (const k of ['vibe', 'thought', 'recap', 'best', 'why']) up[k] = ok(fix(up[k]));
@@ -2416,7 +2436,7 @@ function dateCardHtml() {
     const g = d.goalDone ? 'done' : goalOpen(d, lvl) ? 'open' : 'locked';
     const open = openSteps(d);
     const step = (x, cls = '') => `<button class="ht-date-step ht-who-${x.who} ${cls}" data-act="date-step" data-n="${x.n}"${x.state !== 'open' ? ' disabled tabindex="-1"' : ''}>
-        <i class="fa-${x.state === 'done' ? 'solid fa-heart' : x.state === 'failed' ? 'solid fa-heart-crack' : 'regular fa-heart'}"></i><span>${esc(x.t)}</span></button>`;
+        <i class="fa-${x.state === 'done' ? 'solid fa-heart' : x.state === 'failed' ? 'solid fa-heart-crack' : 'regular fa-heart'}"></i><span>${esc(x.t)}${x.thought && x.state === 'open' ? `<small class="ht-step-thought">${esc(x.thought)}</small>` : ''}</span></button>`;
     const slots = [];
     // закрытый в этом ответе шаг остаётся видимым зачёркнутым до следующего ответа, новый встаёт под ним
     for (let i = 0; i < DATE_OPEN; i++) {
@@ -2436,7 +2456,7 @@ function dateCardHtml() {
         : L().goalHow.locked(L0.steps, Math.min(done, L0.steps), L0.score, d.score);
     const goalBox = d.goal ? `<div class="ht-dgoal ht-goal-${g}">
             <div class="ht-dgoal-head"><i class="fa-solid fa-bullseye"></i><span>${L().dateGoalMain}</span><em>${esc(L().goalState[g])}</em></div>
-            <p class="ht-dgoal-text">${esc(d.goal)}</p>
+            <p class="ht-dgoal-text">${esc(d.goal.charAt(0).toUpperCase() + d.goal.slice(1))}</p>
             <p class="ht-dgoal-how"><i class="fa-solid ${g === 'done' ? 'fa-circle-check' : g === 'open' ? 'fa-lock-open' : 'fa-lock'}"></i><span>${esc(goalHow)}</span></p>
         </div>` : '';
     // ход свидания — свёрнут: для памяти, инфоблок не растягивает

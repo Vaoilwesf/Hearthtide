@@ -412,7 +412,9 @@ export function parseDateUp(text) {
             let rest = cols.slice(1);
             if (rest.length > 1 && /^\s*\d{1,3}\s*$/.test(rest[0])) rest = rest.slice(1);
             const t = stepText(rest[0], 120);
-            if (t) up.add.push({ t, whoRaw: clean(rest[1], 40) });
+            // NEW | шаг | мысль {{char}} (прежний вид: NEW | шаг | char|both)
+            const who = /^(char|both|user|чар|оба|вместе)$/i.test(String(rest[1] || '').trim());
+            if (t) up.add.push({ t, thought: stepText(who ? rest[2] : rest[1], 140) });
         } else if (k === 'MOMENT') {
             const t = stepText(cols.slice(1).join(' — '), 160);
             if (t) up.moments.push(t);

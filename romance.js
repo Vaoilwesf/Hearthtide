@@ -25,9 +25,10 @@ export function goalNeed(level, pace) {
 /** Главная цель — коротко и общо: длинную обрезаем по первой запятой или «и» */
 export function shortGoal(g) {
     const x = String(g || '').trim().replace(/[.;!]+$/, '');
-    if (!x || x.split(/\s+/).length <= 6) return x || null;
+    const cap = (v) => (v ? v.charAt(0).toUpperCase() + v.slice(1) : null);
+    if (!x || x.split(/\s+/).length <= 6) return cap(x);
     const cut = x.split(/,|\s+(?:и|а также|чтобы|and|so that|to help)\s+/i)[0].trim();
-    return cut.split(/\s+/).length >= 2 ? cut : x;
+    return cap(cut.split(/\s+/).length >= 2 ? cut : x);
 }
 
 // ─── Виды шагов: два открытых шага одного вида — повтор («накрыть ладонь» и «положить ладонь на руку») ───
@@ -106,7 +107,7 @@ export function newDate(d, turn, started) {
         status: started ? 'active' : 'offered',
         turn, startTurn: started ? turn : null, lastUpdate: turn, result: null,
     };
-    if (started) for (const s of d.steps || []) addStep(date, s.t, s.who, turn);
+    if (started) for (const s of d.steps || []) addStep(date, s.t, s.who, turn, s.thought);
     return date;
 }
 
@@ -129,7 +130,7 @@ function freeSlot(d) {
     for (let i = 0; i < DATE_OPEN; i++) if (!used.has(i)) return i;
     return -1;
 }
-function addStep(d, t, who, turn) {
+function addStep(d, t, who, turn, thought = null) {
     if (!t) return false;
     const slot = freeSlot(d);
     if (slot < 0) return false;
@@ -137,7 +138,7 @@ function addStep(d, t, who, turn) {
     // тот же вид, что уже открытый шаг, или почти дословный повтор недавнего — не ставим, место дозапросим
     if (stepRepeats(d, t)) { d.rejected = [...(d.rejected || []), t].slice(-6); return false; }
     // шаги — только действия {{char}}: что делает {{user}}, решает игрок
-    d.steps.push({ n: d.nextN++, t, who: 'char', state: 'open', slot, turn, note: null });
+    d.steps.push({ n: d.nextN++, t, who: 'char', state: 'open', slot, turn, note: null, thought: thought || null });
     return true;
 }
 
@@ -166,7 +167,7 @@ export function applyDateUp(d, up, turn, level) {
     };
     for (const x of up.done || []) close(x, 'done', L.step);
     for (const x of up.fail || []) close(x, 'failed', L.fail);
-    for (const a of up.add || []) if (addStep(d, a.t, a.who, turn)) moved = true;
+    for (const a of up.add || []) if (addStep(d, a.t, a.who, turn, a.thought)) moved = true;
     // значимое вне шагов (признание, поцелуй, смелый жест) — тоже засчитывается
     for (const m of (up.moments || []).slice(0, DATE_MOMENTS)) {
         if (d.log.some(x => x.kind === 'moment' && normT(x.t) === normT(m))) continue;
