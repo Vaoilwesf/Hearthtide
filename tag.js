@@ -72,6 +72,8 @@ export function parseSmall(text, name = 'HT') {
         // {{char}} и {{user}}: дружба / романтика −100…100 и коротко, как они сейчас
         bond: parseBond(f.bond, inner),
         bondNote: clean(f.bond_note, 60),
+        // {{char}} и {{user}} — родня друг другу (брат и сестра, родитель и ребёнок…): без романтики и свиданий
+        bondKin: /^(yes|true|да)/i.test(String(f.bond_kin || '').trim()) ? true : /^(no|false|нет)/i.test(String(f.bond_kin || '').trim()) ? false : null,
         // свидание: какой шаг сделан, как идёт, кончилось ли
         dateStep: (String(f.date_step || '').match(/\d+/g) || []).map(Number).filter(n => n >= 1 && n <= 6),
         dateMood: /^up|^better|^лучш|^\+/i.test(String(f.date_mood || '').trim()) ? 1 : /^down|^worse|^хуж|^-/i.test(String(f.date_mood || '').trim()) ? -1 : 0,

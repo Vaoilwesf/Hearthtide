@@ -717,7 +717,9 @@ function processReply(N) {
         if (sm.bondNote && !langOk(sm.bondNote)) slip = true;
         const prev = state.pair;
         if (prev && sm.bond.f <= prev.f - 15) state.pairDrop = state.turn;       // заметно поссорились
-        state.pair = { scale: 2, f: sm.bond.f, r: sm.bond.r, note: sm.bondNote && langOk(sm.bondNote) ? sm.bondNote : prev?.note || null };
+        // родня друг другу — романтики нет; отметка держится, пока модель или игрок её не снимут
+        const kin = sm.bondKin != null ? sm.bondKin : !!prev?.kin;
+        state.pair = { scale: 2, f: sm.bond.f, r: kin ? 0 : sm.bond.r, kin, note: sm.bondNote && langOk(sm.bondNote) ? sm.bondNote : prev?.note || null };
         state.lastBondTurn = state.turn;
         state.bondMiss = 0;
     } else if (!state.pair && (small || sideRec)) {
@@ -2601,7 +2603,7 @@ function castTabHtml(view, live) {
         <b class="ht-cc-name">${esc(c)}</b>
         <div class="ht-pair-bars">
             <div class="ht-mini" title="${esc(`${L().friendship}: ${signed(pr.f)} · ${L().rel[relLevel(pr.f)]}`)}"><span class="ht-mini-row"><i class="fa-solid fa-handshake ht-mini-ico"></i>${esc(L().friendship)}<b>${signed(pr.f)}</b></span>${barHtml(pr.f)}</div>
-            <div class="ht-mini ht-mini-rom" title="${esc(`${L().romance}: ${signed(pr.r)} · ${L().rom[rl]}`)}"><span class="ht-mini-row"><i class="fa-solid fa-heart ht-mini-ico"></i>${esc(L().romance)}<b>${signed(pr.r)}</b></span>${barHtml(pr.r)}</div>
+            ${pr.kin ? '' : `<div class="ht-mini ht-mini-rom" title="${esc(`${L().romance}: ${signed(pr.r)} · ${L().rom[rl]}`)}"><span class="ht-mini-row"><i class="fa-solid fa-heart ht-mini-ico"></i>${esc(L().romance)}<b>${signed(pr.r)}</b></span>${barHtml(pr.r)}</div>`}
         </div>
         <details class="ht-cc-status"><summary>${L().status}<i class="fa-solid fa-chevron-down"></i></summary>
             <p>${esc(pr.unknown ? L().pairUnknown : pr.note || `${L().rel[relLevel(pr.f)]} · ${L().rom[rl]}`)}</p>
@@ -2615,13 +2617,15 @@ function castTabHtml(view, live) {
         const key = `cast:${p.id}`;
         const d = p.bdayIn;
         const near = d != null && d <= 30 ? (d === 0 ? ' ht-bd-today' : d <= 7 ? ' ht-bd-near' : ' ht-bd-soon') : '';
-        const name = p.name || L().noName;
-        const roles = [p.toU && `${u}: ${p.toU}`, p.toC && `${c}: ${p.toC}`].filter(Boolean);
+        // имя история ещё не назвала — подпись по роли («Мать Нины»), а не «без имени»
+        const byU = !p.name && !!p.toU, byC = !p.name && !p.toU && !!p.toC;
+        const name = p.name || (byU ? L().roleOf(p.toU, u) : byC ? L().roleOf(p.toC, c) : L().noName);
+        const roles = [!byU && p.toU && `${u}: ${p.toU}`, !byC && p.toC && `${c}: ${p.toC}`].filter(Boolean);
         const romSet = p.rom?.user || p.rom?.char;
         const confirm = ui.confirmDel === key;
         return `<div class="ht-cc${near}${p.off ? ' ht-cc-off' : ''}" data-cid="${esc(p.id)}">
             <div class="ht-cc-top">${avaHtml(ava[p.id], name)}${romSet ? `<i class="fa-solid fa-heart ht-cc-heart" title="${esc([p.rom.user && `${u}: ${L().rom[p.rom.user]}`, p.rom.char && `${c}: ${L().rom[p.rom.char]}`].filter(Boolean).join(' · '))}"></i>` : ''}</div>
-            <b class="ht-cc-name${p.name ? '' : ' ht-cc-noname'}">${esc(name)}</b>
+            <b class="ht-cc-name${p.name ? '' : ' ht-cc-noname'}"${p.name ? '' : ` title="${esc(L().nameUnknown)}"`}>${esc(name)}</b>
             ${roles.length ? `<span class="ht-cc-role">${roles.map(esc).join('<br>')}</span>` : ''}
             ${d != null && d <= 30 ? `<span class="ht-cc-bd"><i class="fa-solid fa-cake-candles"></i>${esc(L().bdayIn(d, daysWord))}</span>` : ''}
             <div class="ht-cc-bars">${miniBar(uA, u, p.rel?.user ?? 0, p.note?.user)}${miniBar(cA, c, p.rel?.char ?? 0, p.note?.char)}</div>
@@ -2896,8 +2900,8 @@ function removeCast(cid) {
 
 // ─── Пара {{char}} и {{user}}: правка игроком ───
 // Ответы до правки её не перезаписывают (свайп, повторная обработка); дальше модель ведёт пару от новых значений
-function savePair(f, r, note) {
-    const pair = { scale: 2, f: clampRel(f) ?? 0, r: clampRel(r) ?? 0, note: String(note || '').trim().slice(0, 60) || null };
+function savePair(f, r, note, kin = false) {
+    const pair = { scale: 2, f: clampRel(f) ?? 0, r: kin ? 0 : clampRel(r) ?? 0, kin: !!kin, note: String(note || '').trim().slice(0, 60) || null };
     state.pairSet = { pair, at: lastProcessedMsg() };
     state.pair = clone(pair);
     state.lastBondTurn = state.turn;
@@ -2931,7 +2935,8 @@ function openPairEditorRaw() {
         <div class="ht-edit ht-pair-edit">
             <span class="ht-portrait ht-portrait-lg">${avaHtml(charAvatarUrl(), c)}<span class="ht-ava-pin">${avaHtml(userAvatarUrl(), u, 'ht-ava-round')}</span></span>
             ${range('f', 'fa-handshake', L().friendship, pr.f)}
-            ${range('r', 'fa-heart', L().romance, pr.r)}
+            <label class="ht-pair-kin"><input type="checkbox" data-ed="kin" ${pr.kin ? 'checked' : ''}>${esc(L().pairKin)}</label>
+            <div class="ht-pair-rom"${pr.kin ? ' hidden' : ''}>${range('r', 'fa-heart', L().romance, pr.r)}</div>
             <label>${esc(L().pairNote)}<input class="text_pole" data-ed="note" value="${esc(pr.note || '')}" maxlength="60"></label>
             <div class="ht-edit-actions">
                 <button type="button" class="ht-btn" data-act="edit-cancel">${L().cancel}</button>
@@ -2941,6 +2946,7 @@ function openPairEditorRaw() {
     const val = (k) => wrap.querySelector(`[data-ed="${k}"]`)?.value ?? '';
     wrap.addEventListener('input', (e) => {
         const k = e.target?.dataset?.ed;
+        if (k === 'kin') { const r = wrap.querySelector('.ht-pair-rom'); if (r) r.hidden = e.target.checked; return; }
         if (k !== 'f' && k !== 'r') return;
         const out = wrap.querySelector(`[data-out="${k}"]`);
         if (out) out.textContent = `${signed(+e.target.value)} · ${word(k, +e.target.value)}`;
@@ -2950,7 +2956,7 @@ function openPairEditorRaw() {
         const t = e.target.closest('[data-act]');
         if (!t) return;
         if (t.dataset.act === 'edit-cancel') closeCastEditor();
-        else if (t.dataset.act === 'pair-save') { savePair(val('f'), val('r'), val('note')); closeCastEditor(); }
+        else if (t.dataset.act === 'pair-save') { savePair(val('f'), val('r'), val('note'), !!wrap.querySelector('[data-ed="kin"]')?.checked); closeCastEditor(); }
     });
     wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); closeCastEditor(); } });
     wrap.addEventListener('cancel', (e) => { e.preventDefault(); closeCastEditor(); });

@@ -249,6 +249,7 @@ export function dateChanceInfo(state, turn, base = DATE_CHANCE.base) {
     if (!base) return { chance: 0, why: 'off' };
     const p = state.pair;
     if (!p) return { chance: 0, why: 'nopair' };
+    if (p.kin) return { chance: 0, why: 'kin' };
     if (p.r < DATE_ROM_MIN) return { chance: 0, why: 'norom', r: p.r };
     if (['active', 'offered', 'scheduled', 'pending'].includes(state.date?.status)) return { chance: 0, why: state.date.status };
     const left = DATE_COOLDOWN - (turn - (state.lastDateEnd ?? -99));

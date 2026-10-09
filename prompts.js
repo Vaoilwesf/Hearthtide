@@ -170,7 +170,9 @@ export function buildStatePrompt(ctx) {
     if (state.dateDeclined?.turn >= state.turn) lines.push(`${userName} said no to the date (${state.dateDeclined.title}) — ${charName} takes it in ${charName}'s own way.`);
 
     // {{char}} и {{user}}: как они сейчас
-    if (state.pair) lines.push(`${charName} and ${userName}: friendship ${state.pair.f}, romance ${state.pair.r} (both −100…100, 0 neutral)${state.pair.note ? ` — ${state.pair.note}` : ''}.`);
+    if (state.pair) lines.push(state.pair.kin
+        ? `${charName} and ${userName} are family to each other: closeness ${state.pair.f} (−100…100, 0 neutral)${state.pair.note ? ` — ${state.pair.note}` : ''}; no romance between them.`
+        : `${charName} and ${userName}: friendship ${state.pair.f}, romance ${state.pair.r} (both −100…100, 0 neutral)${state.pair.note ? ` — ${state.pair.note}` : ''}.`);
     // Свидание: намечено (понимание, что скоро; напомнить, только если {{char}} о нём забыл) или идёт (шаги {{char}} и общие)
     lines.push(...dateStateLines(ctx));
 
@@ -223,17 +225,30 @@ function easterHint(ctx) {
 }
 
 /** Модель сказала, что живут без веры — церковных праздников и Пасхи не предлагаем */
-const noFaith = (state) => /(none|no faith|secular|atheis|non-?religious|нет\b|нету|без веры|светск|атеи|неверу|нерелиги)/i.test(String(state.setting?.faith || ''));
+const noFaith = (state) => /(none|no faith|not stated|unknown|unstated|secular|atheis|non-?religious|нет\b|нету|без веры|не указ|не упомин|неизвест|светск|атеи|неверу|нерелиги)/i.test(String(state.setting?.faith || ''));
+
+/** Как определить веру: в наши дни — только веру самих персонажей; в истории и других мирах — веру того времени и места */
+function faithRule(ctx) {
+    const lang = langOf(ctx);
+    const modern = `if the story is in our real world today: the faith these characters themselves live by, only if the card, persona, lore or story says so — otherwise write "not stated" (in ${lang}); never assume one from the country`;
+    const past = `in history or another world: the faith(s) people of that time and place live by, as the setting has them`;
+    if (ctx.eraMode === 'modern') return modern.replace(/^if the story is in our real world today: /, '');
+    if (ctx.eraMode === 'ancient') return past.replace(/^in history or another world: /, '');
+    return `${modern}; ${past}`;
+}
 
 // ─── Какие праздники брать: зависит от эпохи (настройка чата) и веры (её определяет модель по началу чата) ───
 function holidayGuide(ctx) {
-    if (ctx.eraMode !== 'modern') {
-        return `The setting decides the calendar: card, world info and lore first, history second. Weigh faiths as the setting does — old gods, spirits or magic get their nights and rites on par with church feasts; include folk, seasonal and local customs.`;
-    }
+    const past = `The setting decides the calendar: card, world info and lore first, history second. Weigh faiths as the setting does — old gods, spirits or magic get their nights and rites on par with church feasts; include folk, seasonal and local customs.`;
+    // вера — персонажей, а не страны: «в России все православные» не повод для церковного календаря
     const faith = noFaith(ctx.state)
-        ? `No religious feasts — these characters and the people around them live without a faith.`
-        : `Religious feasts: only if the characters or the people around them actually live by a faith, as the card, persona and story show — then only the biggest feasts of that faith (e.g. Orthodox Christmas on Jan 7, Easter on its correct date that year), not every church feast; if nothing shows a faith, none.`;
-    return `MODERN SETTING: only what most people in this country actually celebrate today — major public holidays and days off, big festive days everyone knows, and personal dates. Skip minor official days, professional days, awareness and memorial days, and niche imported holidays, unless one matters to these characters personally. For Russia, for example: New Year (Dec 31 and the January holidays), Defender of the Fatherland Day (Feb 23), International Women's Day (Mar 8), Spring and Labour Day (May 1), Victory Day (May 9), Russia Day (Jun 12), National Unity Day (Nov 4); also widely kept: Valentine's Day, Maslenitsa, Knowledge Day (Sep 1). ${faith} Take the character card and lore into account.`;
+        ? `Religious feasts: none of the church calendar — only the one or two the whole country marks as public days off.`
+        : `Religious feasts: only if the card, persona, lore or story shows THESE characters living by a faith — then only the biggest feasts of that faith (e.g. Orthodox Christmas on Jan 7, Easter on its correct date that year). The country's majority faith alone is not a reason. Never minor church feasts (saints' days, feasts of the Virgin and the like).`;
+    const modern = `MODERN SETTING: only what most people in this country actually celebrate today — major public holidays and days off, big festive days everyone knows, and personal dates. Skip minor official days, professional days, awareness and memorial days, and niche imported holidays, unless one matters to these characters personally. For Russia, for example: New Year (Dec 31 and the January holidays), Defender of the Fatherland Day (Feb 23), International Women's Day (Mar 8), Spring and Labour Day (May 1), Victory Day (May 9), Russia Day (Jun 12), National Unity Day (Nov 4); also widely kept: Valentine's Day, Maslenitsa, Knowledge Day (Sep 1). ${faith} Take the character card and lore into account.`;
+    if (ctx.eraMode === 'modern') return modern;
+    if (ctx.eraMode === 'ancient') return past;
+    // эпоха ещё не определена — модель решает сама, и для наших дней действуют правила современности
+    return `First decide where the story is set. If it is our real world today: ${modern} Otherwise (history, fantasy, other worlds): ${past}`;
 }
 
 // Список людей — общий текст для подготовки и обновлений
@@ -260,7 +275,7 @@ function castRule(ctx) {
 C | NAME | GROUP | TO_USER | TO_CHAR | BIRTHDAY | WITH_USER | WITH_CHAR | HOW_USER | HOW_CHAR
 R | NAME | WITH_USER | WITH_CHAR | HOW_USER | HOW_CHAR
 -->
-C: people of the story not in the list yet (not ${userName}, not ${charName}), once each. NAME: the person's own name only — never a role as a name; if the story hasn't named them yet, write ?. GROUP: kin_user (${userName}'s own blood family) | kin_char (${charName}'s own blood family) | kin_both (family to both: their shared children or grandchildren, or a child of one whom the other raises or treats as their own — TO_USER and TO_CHAR then say who they are to each) | friend | acquaintance | other. TO_USER / TO_CHAR: who they are to ${userName} and to ${charName}, a word or two each, in ${langOf(ctx)}. Work out kinship from the card, persona, lore and story — never guess what they don't support. BIRTHDAY: DD.MM or DD.MM.YYYY only if stated, else empty. WITH_USER / WITH_CHAR: how they get on, −100 (enmity) … 0 (neutral) … 100 (very close). HOW_USER / HOW_CHAR: how they are with each, 2–4 words of your own, specific to these two people — not a generic label, in ${langOf(ctx)}.
+C: people of the story not in the list yet (not ${userName}, not ${charName}), once each. NAME: the person's own name only — never a role as a name; if the story hasn't named them yet, write ? — but add such an unnamed person only if they are close kin or have actually appeared in the story. GROUP: kin_user (${userName}'s own blood family) | kin_char (${charName}'s own blood family) | kin_both (family to both: their shared children or grandchildren, or a child of one whom the other raises or treats as their own — TO_USER and TO_CHAR then say who they are to each) | friend | acquaintance | other. TO_USER / TO_CHAR: who they are to ${userName} and to ${charName}, a word or two each, in ${langOf(ctx)}; leave it empty if there is no tie — never "nobody". Work out kinship from the card, persona, lore and story — never guess what they don't support. BIRTHDAY: DD.MM or DD.MM.YYYY only if stated, else empty. WITH_USER / WITH_CHAR: how they get on, −100 (enmity) … 0 (neutral) … 100 (very close). HOW_USER / HOW_CHAR: how they are with each, 2–4 words of your own, specific to these two people — not a generic label, in ${langOf(ctx)}.
 R: only someone whose relations clearly changed in the latest messages — the new numbers and words.${ctx.census ? `
 Census: go through the card, persona, world info and the whole story above and list everyone who matters and isn't listed yet, up to 10 C lines — kin of both sides first, then those the story names most often.` : ''}
 ${bare.length ? `Listed without roles yet: ${bare.join(', ')} — send C lines for them too, with what the story shows.\n` : ''}Leave the block out if there is nothing.${hint.length ? ` Often named in the story: ${hint.join(', ')} — add those who are people.` : ''}${known.length ? ` Already listed: ${known.join(', ')}.` : ''}${no.length ? ` Never add: ${no.join(', ')}.` : ''}`;
@@ -490,7 +505,7 @@ S | ERA_AND_YEAR | FAITH | PLACE${askMode ? ' | MODE' : ''}
 H | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP
 ${needB ? `B | user | MM-DD | PREP\nB | char | MM-DD | PREP\n` : ''}${gap ? `X | YYYY-MM-DD | NAME | TYPE\n` : ''}E | YYYY-MM-DD | DAYS | NAME | HOST | FOR | MEANING
 -->
-- S: the era by name and the year${ctx.eraMode === 'modern' ? '' : ', as people of that time would say it (our reckoning in brackets only if theirs differs)'} — not a bare date; FAITH — the faith(s) these characters and the people around them actually live by, judged from the card, persona and the start of the story; none if they live without one; PLACE — the kind of place and its proper name exactly as the story gives it (never invent a name the story doesn't use).${askMode ? ' MODE — present if the story is set in our real world today, otherwise past (history, fantasy, other worlds).' : ''}
+- S: the era by name and the year${ctx.eraMode === 'modern' ? '' : ', as people of that time would say it (our reckoning in brackets only if theirs differs)'} — not a bare date; FAITH — ${faithRule(ctx)}; PLACE — the kind of place and its proper name exactly as the story gives it (never invent a name the story doesn't use).${askMode ? ' MODE — present if the story is set in our real world today, otherwise past (history, fantasy, other worlds).' : ''}
 - H: the next 4 holidays from the current date, in date order, decided briskly${known.length ? `, continuing after: ${known.join(', ')}` : ''}. Only days people there already keep — never something still to happen in the story (a disaster, a death, a battle). ${holidayGuide(ctx)} Compute movable feasts properly for that year and calendar.${easterHint(ctx)} Occasions the story itself has set up or announced come first. Also add personal and family occasions the story gives grounds for (birthdays and name days of the characters and people close to them, weddings, anniversaries, a newborn's naming, memorial days of relatives, a housewarming) — only dates the card, lore or story actually gives, never guessed. DAYS = how many days it lasts. TYPE: religious | folk | seasonal | state | family | supernatural | fast | memorial. PREP = how many days before it people actually start getting ready or feel it coming (0 for a minor day; a great feast may be weeks). Birthdays of ${userName} and ${charName} go only in B lines, never as H; birthdays of other people are tracked separately — not as H.${needB ? `\n- B: birthdays of ${userName} and ${charName} only if the card, persona or story states them; otherwise leave that line out — never guess.` : ''}${gap ? `\n- X: holidays the time skip jumped over, ${gap.from} to ${gap.to}, by the same rules.` : ''}${ctx.passed?.length ? `\n- Already passed this year, don't repeat: ${ctx.passed.join(', ')}.` : ''}${ctx.banned?.length ? `\n- NEVER include these (the player removed them): ${ctx.banned.join(', ')}.` : ''}
 - E: ${extrasText(ctx)}
 - All of it in ${lang}: translate holiday names even if the story's world speaks another language.`;
@@ -586,7 +601,7 @@ All text values in these comments: ${lang} only.`];
     // {{char}} и {{user}}: дружба / романтика — пока не ясно, в каждом ответе; дальше — когда меняется (и изредка сверить)
     out.push(pr
         ? `Add bond=F/R | bond_note=… to the HT line when this reply changes how ${charName} and ${userName} stand (now ${pr.f}/${pr.r}${pr.note ? `, ${pr.note}` : ''})${ctx.bondStale ? ' — and THIS reply even if unchanged' : ''}.`
-        : `${ctx.bondMiss ? 'REQUIRED — your last reply had no bond. ' : ''}bond=F/R: how ${charName} and ${userName} stand now by the card, persona and story, two numbers −100…100 — friendship (enmity … 0 … very close), romance (hatred or exes … 0 none … deep love); spouses, lovers, rivals and strangers all differ. bond_note: a few words of your own, in ${lang}.`);
+        : `${ctx.bondMiss ? 'REQUIRED — your last reply had no bond. ' : ''}bond=F/R: how ${charName} and ${userName} stand now by the card, persona and story, two numbers −100…100 — friendship (enmity … 0 … very close), romance (hatred or exes … 0 none … deep love); spouses, lovers, rivals and strangers all differ. bond_note: a few words of your own, in ${lang}. If they are family to each other by blood or upbringing (siblings, parent and child and the like), add bond_kin=yes and romance 0.`);
     const dt = state.date?.status === 'active' ? state.date : null;
     // выпал шанс — ивент или приглашение на свидание начинаются прямо в этом ответе, игрок решает кнопками
     if (state.evRoll && ctx.evTarget) out.push(eventOfferRule(ctx));
@@ -706,8 +721,8 @@ export function buildSideMessages(ctx, needs, src) {
     const sk = (state.skipAsk || [])[0];
     if (needs.has('went') && sk) sf.push(`went=yes or no: ${sk.what} (${isoOf(sk.day)}) passed during a time skip after ${userName} accepted the invitation — did ${charName} and ${userName} go, as fits the story; went_note=a few words on how it went or why not`);
     if (needs.has('mean') && ctx.meaningFor) sf.push(`mean=what "${ctx.meaningFor}" is and how it is kept in this era and place, one sentence`);
-    if (needs.has('bond')) sf.push(`bond=FRIENDSHIP/ROMANCE: how ${charName} and ${userName} stand by the card, persona and story, two numbers −100…100 — friendship (enmity … 0 neutral … very close), romance (hatred or exes … 0 none … deep love); spouses, lovers, rivals and strangers all differ; bond_note=a few words on how they are now`);
-    const keys = (x) => (x.startsWith('bond=') ? 'bond=F/R | bond_note=…' : x.startsWith('went=') ? 'went=… | went_note=…' : `${x.split('=')[0]}=…`);
+    if (needs.has('bond')) sf.push(`bond=FRIENDSHIP/ROMANCE: how ${charName} and ${userName} stand by the card, persona and story, two numbers −100…100 — friendship (enmity … 0 neutral … very close), romance (hatred or exes … 0 none … deep love); spouses, lovers, rivals and strangers all differ; bond_note=a few words on how they are now; bond_kin=yes only if they are family to each other by blood or upbringing (then romance 0)`);
+    const keys = (x) => (x.startsWith('bond=') ? 'bond=F/R | bond_note=… | bond_kin=…' : x.startsWith('went=') ? 'went=… | went_note=…' : `${x.split('=')[0]}=…`);
     if (sf.length) task.push(`<!-- HT-S ${sf.map(keys).join(' | ')} -->\n${sf.map(x => `- ${x}`).join('\n')}`);
 
     if (needs.has('moments') && ctx.evTarget) {

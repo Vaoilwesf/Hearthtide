@@ -1004,3 +1004,10 @@ dialog.ht-modal:not([open]) { display: none; }
 
 /* приглашение на дополнительный праздник — иконка вместо портрета */
 .ht-ava.ht-ava-icon { font-size: 1.2em; color: var(--ht-acc); }
+
+/* безымянный человек — подпись по роли, курсивом, без многоточия */
+.ht-cc-name.ht-cc-noname { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; line-height: 1.2; }
+/* правка пары: «они родня» */
+.ht-pair-kin { flex-direction: row !important; align-items: center; gap: 8px; cursor: pointer; }
+.ht-pair-kin input { accent-color: var(--ht-acc); margin: 0; }
+.ht-pair-rom[hidden] { display: none; }

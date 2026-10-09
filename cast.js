@@ -81,6 +81,10 @@ export function romLevel(n) {
     return 'deep';
 }
 
+/** «никто», «нет», «—» в роли — значит связи нет: пустое поле */
+const NO_TIE = /^(никто|никем|нет|не родня|чужой|чужая|none|nobody|no one|no tie|n\/a|—|-)$/i;
+export const tieOf = (v) => (v && !NO_TIE.test(String(v).trim()) ? v : null);
+
 /** Разобранный HT-CAST → в состояние. Новых — добавить, известных — дополнить пустое и обновить отношения. */
 export function mergeCast(state, parsed, langOk, turn, log = null) {
     if (!parsed) return false;
@@ -90,6 +94,7 @@ export function mergeCast(state, parsed, langOk, turn, log = null) {
     for (const c of parsed.add) {
         // имя бывает на любом языке; описания не на том языке — убираем, а человека всё равно вносим
         for (const k of ['toU', 'toC', 'noteU', 'noteC']) if (c[k] && !langOk(c[k])) { c[k] = null; slip = true; }
+        c.toU = tieOf(c.toU); c.toC = tieOf(c.toC);
         if (roleName(c.name)) c.name = null;          // роль вместо имени — считаем безымянным
         if (c.name && castBanned(state, c.name)) { why(c, 'убран игроком'); continue; }
         // тот же человек: по имени — или безымянный с теми же ролями, которому теперь дали имя
@@ -147,6 +152,7 @@ export function migrateCast(state, userName, charName) {
             c.scale = 2;
         }
         if (!c.note) c.note = { user: null, char: null };
+        c.toU = tieOf(c.toU); c.toC = tieOf(c.toC);
         if (c.rom && typeof c.rom.user === 'number') c.rom = { user: null, char: null };
         if (!c.rom) c.rom = { user: null, char: null };
         // общие дети и внуки (сын или дочь обоим) раньше попадали в родню одной стороны
