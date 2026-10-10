@@ -2,7 +2,7 @@
 // Весь инджект — на английском. Значения для инфоблока ИИ пишет на выбранном языке.
 
 import { isoOf, fromDayNum, easterJulian, easterGregorian } from './dates.js';
-import { hasGifts, charDue, isIntimate, openEvent, dateHoursLeft, giftJoint, charGiftOf } from './calendar.js';
+import { hasGifts, charDue, isIntimate, openEvent, dateHoursLeft, giftJoint, charGiftOf, activeOccasions } from './calendar.js';
 import { openSteps, goalOpen, DATE_OPEN, DATE_MOMENTS } from './romance.js';
 import { ageOf, relLevel } from './cast.js';
 
@@ -118,8 +118,8 @@ function readyRule(ctx) {
     return `${READY_FORMAT(long.length)}
 Occasions being prepared:
 ${readyList(ctx)}
-Fill in the lines; never copy the <…> placeholders or field names. Only what the messages marked [NEW] actually show — never invent, predict or plan ahead; nothing already noted.
-- DONE: something someone did for that occasion (got ready, bought, cooked, decorated, invited, arranged, rehearsed): a plain fact, past tense, 3–8 words, starting with a capital letter.
+Fill in the lines; never copy the <…> placeholders or field names. Only what the messages marked [NEW] actually show — never invent, predict or plan ahead; nothing already noted. Each line goes under the occasion it was clearly done for; what was done for something not in this list (another holiday, a date, everyday life) is left out — never filed under a different occasion.
+- DONE: something someone did to get ready for that occasion (bought, cooked, decorated, invited, arranged, rehearsed): a plain fact, past tense, 3–8 words, starting with a capital letter; WHO — their name, empty if unknown.
 - GIFT: whenever someone settles on, gets (buys, makes, orders) or hands over a gift for it — ${userName}'s own too, exactly as ${userName} wrote it: the gift itself in a few words, no stage words, no "idea:".
 - OFF: only if the story clearly called it off or moved it to another day.${long.length ? `\n- SUM for ${long.map(n => `№${n}`).join(', ')}: all that is noted for it, as one short sentence.` : ''}
 Leave the block out if there is nothing new. In ${langOf(ctx)}.`;
@@ -648,7 +648,7 @@ ${needB ? `B | user | MM-DD | PREP\nB | char | MM-DD | PREP\n` : ''}${gap ? `X |
 function extrasText(ctx) {
     const { state, userName, charName } = ctx;
     const known = (state.extras || []).filter(x => state.today == null || x.start >= state.today).map(x => `${x.name} (${isoOf(x.start)})`);
-    return `up to 2 side gatherings in the next 60 days that come with the lives of ${userName} and ${charName} — something a host would invite them to: a gathering of their work, trade or guild, their regiment, crew, school or court, their community or neighbours, often tied to a coming holiday. Only what fits who they are, where they live and what they do, by the card, persona, lore and story, in this era and setting; none if their lives give no grounds. HOST: who holds it and invites; FOR: user, char or both — whom the invitation is for. Never birthdays, never a holiday already in the calendar.${known.length ? ` Already known: ${known.join(', ')}.` : ''}`;
+    return `up to 2 side gatherings in the next 60 days that come with the lives of ${userName} and ${charName} — something a host would invite them to: a gathering of their work, trade or guild, their regiment, crew, school or court, their community or neighbours, often tied to a coming holiday. Only what fits who they are, where they live and what they do, by the card, persona, lore and story, in this era and setting; none if their lives give no grounds. NAME: what the gathering is, never just a person's name; HOST: who holds it and invites; FOR: user, char or both — whom the invitation is for. Never birthdays, never a holiday already in the calendar.${known.length ? ` Already known: ${known.join(', ')}.` : ''}`;
 }
 function extrasRule(ctx) {
     return `<!-- HT-EXTRA
@@ -858,6 +858,7 @@ export function buildSideMessages(ctx, needs, src) {
     else if (evOpen) sf.push(`ev=done with ev_note=its outcome in one sentence once "${evOpen.title}" is over in the story${evOpen.kind === 'party' ? '' : `; ev=skipped if ${userName} turned away`}`);
     const sk = (state.skipAsk || [])[0];
     if (needs.has('went') && sk) sf.push(`went=yes or no: ${sk.what} (${isoOf(sk.day)}) passed during a time skip after ${userName} accepted the invitation — did ${charName} and ${userName} go, as fits the story; went_note=a few words on how it went or why not`);
+    if (needs.has('focus')) sf.push(`focus=which of today's occasions the latest messages are actually celebrating or living through: ${activeOccasions(state).map(x => `"${hName(x, ctx)}"`).join(' or ')} — exactly as quoted; leave it out if none of them`);
     if (needs.has('mean') && ctx.meaningFor) sf.push(`mean=what "${ctx.meaningFor}" is and how it is kept in this era and place, one sentence`);
     const pr = state.pair;
     if (needs.has('bond') && pr) sf.push(`bond=FRIENDSHIP/ROMANCE only if the latest messages clearly changed how ${charName} and ${userName} stand (now ${pr.f}/${pr.r}${pr.note ? `, ${pr.note}` : ''}; both −100…100); bond_note=a few words on how they are now; leave both out if nothing changed`);
@@ -879,7 +880,7 @@ goal: what the date is for — general, 2–5 words, a task. Only if the latest 
     if (needs.has('new')) {
         const known = [...(state.holidays || []).map(x => x.name), ...(ctx.offerNames || []), ...(ctx.passed || [])].filter(Boolean).slice(0, 14);
         task.push(`<!-- HT-NEW CAUSE | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP -->
-Only if the story has set up a coming occasion not yet in the calendar — someone's life event that custom marks with a celebration or rite, an announced celebration, an invitation to one, or a get-together or outing ${userName} or ${charName} agreed on or were invited to for a set day (a visit, a trip, an outing, a party). Not a date of the two of them alone — dates are tracked separately. CAUSE: what happened, a few words. Date: if the story names the day or how soon (tomorrow, in a week, on some feast), count exactly that from today; otherwise as custom suggests. TYPE: family | personal | religious | folk | memorial | gathering. One per line, at most two. Leave the block out if there is none.${known.length ? ` Already known: ${known.join(', ')}.` : ''}`);
+Only if the story has set up a coming occasion not yet in the calendar — someone's life event that custom marks with a celebration or rite, an announced celebration, an invitation to one, or a get-together or outing ${userName} or ${charName} agreed on or were invited to for a set day (a visit, a trip, an outing, a party). Not a date of the two of them alone — dates are tracked separately. CAUSE: what happened, a few words. NAME: what the occasion is, a few words (never just a person's name — who holds it goes into CAUSE or MEANING). Date: if the story names the day or how soon (tomorrow, in a week, on some feast), count exactly that from today; otherwise as custom suggests. TYPE: family | personal | religious | folk | memorial | gathering. One per line, at most two. Leave the block out if there is none.${known.length ? ` Already known: ${known.join(', ')}.` : ''}`);
     }
     if (needs.has('beat') && (h || (ctx.tracked || []).length)) {
         // что дать миру сделать в следующем ответе: шаг подготовки, которого ещё не было, — живыми людьми, вскользь;

@@ -1102,3 +1102,5 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-res-chip.ht-friendly { color: var(--ht-friend); }
 .ht-res-chip.ht-friendly.ht-res-great { color: var(--ht-friend-hot); }
 .ht-yr.ht-friendly:is(.ht-res-great, .ht-res-good) > i, .ht-yr.ht-friendly:is(.ht-res-great, .ht-res-good) > em { color: var(--ht-friend); }
+:is(.ht-ib) .ht-ready-del { margin-left: auto; flex: none; padding: 0 5px; border-radius: 5px; color: var(--ht-mute); opacity: 0.55; font-size: 0.85em; }
+:is(.ht-ib) .ht-ready-del:hover, :is(.ht-ib) .ht-ready-del:focus-visible { opacity: 1; color: var(--ht-fg); background: var(--ht-soft-2); }

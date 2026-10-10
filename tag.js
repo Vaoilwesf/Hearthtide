@@ -63,7 +63,8 @@ export function parseSmall(text, name = 'HT') {
             return ['done', 'skipped', 'joined', 'declined'].find(x => v.startsWith(x.slice(0, 4))) || null;
         })(),
         evNote: clean(f.ev_note, 300),
-        mean: clean(f.mean, 240),                                   // смысл праздника, который игрок переименовал
+        mean: clean(f.mean, 240),
+        focus: clean(f.focus, 80),                                  // какой из сегодняшних праздников празднуют в истории                                   // смысл праздника, который игрок переименовал
         giftDone: /^(true|yes|1|да)$/i.test(String(f.gift_done || '').trim()),
         giftTo: clean(f.gift_to, 60),
         // подарок {{user}} имениннику — только то, что {{user}} сам написал в своём сообщении

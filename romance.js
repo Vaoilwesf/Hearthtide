@@ -17,6 +17,17 @@ export const levelOf = (k) => DATE_LEVELS[k] || DATE_LEVELS.easy;
  */
 export const DATE_PACES = { slow: { steps: 2, score: 10 }, normal: { steps: 0, score: 0 }, fast: { steps: -2, score: -10 } };
 export const paceAuto = (r) => (r == null ? 'normal' : r < 30 ? 'slow' : r >= 70 ? 'fast' : 'normal');
+/**
+ * Насколько пара {{char}} и {{user}} может сдвинуться за один ответ (модель любит после одного тёплого вечера
+ * поставить романтику сразу на 70): романтика — по темпу, дружба — по сложности. Вниз — вдвое свободнее (ссора бывает резкой).
+ */
+export const BOND_STEP = { r: { slow: 3, normal: 6, fast: 12 }, f: { easy: 8, hard: 5 } };
+export function bondCap(level, pace) {
+    return { r: BOND_STEP.r[pace] ?? BOND_STEP.r.normal, f: BOND_STEP.f[level] ?? BOND_STEP.f.easy };
+}
+/** Итог свидания для пары: сложная — плюсы меньше, минусы больше; темп — сколько романтики даёт удачное свидание */
+const RESULT_SCALE = { level: { easy: { up: 1, down: 1 }, hard: { up: 0.6, down: 1.3 } }, pace: { slow: 0.5, normal: 1, fast: 1.5 } };
+
 /** Сколько шагов и успеха нужно, чтобы главная цель открылась: сложность + темп */
 export function goalNeed(level, pace) {
     const L = levelOf(level), P = DATE_PACES[pace] || DATE_PACES.normal;
@@ -263,7 +274,7 @@ export function resultOf(d) {
 }
 
 /** Завершить свидание: итог, перемены в отношениях */
-export function finishDate(state, turn) {
+export function finishDate(state, turn, level = 'easy', pace = null) {
     const d = state.date;
     if (!d || d.status !== 'active') return null;
     const res = resultOf(d);
@@ -273,8 +284,11 @@ export function finishDate(state, turn) {
     const p = state.pair || (state.pair = { ...PAIR_DEFAULT });
     const before = { f: p.f, r: p.r };
     const k = isFriendlyDate(d) ? DATE_RESULTS_FRIENDLY[res.key] : res;
-    p.f = clamp(p.f + k.f, -100, 100);
-    if (!p.kin) p.r = clamp(p.r + k.r, -100, 100);
+    const lv = RESULT_SCALE.level[level] || RESULT_SCALE.level.easy;
+    const pc = RESULT_SCALE.pace[pace || d.pace] ?? 1;
+    const sc = (v, rom) => Math.round(v >= 0 ? v * lv.up * (rom ? pc : 1) : v * lv.down);
+    p.f = clamp(p.f + sc(k.f, false), -100, 100);
+    if (!p.kin) p.r = clamp(p.r + sc(k.r, true), -100, 100);
     d.delta = { f: p.f - before.f, r: p.r - before.r };
     state.lastDateEnd = turn;
     state.datesDone = [...(state.datesDone || []), { id: d.id, title: d.title, result: res.key, score: d.score, kind: d.kind || 'romantic' }].slice(-20);

@@ -151,7 +151,7 @@ export function phaseOf(state) {
     if (today == null) return { kind: 'none', upcoming: [] };
     const list = allHolidays(state);
     const upcoming = list.filter(h => h.start > today);
-    const active = list.find(h => today >= h.start && today <= endOf(h));
+    const active = pickActive(state, list.filter(h => today >= h.start && today <= endOf(h)));
     const ended = list.find(h => endOf(h) === today - 1 && !state.recapDone?.[h.id]);
 
     if (active) {
@@ -168,12 +168,26 @@ export function phaseOf(state) {
 }
 
 /**
+ * В один день несколько праздников (масленичная неделя и 23 февраля): главный — тот, что празднуют в ролплее
+ * (state.focusHid — по истории), иначе тот, чей это единственный или первый день, а не «день 2 из 7».
+ */
+export function pickActive(state, actives) {
+    if (actives.length <= 1) return actives[0] || null;
+    const f = actives.find(h => h.id === state.focusHid);
+    if (f) return f;
+    const today = state.today;
+    const rank = (h) => (h.days === 1 ? 0 : h.start === today ? 1 : 2);
+    return [...actives].sort((a, b) => rank(a) - rank(b) || a.days - b.days || b.start - a.start)[0];
+}
+export const activeOccasions = (state) => (state.today == null ? [] : allHolidays(state).filter(h => state.today >= h.start && state.today <= endOf(h)));
+
+/**
  * Что сейчас готовится — несколько поводов сразу: идущий сегодня, те, чьё окно подготовки открыто,
  * и всё, на что игрок уже согласился (приглашение, повод из истории), — за три недели.
  * Раньше следили только за одним праздником: принятый второй вытеснял первый, и его подготовка терялась.
  */
 export const TRACK_AHEAD = 21;
-export const TRACK_MAX = 3;
+export const TRACK_MAX = 4;
 export function trackedOccasions(state) {
     const today = state.today;
     if (today == null) return [];
@@ -286,6 +300,8 @@ export function sideNeeds(state, phase) {
     n.add('new');   // поводы из истории ищем при каждом запросе — это почти ничего не стоит
     n.add('cast');  // новые люди истории и перемены в отношениях — тоже
     if (extrasDue(state)) n.add('extras');
+    // сегодня несколько праздников — какой из них празднуют в истории
+    if (activeOccasions(state).length > 1) n.add('focus');
     // таймскип перепрыгнул принятое приглашение — пришли ли туда
     if ((state.skipAsk || []).length) n.add('went');
     // перепись: изредка — по большому окну сообщений, сначала родня обеих сторон и те, кого чаще называют
