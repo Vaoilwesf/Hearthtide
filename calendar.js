@@ -196,7 +196,8 @@ export function passedThisYear(state, name, start) {
     const log = state.yearLog;
     if (!log || !name) return false;
     const { y } = fromDayNum(start);
-    return y === log.y && (log.items || []).some(i => !i.birthday && i.name && namesMatch(i.name, name));
+    // тот же праздник недавно — но 31 декабря после 1 января того же года уже другой Новый год
+    return y === log.y && (log.items || []).some(i => !i.birthday && i.name && Math.abs(i.start - start) <= 120 && namesMatch(i.name, name));
 }
 
 /** Нужен ли календарь: нет эпохи, нет даты или впереди меньше двух праздников */

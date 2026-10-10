@@ -697,9 +697,16 @@ function processReply(N) {
             if (cal.setting.place) state.place = state.setting.place = tidyPlace(cal.setting.place);
             syncCharSettings();                     // вера в настройках — та, что определила модель
         }
+        // «Подобрать заново»: старые будущие праздники убираем только теперь, когда пришли новые, —
+        // раньше их стирали сразу по нажатию, и если ответ не доходил, в календаре оставались одни дни рождения
+        if (state.rebuild && cal.holidays.length) {
+            dropFutureHolidays(state);
+            state.rebuild = false;
+            if (N === lastBotIndex()) rebuiltNames = cal.holidays.map(h => h.name);
+        }
         mergeHolidays(cal.holidays);
         for (const [who, md] of Object.entries(cal.birthdays)) state.birthdays[who] = md;
-        state.forceCal = false;
+        state.forceCal = state.rebuild;                  // пустой календарь при пересборке — спросим ещё раз
         if (askedCal) state.bdayAsked = true;       // не прислал строку B — дня рождения не знаем, не переспрашиваем
         if (cal.passed.some(x => !langOk(x.name))) slip = true;
         logSkipped(cal.passed.filter(x => langOk(x.name)));
@@ -1103,6 +1110,10 @@ function processReply(N) {
     state.diagThink = fromThink;
 
     msg.extra.ht = viewSnapshot(phase);
+    if (rebuiltNames) {
+        window.toastr?.success?.(L().rebuiltToast(rebuiltNames.slice(0, 4).join(', ')), 'Hearthtide');
+        rebuiltNames = null;
+    }
     // свидание закончилось в этом ответе — уведомление посреди экрана (один раз)
     if (dateEnded) showDateToast(dateEnded);
     // {{char}} зовёт на свидание — короткое уведомление сверху (один раз на приглашение)
@@ -1778,20 +1789,21 @@ function pruneHolidays() {
 }
 
 // ─── Смена эпохи или веры: будущие праздники подбираются заново ───
+/** Будущие праздники из календаря — прочь; идущий сегодня и поводы из истории остаются */
+function dropFutureHolidays(st) {
+    const keep = (h) => h.story || (st.today != null && h.start <= st.today && h.start + h.days - 1 >= st.today);
+    const gone = (st.holidays || []).filter(h => !keep(h)).map(h => holidayId(h));
+    st.holidays = (st.holidays || []).filter(keep);
+    if (gone.includes(st.prep?.hid)) st.prep = null;
+}
+let rebuiltNames = null;     // праздники, подобранные заново, — показать уведомлением, когда придут
+
 function rebuildCalendar() {
     if (!state) loadState();
-    const drop = (st) => {
-        if (st.today != null) {
-            // идущий сегодня праздник и принятые игроком поводы из истории оставляем, остальные будущие — убираем
-            st.holidays = (st.holidays || []).filter(h => h.story || (h.start <= st.today && h.start + h.days - 1 >= st.today));
-        } else {
-            st.holidays = (st.holidays || []).filter(h => h.story);
-        }
-        st.prep = null;
-        st.forceCal = true;
-    };
-    drop(state);
-    applyToSnapshots(drop);
+    // ничего не стираем сразу: старый календарь живёт, пока не придёт новый (processReply)
+    const mark = (st) => { st.rebuild = true; st.forceCal = true; };
+    mark(state);
+    applyToSnapshots(mark);
     // Календари из уже пришедших ответов больше не принимаем (при правке или повторной обработке);
     // новый свайп — новый текст, его календарь примется
     state.calIgnore = state.calIgnore || [];
@@ -1807,8 +1819,10 @@ function rebuildCalendar() {
     saveState();
     injectPrompts();
     renderAll();
-    window.toastr?.info?.(apiOn() ? L().rebuildToastApi : L().rebuildToast, 'Hearthtide');
-    if (apiOn()) maybeSide(lastProcessedMsg(), true);
+    // с помощником запрос уходит сразу, шапка показывает «обновляю», итог — уведомлением, когда праздники придут;
+    // без помощника (или пока бот пишет) — подберутся в следующем ответе
+    if (apiOn() && !generating && lastProcessedMsg() >= 0) maybeSide(lastProcessedMsg(), true);
+    else window.toastr?.info?.(L().rebuildToast, 'Hearthtide');
 }
 
 // ─── Правка праздника игроком ───
