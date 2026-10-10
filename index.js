@@ -3806,6 +3806,10 @@ function onChatChanged() {
 
 // Таверна дорисовывает сообщения позже событий — следим за самим #chat
 let chatObserver = null;
+const OBSERVER_MAX_MOVES = 150;    // реакций в секунду: перерисовке и стримингу хватает десятков, гонке нужны тысячи
+let observerMoves = 0;
+let observerMovesTimer = null;
+let observerCooling = false;
 function observeChat() {
     const target = document.getElementById('chat');
     if (!target) { setTimeout(observeChat, 500); return; }
@@ -3823,6 +3827,17 @@ function observeChat() {
             break;
         }
         if (!changed) return;
+        // страховка: если какое-то расширение без конца двигает разметку, ненадолго перестаём отвечать,
+        // а не гоняемся за ним вечно (бесконечная гонка вешает страницу, особенно на телефоне)
+        if (++observerMoves > OBSERVER_MAX_MOVES) {
+            if (!observerCooling) {
+                observerCooling = true;
+                console.warn('[Hearthtide] инфоблок: другое расширение постоянно двигает разметку — пауза');
+                setTimeout(() => { observerCooling = false; observerMoves = 0; }, 2000);
+            }
+            return;
+        }
+        if (!observerMovesTimer) observerMovesTimer = setTimeout(() => { observerMoves = 0; observerMovesTimer = null; }, 1000);
         reattach();
         scheduleEnsure();
     });
