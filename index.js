@@ -13,7 +13,7 @@ import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.j
 import { slimSmallTag, parseReady, tidyValue, parseExtras, parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseDateUp, parseRecapParts, stripBlocks } from './tag.js';
 import { PAIR_DEFAULT, bondCap, dateKindFor, isFriendlyDate, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, levelOf, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN, DATE_SKIP_END, DATE_SKIP_HARD, DATE_CLOSE_TURNS, DATE_QUIET, goalNeed, paceAuto, stepKinds, MISS_PAIR } from './romance.js';
 import { CAST_GROUPS, KIN_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast, nameCandidates } from './cast.js';
-import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE_DEFAULT, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday, giftJoint, trackedOccasions, charGiftOf, activeOccasions } from './calendar.js';
+import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE_DEFAULT, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday, giftJoint, trackedOccasions, charGiftOf, activeOccasions, occTier } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, buildDateSideMessages, buildDateRefillMessages, giftTarget, hName, readyNoted } from './prompts.js';
 import { inviteCandidates, bdKey, extraKey, mergeExtras, INVITE_TRIES, INVITE_COOL, INVITE_AHEAD } from './invites.js';
 import { listProfiles, gatherSources, loreFor, sendSide, reasonOf } from './side.js';
@@ -1302,15 +1302,21 @@ function cancelOccasion(h, how, to, why) {
  * в последних сообщениях. Пока ни то ни другое — прежний выбор (если он ещё идёт).
  */
 function updateFocus(said) {
-    const act = activeOccasions(state);
-    if (act.length < 2) { if (!act.length) state.focusHid = null; return; }
+    const all = activeOccasions(state);
+    // выбираем только среди праздников первого ряда: встреча или приглашение не перебивают праздник календаря
+    const top = all.length ? Math.min(...all.map(occTier)) : 0;
+    const act = all.filter(h => occTier(h) === top);
+    if (act.length < 2) { state.focusHid = act[0]?.id || null; return; }
     let pick = said ? act.find(h => namesMatch(hName(h, { userName: getUserName(), charName: getCharName() }), said) || (h.name && namesMatch(h.name, said))) : null;
     if (!pick) {
         const text = recentStoryText(3);
         const hits = act.map(h => {
             // «день», «праздник», «неделя» есть у многих — по ним не различить
+            // по именам людей не судим — они звучат в истории всё время
+            const names = [getUserName(), getCharName(), ...(state.cast || []).map(c => c.name)].filter(Boolean)
+                .flatMap(n => String(n).toLowerCase().replace(/ё/g, 'е').split(/\s+/)).map(w => w.slice(0, 5));
             const words = String(h.name || '').toLowerCase().replace(/ё/g, 'е').split(/[^\p{L}\d]+/u)
-                .filter(w => (w.length >= 4 || /^\d+$/.test(w)) && !/^(день|праздн|недел|international|holiday|week|great)/.test(w));
+                .filter(w => (w.length >= 4 || /^\d+$/.test(w)) && !/^(день|праздн|недел|international|holiday|week|great)/.test(w) && !names.includes(w.slice(0, 5)));
             return { h, n: words.filter(w => text.includes(/^\d+$/.test(w) ? w : w.slice(0, 5))).length };
         }).sort((a, b) => b.n - a.n);
         if (hits[0].n >= 1 && hits[0].n > (hits[1]?.n ?? 0)) pick = hits[0].h;
@@ -2093,7 +2099,7 @@ function sanitizeView(view) {
 function displayName(h) {
     if (!h) return '';
     if (h.npc) return L().birthday(h.name);
-    if (h.extra) return h.name;
+    if (h.extra) return occasionName(h.name, h.meaning, h.host);
     if (h.birthday) return L().birthday(h.who === 'user' ? getUserName() : getCharName());
     return h.name;
 }

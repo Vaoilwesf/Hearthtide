@@ -171,13 +171,20 @@ export function phaseOf(state) {
  * В один день несколько праздников (масленичная неделя и 23 февраля): главный — тот, что празднуют в ролплее
  * (state.focusHid — по истории), иначе тот, чей это единственный или первый день, а не «день 2 из 7».
  */
+/**
+ * Порядок: сначала праздники календаря и дни рождения {{user}} и {{char}}, потом поводы из истории,
+ * и только потом встречи и приглашения (чужой день рождения, собрание) — они уходят в «Тоже».
+ */
+export const occTier = (h) => (h.npc || h.extra ? 2 : h.story ? 1 : 0);
 export function pickActive(state, actives) {
     if (actives.length <= 1) return actives[0] || null;
-    const f = actives.find(h => h.id === state.focusHid);
+    const top = Math.min(...actives.map(occTier));
+    const pool = actives.filter(h => occTier(h) === top);
+    const f = pool.find(h => h.id === state.focusHid);
     if (f) return f;
     const today = state.today;
     const rank = (h) => (h.days === 1 ? 0 : h.start === today ? 1 : 2);
-    return [...actives].sort((a, b) => rank(a) - rank(b) || a.days - b.days || b.start - a.start)[0];
+    return [...pool].sort((a, b) => rank(a) - rank(b) || a.days - b.days || b.start - a.start)[0];
 }
 export const activeOccasions = (state) => (state.today == null ? [] : allHolidays(state).filter(h => state.today >= h.start && state.today <= endOf(h)));
 
