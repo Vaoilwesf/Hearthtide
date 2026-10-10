@@ -1076,3 +1076,29 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-yr-off > i { color: var(--ht-mute); }
 
 @media (prefers-reduced-motion: reduce) { .ht-ready-new { animation: none; } }
+
+/* ═══ Дружеская встреча (романтики нет): зелёная, без сердечек ═══ */
+.ht-ib, .ht-modal, .ht-date-toast, .ht-cards, .ht-invite-toast {
+    --ht-friend: color-mix(in srgb, var(--ht-acc) 30%, #4caf7a);
+    --ht-friend-hot: color-mix(in srgb, var(--ht-friend) 70%, #2fbf6a);
+}
+.ht-date.ht-friendly { border-color: color-mix(in srgb, var(--ht-friend) 60%, transparent); background: color-mix(in srgb, var(--ht-friend) 9%, transparent); }
+.ht-date.ht-friendly.ht-date-on { border-color: color-mix(in srgb, var(--c) 70%, transparent); background: color-mix(in srgb, var(--c) 9%, transparent); }
+.ht-date.ht-friendly .ht-dinvite > i, .ht-date.ht-friendly .ht-offer-mean > i { color: var(--ht-friend); }
+.ht-date.ht-friendly .ht-portrait > .ht-ava { border-color: var(--c, var(--ht-friend)); box-shadow: 0 0 10px color-mix(in srgb, var(--c, var(--ht-friend)) 40%, transparent); }
+.ht-date.ht-friendly .ht-ava-pin > .ht-ava { border-color: var(--ht-friend); box-shadow: 0 0 8px color-mix(in srgb, var(--ht-friend) 50%, transparent); }
+.ht-date.ht-friendly .ht-btn-main { border-color: var(--ht-friend); color: var(--ht-friend); }
+.ht-planned.ht-friendly { border-color: color-mix(in srgb, var(--ht-friend) 45%, transparent); background: color-mix(in srgb, var(--ht-friend) 7%, transparent); }
+.ht-planned.ht-friendly > i, :is(.ht-ib) .ht-head-date.ht-head-friend { color: var(--ht-friend); }
+.ht-invite-toast.ht-friendly .ht-invite-card { border-color: color-mix(in srgb, var(--ht-friend) 70%, transparent);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4), 0 0 0 4px color-mix(in srgb, var(--ht-friend) 12%, transparent); }
+.ht-invite-toast.ht-friendly .ht-invite-hearts { color: var(--ht-friend); }
+.ht-invite-toast.ht-friendly .ht-invite-card:focus-visible { outline-color: var(--ht-friend); }
+.ht-date-toast.ht-friendly .ht-date-toast-card { border-color: var(--ht-friend); }
+.ht-date-toast.ht-friendly .ht-date-hearts, .ht-date-toast.ht-friendly .ht-date-toast-card > b { color: var(--ht-friend); }
+.ht-date-toast.ht-friendly.ht-date-great .ht-date-toast-card { border-color: var(--ht-friend-hot); box-shadow: 0 10px 40px rgba(0,0,0,.45), 0 0 24px color-mix(in srgb, var(--ht-friend-hot) 45%, transparent); }
+.ht-date-toast.ht-friendly.ht-date-great .ht-date-hearts, .ht-date-toast.ht-friendly.ht-date-great .ht-date-toast-card > b { color: var(--ht-friend-hot); }
+.ht-date-toast.ht-friendly:is(.ht-date-bad, .ht-date-terrible) .ht-date-hearts, .ht-date-toast.ht-friendly:is(.ht-date-bad, .ht-date-terrible) .ht-date-toast-card > b { color: var(--ht-mute); }
+.ht-res-chip.ht-friendly { color: var(--ht-friend); }
+.ht-res-chip.ht-friendly.ht-res-great { color: var(--ht-friend-hot); }
+.ht-yr.ht-friendly:is(.ht-res-great, .ht-res-good) > i, .ht-yr.ht-friendly:is(.ht-res-great, .ht-res-good) > em { color: var(--ht-friend); }

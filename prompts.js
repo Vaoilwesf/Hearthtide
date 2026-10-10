@@ -387,12 +387,21 @@ function dateLasts(state, d) {
 }
 
 /** Темп романтики словами — для модели */
+// Свидание или дружеская встреча: романтика ниже 0 — только встреча, ровно 0 — как сложится, выше — свидание
+const isOuting = (ctx, d) => (d ? d.kind === 'friendly' : (ctx.state.pair?.r ?? 0) < 0);
+const OUTING = 'a friendly outing — time together to get to know each other better, not a romantic date';
+const kindField = (ctx) => {
+    const r = ctx.state.pair?.r ?? 0;
+    return r < 0 ? ` kind: outing — ${OUTING}.` : r === 0 ? ` kind: date or outing — whichever fits how they stand and the story (a first date, or ${OUTING}).` : ' kind: date.';
+};
 const paceText = (ctx, d) => ({
     slow: `slow-burn: small, careful steps — words, glances, light touches; closeness is earned slowly`,
     fast: `fast-burn: bolder, quicker steps toward closeness`,
 }[d?.pace] || `an even pace: closeness grows step by step, as the story allows`);
 /** Чем должны быть шаги: заметные шаги к цели, разные по виду, каждый вырастает из предыдущего */
-const stepFlow = (ctx, d) => `Steps are beats toward the goal, not tiny gestures: each is a different kind of closeness — physical or spoken, mixed as the goal needs; never two open steps of the same kind, never the same act in other words. They go from general to particular and from gentle to bolder: early on — getting to know each other, light and easy; closer and bolder only as the story gets there. Build ONLY on what the story has already shown: never on something about ${ctx.userName} the story hasn't revealed yet (what ${ctx.userName} does, likes, feels or has lived through) — first find it out, then the next step may build on the answer. A new step grows out of what was just done or learned. Pace: ${paceText(ctx, d)}.`;
+const stepFlow = (ctx, d) => (isOuting(ctx, d)
+    ? `This is ${OUTING}. Steps are beats toward the goal of getting to know each other and getting on: asking, telling about oneself, doing something together, a joke, a small care or kindness — each a different kind, never two open steps of the same kind, never the same act in other words; no romantic gestures unless the story itself turns that way. Build ONLY on what the story has already shown: never on something about ${ctx.userName} the story hasn't revealed yet — first find it out, then the next step may build on the answer. A new step grows out of what was just done or learned.`
+    : `Steps are beats toward the goal, not tiny gestures: each is a different kind of closeness — physical or spoken, mixed as the goal needs; never two open steps of the same kind, never the same act in other words. They go from general to particular and from gentle to bolder: early on — getting to know each other, light and easy; closer and bolder only as the story gets there. Build ONLY on what the story has already shown: never on something about ${ctx.userName} the story hasn't revealed yet (what ${ctx.userName} does, likes, feels or has lived through) — first find it out, then the next step may build on the answer. A new step grows out of what was just done or learned. Pace: ${paceText(ctx, d)}.`);
 /** Как писать шаг свидания: задача для {{char}}, одна форма — глагол в неопределённой форме + что / кому */
 const stepForm = (ctx) => `Each step is a short, general task for ${ctx.charName}, like a to-do item: ${ctx.lang === 'Russian' ? 'an infinitive verb first' : 'a bare verb first'}, 2–5 words, no names unless needed, no details of how (the props, the exact movement, the words — ${ctx.charName} decides that in the story); never narration — no past, present or future tense, no "${ctx.charName} will…". Only ${ctx.charName}'s own actions — never a step for ${ctx.userName} or for both: what ${ctx.userName} does is the player's choice. The third field of a NEW line: ${ctx.charName}'s brief private thought about that step, in ${ctx.charName}'s own voice, manner and words as the card and the story's style have them, under 10 words — honest and in the moment, not a description.`;
 const whoName = (ctx, w) => (w === 'user' ? ctx.userName : w === 'char' ? ctx.charName : 'either of them');
@@ -440,7 +449,7 @@ function dateStateLines(ctx) {
         .map(x => (x.kind === 'misstep' ? `${userName} didn't like it: ${x.t}` : x.t));
     // прошлые свидания — только в начале нового, коротко
     const past = d.startTurn >= state.turn - 2 ? pastDates(state, 2, 110) : [];
-    out.push(`${userName} and ${charName} are on a date${lasts ? ` (it has lasted ${lasts} of story time)` : ''}: ${d.title}${d.where ? `, ${d.where}` : ''}.${d.startTurn >= state.turn - 1 ? ' It begins now.' : ''}${gifts.length ? ` Gifts so far: ${gifts.join('; ')}.` : ''}${goal}${open.length ? ` ${charName}'s next steps (tasks ${charName} carries out — gently, one at a time, as the scene allows): ${open.map(s => s.t).join('; ')}.` : ''} So far: ${how}${d.vibe ? ` (${d.vibe})` : ''} — ${charName}'s mood, boldness and warmth follow it.${sofar.length ? ` On this date so far: ${sofar.join('; ')}.` : ''}${past.length ? ` Earlier dates: ${past.join(' · ')}.` : ''}${known ? ` ${known} — they remember it; only this is known, nothing beyond it.` : ''} ${userName} decides everything of ${userName}'s own.`);
+    out.push(`${userName} and ${charName} are on ${isOuting(ctx, d) ? `${OUTING} (romance isn't the point; it may come only if the story itself turns that way)` : 'a date'}${lasts ? ` (it has lasted ${lasts} of story time)` : ''}: ${d.title}${d.where ? `, ${d.where}` : ''}.${d.startTurn >= state.turn - 1 ? ' It begins now.' : ''}${gifts.length ? ` Gifts so far: ${gifts.join('; ')}.` : ''}${goal}${open.length ? ` ${charName}'s next steps (tasks ${charName} carries out — gently, one at a time, as the scene allows): ${open.map(s => s.t).join('; ')}.` : ''} So far: ${how}${d.vibe ? ` (${d.vibe})` : ''} — ${charName}'s mood, boldness and warmth follow it.${sofar.length ? ` On this date so far: ${sofar.join('; ')}.` : ''}${past.length ? ` Earlier dates: ${past.join(' · ')}.` : ''}${known ? ` ${known} — they remember it; only this is known, nothing beyond it.` : ''} ${userName} decides everything of ${userName}'s own.`);
     // подходит к концу — закруглить по-человечески, а не оборвать
     if (d.closing != null) out.push(`The date is drawing to its close: let it wind down naturally over this reply or the next — a last moment together, goodbyes, seeing ${userName} home — never cut off mid-scene; if ${userName} keeps it going, it goes on.`);
     else out.push(`The date goes on until the story itself brings it to a close — don't end it on your own.`);
@@ -483,7 +492,7 @@ Judge what happens ${scope} — read ${main ? 'the whole reply' : 'every [NEW] m
 - STATE, always: on — they are still on the date; ending — it is winding down (saying goodbye, heading home, about to part); over — it has ended: they parted, went their separate ways, or the story skipped past it. WHY: what in the story shows it. A quarrel, a pause, a change of place or a talk about other things is still on. Never over just because the [NEW] messages are short or quiet.
 - One STEP line for EVERY open step above, by its number: done — ${charName} did it, or something close to it in spirit; missed — the moment for it has passed: the scene has moved on and it no longer fits (no note); failed — tried, but met a refusal, coldness or a bad reaction; open — not yet (no note). NOTE for done or failed: what came of it, past tense, one line, real names.
 - NEW: ${need > 0 ? `exactly ${need} new step${need > 1 ? 's' : ''}` : 'one for each step you mark done or failed'}, so that ${DATE_OPEN} stay open. ${stepFlow(ctx, d)} After a failed step, one NEW step softens the moment. Never chores, errands or anything off the date. ${stepForm(ctx)} Never (user), (char) or {{…}}.${(d.rejected || []).length ? ` Rejected earlier as repeats or not tasks — don't send these again: ${d.rejected.slice(-4).join(' / ')}.` : ''}
-- MOMENT: up to ${DATE_MOMENTS} notable things that happened outside the open steps — a confession, a kiss, an embrace, a brave or tender gesture; one line each, past tense, real names. None if nothing stood out.
+- MOMENT: up to ${DATE_MOMENTS} notable things that happened outside the open steps — ${isOuting(ctx, d) ? 'a frank talk, a shared laugh, a kind, brave or trusting gesture' : 'a confession, a kiss, an embrace, a brave or tender gesture'}; one line each, past tense, real names. None if nothing stood out.
 - MISSTEP: up to 2 things ${charName} said or did in these messages (outside the open steps) that ${userName} plainly didn't like — as ${userName}'s own reply shows: pulled back, went cold, got annoyed or hurt, cut it short. small or big. Judge only by ${userName}'s actual reaction, never guess it; none is the usual answer.
 - GIFT: only a present — a thing given as a gift, meant to be kept or to mark the moment: who gave it and what it is, a few words. Not a gift: food, drink, cigarettes or anything bought, ordered, paid for or shared on the spot; everyday small favours; a kiss, a touch, a word or an act. Up to ${DATE_MOMENTS}; skip the gifts already counted; none is the usual answer.
 - LEARN: up to 3 new things they found out about each other in these messages — char: what ${charName} learned about ${userName}; user: what ${userName} learned about ${charName}. Only what was actually said or shown, a few words each, no guesses, nothing already known.${dateKnown(ctx, d, true) ? ` Already known (from this and earlier dates): ${dateKnown(ctx, d, true)}.` : ''}${pastDates(state, 3, 160).length ? `\nEarlier dates: ${pastDates(state, 3, 160).join(' · ')}.` : ''}
@@ -555,15 +564,15 @@ function dateSense(ctx) {
 - when: ahead of now (${now}), at a sensible hour for this kind of outing, the season, the weather and daylight; not at night or at dawn unless the story itself points there;
 - what: true to ${charName}'s character and means and to the customs of the era — something ${charName} would really think of for ${userName}.`;
 }
-const DATE_FORMAT = '<!-- HT-DATE title=… | goal=… | hook=… | where=… | at=YYYY-MM-DD HH:MM -->';
-const dateFields = (ctx) => `title: what it is, a few words; goal: what the date is for, from the story — general, 2–5 words, written as a task (${ctx.lang === 'Russian' ? 'an infinitive verb first' : 'a bare verb first'}), what is to be reached, not how; hook: how ${ctx.charName} will ask, one sentence; where: the place; at: when, in the story's calendar (now — if right away).`;
+const DATE_FORMAT = '<!-- HT-DATE title=… | goal=… | hook=… | where=… | at=YYYY-MM-DD HH:MM | kind=… -->';
+const dateFields = (ctx) => `title: what it is, a few words; goal: what the date is for, from the story — general, 2–5 words, written as a task (${ctx.lang === 'Russian' ? 'an infinitive verb first' : 'a bare verb first'}), what is to be reached, not how; hook: how ${ctx.charName} will ask, one sentence; where: the place; at: when, in the story's calendar (now — if right away);${kindField(ctx)}`;
 
 /** Помощнику: составить план свидания */
 function datePlanRule(ctx) {
     const { state, userName, charName } = ctx;
     const past = (state.datesDone || []).slice(-3).map(d => d.title);
     return `${DATE_FORMAT}
-Plan the date ${charName} will ask ${userName} on in the next reply. ${dateSense(ctx)}
+Plan the date ${charName} will ask ${userName} on in the next reply${(state.pair?.r ?? 0) < 0 ? ` — ${OUTING}` : (state.pair?.r ?? 0) === 0 ? ' — or a friendly outing to get to know each other, if that fits them better' : ''}. ${dateSense(ctx)}
 ${dateFields(ctx)}${past.length ? ` Different from: ${past.join(' / ')}.` : ''}${dateKnown(ctx, null, true) ? ` What they already know about each other: ${dateKnown(ctx, null, true)} — the plan may build on it.` : ''} In ${langOf(ctx)}.`;
 }
 
@@ -581,7 +590,7 @@ function dateAskRule(ctx) {
     const { state, userName, charName } = ctx;
     const pl = state.datePlan;
     const p = state.pair || {};
-    return `${state.dateRollTry ? 'REQUIRED — your last reply skipped it. ' : ''}This reply ${charName} asks ${userName} on a date ${charName} has in mind: ${pl.title}${pl.where ? ` — ${pl.where}` : ''}, ${dateAtText(state, pl.at)}${pl.goal ? `; meant to ${pl.goal}` : ''}.${pl.hook ? ` How: ${pl.hook}` : ''} Ask in ${charName}'s own way, as fits who ${charName} is and how they stand (friendship ${p.f ?? 0}, romance ${p.r ?? 0}): openly, shyly, in passing or as a half-joke, at a moment that fits the scene. Write only the asking; ${userName} answers.${ctx.api ? '' : ` Add date_asked=yes to the HT line only if ${charName} actually said it to ${userName} in this reply — not if ${charName} only thought of it.`} If the scene is urgent or dangerous, don't ask yet${ctx.api ? '' : ' and add nothing'}.`;
+    return `${state.dateRollTry ? 'REQUIRED — your last reply skipped it. ' : ''}This reply ${charName} asks ${userName} on ${pl.kind === 'friendly' ? OUTING : 'a date'} ${charName} has in mind: ${pl.title}${pl.where ? ` — ${pl.where}` : ''}, ${dateAtText(state, pl.at)}${pl.goal ? `; meant to ${pl.goal}` : ''}.${pl.hook ? ` How: ${pl.hook}` : ''} Ask in ${charName}'s own way, as fits who ${charName} is and how they stand (friendship ${p.f ?? 0}, romance ${p.r ?? 0}): openly, shyly, in passing or as a half-joke, at a moment that fits the scene. Write only the asking; ${userName} answers.${ctx.api ? '' : ` Add date_asked=yes to the HT line only if ${charName} actually said it to ${userName} in this reply — not if ${charName} only thought of it.`} If the scene is urgent or dangerous, don't ask yet${ctx.api ? '' : ' and add nothing'}.`;
 }
 
 /** Основной модели без плана: придумать и позвать самой */
@@ -591,7 +600,7 @@ function dateOfferRule(ctx) {
     const past = (state.datesDone || []).slice(-3).map(d => d.title);
     const cg = charGiftOf(state, ctx.phase?.h?.id);
     const gift = cg && !cg.done && cg.got && cg.text ? ` ${charName}'s gift is ready (${cg.text}) — it may be part of it.` : '';
-    return `${state.dateRollTry ? 'REQUIRED — your last reply skipped it. ' : ''}This reply ${charName} asks ${userName} on a date, in ${charName}'s own way, as fits who ${charName} is and how they stand (friendship ${p.f ?? 0}, romance ${p.r ?? 0}${p.note ? `, ${p.note}` : ''}): openly, shyly, in passing or as a half-joke; after a quarrel — as a way to make up. ${dateSense(ctx)}
+    return `${state.dateRollTry ? 'REQUIRED — your last reply skipped it. ' : ''}This reply ${charName} asks ${userName} on ${(p.r ?? 0) < 0 ? OUTING : (p.r ?? 0) === 0 ? `a date or ${OUTING} — whichever fits them` : 'a date'}, in ${charName}'s own way, as fits who ${charName} is and how they stand (friendship ${p.f ?? 0}, romance ${p.r ?? 0}${p.note ? `, ${p.note}` : ''}): openly, shyly, in passing or as a half-joke; after a quarrel — as a way to make up. ${dateSense(ctx)}
 Write only the asking; ${userName} answers. Only if ${charName} actually said it to ${userName} in this reply (not just thought of it), add after the HT line: ${DATE_FORMAT} — ${dateFields(ctx)}${gift} In ${langOf(ctx)}.${past.length ? ` Different from: ${past.join(' / ')}.` : ''} If the scene is urgent or dangerous, don't ask yet and add nothing.`;
 }
 
@@ -775,7 +784,7 @@ All text values in these comments: ${lang} only.`];
     if (ctx.meaningFor) out.push(`Add mean=… to the HT line: what "${ctx.meaningFor}" is and how it is kept in this era and place, one sentence.`);
     if (request !== 'cal') {
         const known = ctx.offerNames?.length ? ` Already known: ${ctx.offerNames.join(', ')}.` : '';
-        out.push(`If the story sets up a new occasion (someone's life event, an announced celebration, an invitation), add once after the HT line: <!-- HT-NEW CAUSE | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP --> (CAUSE: what happened; TYPE: family|personal|religious|folk|memorial).${known}`);
+        out.push(`If the story sets up a new occasion (someone's life event, an announced celebration, an invitation, or a get-together or outing they agreed on or were invited to for a set day), add once after the HT line: <!-- HT-NEW CAUSE | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP --> (CAUSE: what happened; TYPE: family|personal|religious|folk|memorial|gathering).${known}`);
     }
 
     if (request === 'cal') {
@@ -865,12 +874,12 @@ Only if the latest messages show something new at "${ev?.title || 'the gathering
     if (needs.has('date') && state.date) task.push(dateUpRule(ctx));
     if (needs.has('dateplan')) task.push(datePlanRule(ctx));
     if (needs.has('daterecap') && !(needs.has('date') && state.date?.status === 'active')) task.push(dateRecapRule(ctx));
-    if (needs.has('datewatch')) task.push(`<!-- HT-DATE title=… | goal=… | where=… | at=YYYY-MM-DD HH:MM | started=yes -->
-goal: what the date is for — general, 2–5 words, a task. Only if the latest messages show ${userName} and ${charName} on a date that isn't tracked yet (started=yes), or agreeing on one for later (at — when, no started). Leave it out otherwise.`);
+    if (needs.has('datewatch')) task.push(`<!-- HT-DATE title=… | goal=… | where=… | at=YYYY-MM-DD HH:MM | kind=… | started=yes -->
+goal: what the date is for — general, 2–5 words, a task. Only if the latest messages show ${userName} and ${charName} on a date or an outing of the two of them that isn't tracked yet (started=yes), or agreeing on one for later (at — when, no started).${kindField(ctx)} Leave it out otherwise.`);
     if (needs.has('new')) {
         const known = [...(state.holidays || []).map(x => x.name), ...(ctx.offerNames || []), ...(ctx.passed || [])].filter(Boolean).slice(0, 14);
         task.push(`<!-- HT-NEW CAUSE | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP -->
-Only if the story has set up a coming occasion not yet in the calendar — someone's life event that custom marks with a celebration or rite, an announced celebration, an invitation to one. CAUSE: what happened, a few words. Date: if the story names the day or how soon (tomorrow, in a week, on some feast), count exactly that from today; otherwise as custom suggests. TYPE: family | personal | religious | folk | memorial. One per line, at most two. Leave the block out if there is none.${known.length ? ` Already known: ${known.join(', ')}.` : ''}`);
+Only if the story has set up a coming occasion not yet in the calendar — someone's life event that custom marks with a celebration or rite, an announced celebration, an invitation to one, or a get-together or outing ${userName} or ${charName} agreed on or were invited to for a set day (a visit, a trip, an outing, a party). Not a date of the two of them alone — dates are tracked separately. CAUSE: what happened, a few words. Date: if the story names the day or how soon (tomorrow, in a week, on some feast), count exactly that from today; otherwise as custom suggests. TYPE: family | personal | religious | folk | memorial | gathering. One per line, at most two. Leave the block out if there is none.${known.length ? ` Already known: ${known.join(', ')}.` : ''}`);
     }
     if (needs.has('beat') && (h || (ctx.tracked || []).length)) {
         // что дать миру сделать в следующем ответе: шаг подготовки, которого ещё не было, — живыми людьми, вскользь;

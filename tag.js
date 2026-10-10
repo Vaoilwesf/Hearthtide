@@ -152,7 +152,7 @@ export function parseCalendar(text) {
     return res;
 }
 
-const TYPES = ['religious', 'folk', 'seasonal', 'state', 'personal', 'family', 'supernatural', 'fast', 'memorial'];
+const TYPES = ['religious', 'folk', 'seasonal', 'state', 'personal', 'family', 'supernatural', 'fast', 'memorial', 'gathering'];
 function normType(v) {
     const x = String(v || '').toLowerCase();
     return TYPES.find(t => x.startsWith(t.slice(0, 4))) || 'folk';
@@ -354,7 +354,9 @@ export function parseDateBlock(text) {
         const who = /\((?:\s*)(user|юзер|игрок)/i.test(x) ? 'user' : /\((?:\s*)(both|оба|вместе)/i.test(x) ? 'both' : 'char';
         return { t: clean(x.replace(/\s*\([^)]*\)\s*$/, ''), 120), who };
     }).filter(s => s.t);
+    const k = String(f.kind || '').trim().toLowerCase();
     return { title, goal: clean(f.goal, 160), hook: clean(f.hook, 240), where: clean(f.where, 80), at: parseAt(f.at), steps,
+        kind: /^(out|friend|друж|встреч|прогул)/.test(k) ? 'friendly' : /^(date|rom|свид)/.test(k) ? 'romantic' : null,
         started: /^(yes|true|1|да)/i.test(String(f.started || '').trim()) };
 }
 

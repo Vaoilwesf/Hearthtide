@@ -11,7 +11,7 @@ import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
 import { slimSmallTag, parseReady, tidyValue, parseExtras, parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseDateUp, parseRecapParts, stripBlocks } from './tag.js';
-import { PAIR_DEFAULT, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, levelOf, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN, DATE_SKIP_END, DATE_SKIP_HARD, DATE_CLOSE_TURNS, DATE_QUIET, goalNeed, paceAuto, stepKinds, MISS_PAIR } from './romance.js';
+import { PAIR_DEFAULT, dateKindFor, isFriendlyDate, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, levelOf, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN, DATE_SKIP_END, DATE_SKIP_HARD, DATE_CLOSE_TURNS, DATE_QUIET, goalNeed, paceAuto, stepKinds, MISS_PAIR } from './romance.js';
 import { CAST_GROUPS, KIN_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast, nameCandidates } from './cast.js';
 import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE_DEFAULT, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday, giftJoint, trackedOccasions, charGiftOf } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, buildDateSideMessages, buildDateRefillMessages, giftTarget, hName, readyNoted } from './prompts.js';
@@ -625,7 +625,7 @@ function processReply(N) {
     // Отметку date_asked модели часто забывают — поэтому годится и подтверждение «да» из проверки
     const plan = hadDateRoll ? state.datePlan : null;
     if (plan && !dateIn?.started && (dateIn || small?.dateAsked || conf?.date === true)) {
-        dateIn = { ...plan, steps: [], started: false, ...(dateIn ? { title: dateIn.title || plan.title, hook: dateIn.hook || plan.hook } : {}) };
+        dateIn = { ...plan, steps: [], started: false, ...(dateIn ? { title: dateIn.title || plan.title, hook: dateIn.hook || plan.hook, kind: plan.kind || dateIn.kind } : {}) };
     }
     // проверка сказала «только подумал» — приглашения нет, кубик остаётся (позовёт позже)
     if (dateIn && !dateIn.started && conf?.date === false && !sideAsked.includes('datewatch')) {
@@ -864,7 +864,8 @@ function processReply(N) {
     if (dateIn && !['active', 'offered', 'scheduled', 'pending'].includes(state.date?.status)
         && [dateIn.title, dateIn.goal, dateIn.hook, dateIn.where].every(langOk)) {
         const fixed = tidyDateUp({ add: dateIn.steps.map(x => ({ t: x.t })), done: [], fail: [] }).add;
-        const d = newDate({ ...dateIn, steps: fixed }, state.turn, dateIn.started);
+        // свидание или дружеская встреча: по романтике пары, а при нуле — как решили модель и история
+        const d = newDate({ ...dateIn, steps: fixed, kind: dateKindFor(state.pair, dateIn.kind) }, state.turn, dateIn.started);
         d.msg = N;
         if (d.at && !d.at.now && d.at.day == null) d.at.day = state.today;
         const dec = !dateIn.started && state.dateDecisions?.[String(d.title).toLowerCase()];
@@ -876,6 +877,12 @@ function processReply(N) {
         else if (dateWait && d.status === 'offered') d.status = 'pending';
         if (d.status !== 'declined') state.date = d;
         state.dateRoll = false;
+        // свидание договорили в самой истории — карточки «Пойти» не нужно (уже согласились), но игрок должен заметить
+        if (sideAsked.includes('datewatch') && ['scheduled', 'active'].includes(d.status) && N === lastBotIndex() && !storyDateToasted.has(d.id)) {
+            storyDateToasted.add(d.id);
+            const fr = isFriendlyDate(d);
+            window.toastr?.info?.(`${d.status === 'active' ? (fr ? L().outingWord : L().dateWord) : (fr ? L().outingPlanned : L().datePlanned)}: ${d.title}`, 'Hearthtide');
+        }
     }
 
     // ── Приглашение (день рождения, дополнительный праздник): прозвучало вслух — по проверке или по invite= ──
@@ -1075,7 +1082,7 @@ function processReply(N) {
 
     // план от помощника — к выпавшему свиданию (при повторе просьбы старый план остаётся)
     if (state.dateRoll && planIn && [planIn.title, planIn.goal, planIn.hook, planIn.where].every(langOk)) {
-        state.datePlan = { title: planIn.title, goal: planIn.goal, hook: planIn.hook, where: planIn.where, at: planIn.at, turn: state.turn };
+        state.datePlan = { title: planIn.title, goal: planIn.goal, hook: planIn.hook, where: planIn.where, at: planIn.at, kind: dateKindFor(state.pair, planIn.kind), turn: state.turn };
         console.info('[Hearthtide] свидание: план помощника —', state.datePlan.title, '·', state.datePlan.where || '', '·', JSON.stringify(state.datePlan.at));
     }
     if (!state.dateRoll || !free) state.datePlan = null;
@@ -1361,18 +1368,19 @@ const dateParts = (d) => ({
 });
 /** Свидание кончилось (или не состоялось) — в «Текущий год», в итоги и воспоминания */
 function recordDate(st, d, missed = false) {
-    const name = `${L().dateWord}: ${d.title}`;
+    const fr = isFriendlyDate(d);
+    const name = `${fr ? L().outingWord : L().dateWord}: ${d.title}`;
     const result = missed ? 'missed' : d.result;
     if (st === state) ensureYear();
     const log = st.yearLog;
     if (log && st.today != null && fromDayNum(st.today).y === log.y && !log.items.some(i => i.id === d.id)) {
-        log.items.push({ id: d.id, name, birthday: false, type: 'date', start: st.today, days: 1, kept: !missed, result });
+        log.items.push({ id: d.id, name, birthday: false, type: 'date', friendly: fr, start: st.today, days: 1, kept: !missed, result });
         log.items.sort((a, b) => a.start - b.start);
     }
     st.recaps = st.recaps || [];
     if (!st.recaps.some(r => r.hid === d.id)) st.recaps.push({ hid: d.id, name, text: missed ? L().dateMissed : d.recap || null, parts: missed ? null : dateParts(d), result });
     st.flashbacks = st.flashbacks || [];
-    if (!st.flashbacks.some(f => f.id === `fb-${d.id}`)) st.flashbacks.push({ id: `fb-${d.id}`, title: name, text: missed ? L().dateMissed : d.recap || L().dateResult[d.result], when: st.when, kind: 'date', parts: missed ? null : dateParts(d), result });
+    if (!st.flashbacks.some(f => f.id === `fb-${d.id}`)) st.flashbacks.push({ id: `fb-${d.id}`, title: name, text: missed ? (fr ? L().outingMissed : L().dateMissed) : d.recap || L().dateResult[d.result], when: st.when, kind: 'date', friendly: fr, parts: missed ? null : dateParts(d), result });
     if (!missed && !d.recap) { st.dateRecapFor = d.id; st.dateRecapTurn = st.turn; }
 }
 function applyDateRecap(st, id, text, best) {
@@ -1796,7 +1804,8 @@ function dropFutureHolidays(st) {
     st.holidays = (st.holidays || []).filter(keep);
     if (gone.includes(st.prep?.hid)) st.prep = null;
 }
-let rebuiltNames = null;     // праздники, подобранные заново, — показать уведомлением, когда придут
+let rebuiltNames = null;
+const storyDateToasted = new Set();     // свидания, договорённые в самой истории, о которых уже сказали     // праздники, подобранные заново, — показать уведомлением, когда придут
 
 function rebuildCalendar() {
     if (!state) loadState();
@@ -2044,7 +2053,7 @@ function viewSnapshot(phase) {
             .map(x => ({ id: x.id, name: displayName(x), raw: x.name, iso: isoOf(x.start), type: x.type, meaning: x.meaning, daysTo: x.start - state.today, birthday: !!x.birthday, who: x.who, npc: !!x.npc })),
         recaps: state.recaps.slice(-3).reverse(),
         year: (state.yearLog?.items || []).map(i => ({
-            id: i.id, name: i.npc ? i.name : i.birthday ? L().birthday(i.who === 'user' ? getUserName() : getCharName()) : i.name, raw: i.name, npc: !!i.npc,
+            id: i.id, name: i.npc ? i.name : i.birthday ? L().birthday(i.who === 'user' ? getUserName() : getCharName()) : i.name, raw: i.name, npc: !!i.npc, friendly: !!i.friendly,
             type: i.birthday ? 'personal' : i.type, iso: isoOf(i.start), kept: i.kept, result: i.result || null,
             recap: state.recaps.find(r => r.hid === i.id)?.text || (i.type === 'date' && i.result && i.result !== 'missed' ? L().dateResult[i.result] : null),
             parts: state.recaps.find(r => r.hid === i.id)?.parts || null,
@@ -2052,7 +2061,7 @@ function viewSnapshot(phase) {
         flashbacks: clone(state.flashbacks.slice(-10).reverse()),
         pair: state.pair ? clone(state.pair) : null,
         // намеченное свидание — в инфоблоке, праздник сейчас или нет
-        planned: state.date?.status === 'scheduled' ? { title: state.date.title, goal: state.date.goal, where: state.date.where, when: dateWhenText(state, state.date.at) } : null,
+        planned: state.date?.status === 'scheduled' ? { title: state.date.title, goal: state.date.goal, where: state.date.where, when: dateWhenText(state, state.date.at), friendly: isFriendlyDate(state.date) } : null,
         // принятое приглашение впереди (если это не тот праздник, что сейчас в шапке)
         plannedBd: (() => {
             const cur = phase.kind === 'prep' || phase.kind === 'today' ? phase.h?.id : null;
@@ -2571,7 +2580,7 @@ function renderBlock(id) {
     // пока помощник читает историю — заставка: кольцо крутится, по шапке бежит блик, содержимое приглушено
     const loading = live && sideLoading();
     block.classList.toggle('ht-loading', loading);
-    const plannedMark = view.planned ? `<i class="fa-solid fa-heart ht-head-date" title="${esc(`${L().datePlanned}: ${view.planned.title}${view.planned.when ? ` · ${view.planned.when}` : ''}`)}"></i>` : '';
+    const plannedMark = view.planned ? `<i class="fa-solid ${view.planned.friendly ? 'fa-handshake ht-head-friend' : 'fa-heart'} ht-head-date" title="${esc(`${view.planned.friendly ? L().outingPlanned : L().datePlanned}: ${view.planned.title}${view.planned.when ? ` · ${view.planned.when}` : ''}`)}"></i>` : '';
     block.innerHTML = headHtml(view, open, (live ? sideMarkHtml() : '') + plannedMark, loading) + (open ? bodyHtml(view, live, ui.tab.get(id) || 'now') : '');
     if (cards) {
         cards.dataset.mesid = String(id);
@@ -2694,6 +2703,8 @@ function editFormHtml(x, act = 'edit-save', label = L().save) {
 // цель, шкала успеха, шаги (можно отмечать самому), «завершить».
 // цвет успеха: от серого к насыщенному розовому
 const romMix = (v) => `color-mix(in srgb, var(--ht-rom-hot) ${Math.max(6, Math.min(100, Math.round(v)))}%, #8d8792)`;
+// дружеская встреча — от серого к зелёному
+const friendMix = (v) => `color-mix(in srgb, var(--ht-friend-hot) ${Math.max(6, Math.min(100, Math.round(v)))}%, #8d8792)`;
 // анимация показывается один раз: дальше та же разметка без смены (перерисовка не обрывает её)
 function freshFor(key, ms = 4000) {
     const now = Date.now(), t = ui.firstSeen.get(key);
@@ -2730,17 +2741,19 @@ function dateCardHtml() {
     if (!d || (d.status !== 'offered' && d.status !== 'active')) return '';
     const fresh = freshFor(`date:${d.id}:${d.status}`);
     const u = getUserName(), c = getCharName();
+    // дружеская встреча: зелёная, без сердечек
+    const fr = isFriendlyDate(d), fc = fr ? ' ht-friendly' : '', ic = fr ? 'fa-handshake' : 'fa-heart';
     const portrait = `<span class="ht-portrait">${avaHtml(charAvatarUrl(), c)}<span class="ht-ava-pin">${avaHtml(userAvatarUrl(), u, 'ht-ava-round')}</span></span>`;
     if (d.status === 'offered') {
         const when = [d.where, dateWhenText(state, d.at)].filter(Boolean).join(' · ');
-        return `<div class="ht-offer ht-date${fresh ? ' ht-offer-new' : ''}">
+        return `<div class="ht-offer ht-date${fc}${fresh ? ' ht-offer-new' : ''}">
             <div class="ht-dhead">${portrait}<div class="ht-dmain">
-                <span class="ht-dinvite"><i class="fa-solid fa-heart"></i>${esc(L().dateInvite(c))}</span>
+                <span class="ht-dinvite"><i class="fa-solid ${ic}"></i>${esc(fr ? L().outingInvite(c) : L().dateInvite(c))}</span>
                 <b class="ht-dtitle">${esc(d.title)}</b>${when ? `<span class="ht-dwhen">${esc(when)}</span>` : ''}</div></div>
             ${d.goal ? `<p class="ht-offer-mean"><i class="fa-solid fa-bullseye"></i> ${esc(d.goal)}</p>` : ''}
             ${d.hook ? `<p class="ht-offer-mean">${esc(d.hook)}</p>` : ''}
             <div class="ht-offer-actions ht-two">
-                <button class="ht-btn ht-btn-main" data-act="date-yes" title="${esc(L().evGo)}"><i class="fa-solid fa-heart"></i><span>${L().evGo}</span></button>
+                <button class="ht-btn ht-btn-main" data-act="date-yes" title="${esc(L().evGo)}"><i class="fa-solid ${ic}"></i><span>${L().evGo}</span></button>
                 <button class="ht-btn ht-btn-quiet" data-act="date-no" title="${esc(L().decline)}"><i class="fa-solid fa-xmark"></i><span>${L().decline}</span></button>
             </div>
         </div>`;
@@ -2750,7 +2763,8 @@ function dateCardHtml() {
     const g = d.goalDone ? 'done' : goalOpen(d, lvl) ? 'open' : 'locked';
     const open = openSteps(d);
     const step = (x, cls = '') => `<button class="ht-date-step ht-who-${x.who} ${cls}" data-act="date-step" data-n="${x.n}"${x.state !== 'open' ? ' disabled tabindex="-1"' : ''}>
-        <i class="fa-${x.state === 'done' ? 'solid fa-heart' : x.state === 'failed' ? 'solid fa-heart-crack' : 'regular fa-heart'}"></i><span>${esc(x.t)}${x.thought && x.state === 'open' ? `<small class="ht-step-thought">${esc(x.thought)}</small>` : ''}</span></button>`;
+        <i class="fa-${fr ? (x.state === 'done' ? 'solid fa-circle-check' : x.state === 'failed' ? 'solid fa-circle-xmark' : 'regular fa-circle')
+            : x.state === 'done' ? 'solid fa-heart' : x.state === 'failed' ? 'solid fa-heart-crack' : 'regular fa-heart'}"></i><span>${esc(x.t)}${x.thought && x.state === 'open' ? `<small class="ht-step-thought">${esc(x.thought)}</small>` : ''}</span></button>`;
     const slots = [];
     // закрытый в этом ответе шаг остаётся видимым зачёркнутым до следующего ответа, новый встаёт под ним
     for (let i = 0; i < DATE_OPEN; i++) {
@@ -2761,8 +2775,8 @@ function dateCardHtml() {
         const isNew = cur && cur.turn === state.turn && freshFor(`new:${d.id}:${cur.n}`, 6000);
         slots.push(`<div class="ht-slot${anim ? ' ht-slot-anim' : ''}">${gone.map(g => step(g, `ht-step-gone ht-step-${g.state}`)).join('')}${cur ? step(cur, isNew ? 'ht-step-new' : '') : ''}</div>`);
     }
-    const hearts = Math.min(5, Math.floor(d.score / 18));
-    const tone = romMix(d.score);
+    const hearts = fr ? 0 : Math.min(5, Math.floor(d.score / 18));
+    const tone = fr ? friendMix(d.score) : romMix(d.score);
     const L0 = d.need || goalNeed(lvl, d.pace);
     const done = doneCount(d);
     // главная цель: отдельный блок; как открывается — словами и цифрами
@@ -2774,7 +2788,7 @@ function dateCardHtml() {
             <p class="ht-dgoal-how"><i class="fa-solid ${g === 'done' ? 'fa-circle-check' : g === 'open' ? 'fa-lock-open' : 'fa-lock'}"></i><span>${esc(goalHow)}</span></p>
         </div>` : '';
     // ход свидания в инфоблоке не показываем — его помнит модель (журнал идёт в промпт, пока свидание идёт)
-    return `<div class="ht-offer ht-date ht-date-on${fresh ? ' ht-offer-new' : ''}${dateLoading() ? ' ht-date-busy' : ''}" style="--v:${d.score};--c:${tone}">
+    return `<div class="ht-offer ht-date ht-date-on${fc}${fresh ? ' ht-offer-new' : ''}${dateLoading() ? ' ht-date-busy' : ''}" style="--v:${d.score};--c:${tone}">
         <span class="ht-dhearts" aria-hidden="true">${'<i class="fa-solid fa-heart"></i>'.repeat(hearts)}</span>
         <div class="ht-dhead">${portrait}
             <span class="ht-dstrip" title="${esc(d.vibe || L().dateVibeStart)}"><i></i></span>
@@ -2794,7 +2808,7 @@ function dateCardHtml() {
         <div class="ht-dsec"><i class="fa-solid fa-shoe-prints"></i>${L().dateSteps}</div>
         <div class="ht-date-steps">${slots.join('') || `<p class="ht-mute">${L().dateNoSteps}</p>`}</div>
         ${learnedHtml(d)}
-        <div class="ht-offer-actions ht-one"><button class="ht-btn ht-btn-quiet" data-act="date-end"><i class="fa-solid fa-flag-checkered"></i><span>${L().dateFinish}</span></button></div>
+        <div class="ht-offer-actions ht-one"><button class="ht-btn ht-btn-quiet" data-act="date-end"><i class="fa-solid fa-flag-checkered"></i><span>${fr ? L().outingFinish : L().dateFinish}</span></button></div>
     </div>`;
 }
 
@@ -2841,11 +2855,13 @@ function showDateToast(d) {
     if (!d || dateToasted.has(d.id) || typeof document?.createElement !== 'function') return;
     dateToasted.add(d.id);
     const el = document.createElement('div');
-    el.className = `ht-date-toast ht-date-${d.result}`;
+    const fr = isFriendlyDate(d);
+    el.className = `ht-date-toast ht-date-${d.result}${fr ? ' ht-friendly' : ''}`;
     el.setAttribute('role', 'status');
+    const ic = fr ? 'fa-handshake' : 'fa-heart';
     el.innerHTML = `<div class="ht-date-toast-card">
-        <div class="ht-date-hearts"><i class="fa-solid fa-heart"></i><i class="fa-solid fa-heart"></i><i class="fa-solid fa-heart"></i></div>
-        <span>${esc(L().dateOver)}</span>
+        <div class="ht-date-hearts"><i class="fa-solid ${fr ? 'fa-star' : ic}"></i><i class="fa-solid ${ic}"></i><i class="fa-solid ${fr ? 'fa-star' : ic}"></i></div>
+        <span>${esc(fr ? L().outingOver : L().dateOver)}</span>
         <b>${esc(L().dateResult[d.result])}</b>
         <p>${esc(d.title)} · ${d.score}%</p>
     </div>`;
@@ -2987,7 +3003,7 @@ function castTabHtml(view, live) {
 // Итог праздника — под спойлером «Итог», чтобы список был коротким
 function recapSpoiler(text, parts, date = false) {
     if (!text && !parts) return '';
-    return `<details class="ht-recap"><summary><i class="fa-solid ${date ? 'fa-heart' : 'fa-scroll'}"></i><span>${date ? L().dateRecapTitle : L().recapTitle}</span><i class="fa-solid fa-chevron-down ht-recap-chev"></i></summary>
+    return `<details class="ht-recap"><summary><i class="fa-solid ${date === 'friendly' ? 'fa-handshake' : date ? 'fa-heart' : 'fa-scroll'}"></i><span>${date === 'friendly' ? L().outingRecapTitle : date ? L().dateRecapTitle : L().recapTitle}</span><i class="fa-solid fa-chevron-down ht-recap-chev"></i></summary>
         ${text ? `<p>${esc(text)}</p>` : ''}${recapPartsHtml(parts)}</details>`;
 }
 
@@ -3300,7 +3316,7 @@ function dateWhyText() {
     const w = L().dateWhy;
     if (di.why === 'norom') return w.norom(di.r);
     if (di.why === 'cooldown') return w.cooldown(di.left, plural);
-    if (di.why === 'ok' || di.why === 'quarrel') return w[di.why](di.chance);
+    if (['ok', 'quarrel', 'open', 'friendly'].includes(di.why)) return w[di.why](di.chance);
     return w[di.why] || '';
 }
 function updateDateWhy() {
@@ -3315,11 +3331,12 @@ function showDateInvite(d) {
     inviteToasted.add(d.id);
     document.querySelector('.ht-invite-toast')?.remove();
     const el = document.createElement('div');
-    el.className = 'ht-invite-toast';
+    const fr = isFriendlyDate(d);
+    el.className = `ht-invite-toast${fr ? ' ht-friendly' : ''}`;
     el.setAttribute('role', 'status');
     el.innerHTML = `<button type="button" class="ht-invite-card">
-        <span class="ht-invite-hearts" aria-hidden="true">${`<i class="fa-solid ${d.icon || 'fa-heart'}"></i>`.repeat(3)}</span>
-        <span class="ht-invite-text"><b>${esc(d.head || L().dateInvite(getCharName()))}</b><span>${esc(d.title)}</span><em>${esc(L().dateTap)}</em></span>
+        <span class="ht-invite-hearts" aria-hidden="true">${`<i class="fa-solid ${d.icon || (fr ? 'fa-handshake' : 'fa-heart')}"></i>`.repeat(3)}</span>
+        <span class="ht-invite-text"><b>${esc(d.head || (fr ? L().outingInvite(getCharName()) : L().dateInvite(getCharName())))}</b><span>${esc(d.title)}</span><em>${esc(L().dateTap)}</em></span>
     </button>`;
     let gone = false;
     const close = () => { if (gone) return; gone = true; el.classList.add('ht-out'); setTimeout(() => el.remove(), 320); };
@@ -3561,9 +3578,9 @@ function bodyHtml(view, live, tab = 'now') {
         const [, m, d] = i.iso.split('-');
         const res = i.type === 'date' && i.result ? i.result : null;
         if (i.result === 'cancelled') return `<div class="ht-yr ht-yr-missed ht-yr-off"><time>${d}.${m}</time><i class="fa-solid fa-ban"></i><div><b>${esc(i.name)}</b></div><em>${esc(L().yearCancelled)}</em></div>`;
-        return `<div class="ht-yr${i.kept ? '' : ' ht-yr-missed'}${res ? ` ht-res-${res}` : ''}">
-            <time>${d}.${m}</time><i class="fa-solid ${TYPE_ICON[i.type] || 'fa-star'}"></i>
-            <div><b>${esc(i.name)}</b>${recapSpoiler(i.recap, i.parts, i.type === 'date')}</div>
+        return `<div class="ht-yr${i.kept ? '' : ' ht-yr-missed'}${res ? ` ht-res-${res}` : ''}${i.friendly ? ' ht-friendly' : ''}">
+            <time>${d}.${m}</time><i class="fa-solid ${i.friendly ? 'fa-handshake' : TYPE_ICON[i.type] || 'fa-star'}"></i>
+            <div><b>${esc(i.name)}</b>${recapSpoiler(i.recap, i.parts, i.type === 'date' && (i.friendly ? 'friendly' : true))}</div>
             <em>${res ? (res === 'missed' ? L().yearMissed : L().dateResult[res]) : i.kept ? L().yearKept : L().yearMissed}</em></div>`;
     }).join('');
 
@@ -3572,8 +3589,8 @@ function bodyHtml(view, live, tab = 'now') {
         const queued = view.recall === f.id;
         const btn = live ? `<button class="ht-recall${queued ? ' ht-on' : ''}" data-act="recall" data-fb="${esc(f.id)}" title="${queued ? L().recallQueued : L().recall}">
             <i class="fa-solid fa-clock-rotate-left"></i><span>${queued ? L().recallShort : L().recall}</span></button>` : '';
-        const res = f.kind === 'date' && f.result ? `<em class="ht-res-chip ht-res-${f.result}"><i class="fa-solid fa-heart"></i>${esc(f.result === 'missed' ? L().yearMissed : L().dateResult[f.result] || '')}</em>` : '';
-        return `<div class="ht-fb${f.kind === 'date' ? ' ht-fb-date' : ''}"><div><b>${esc(f.title)}</b>${res}${f.when ? `<span class="ht-mute"> · ${esc(f.when)}</span>` : ''}${recapSpoiler(f.text, f.parts, f.kind === 'date')}</div>${btn}</div>`;
+        const res = f.kind === 'date' && f.result ? `<em class="ht-res-chip ht-res-${f.result}${f.friendly ? ' ht-friendly' : ''}"><i class="fa-solid ${f.friendly ? 'fa-handshake' : 'fa-heart'}"></i>${esc(f.result === 'missed' ? L().yearMissed : L().dateResult[f.result] || '')}</em>` : '';
+        return `<div class="ht-fb${f.kind === 'date' ? ' ht-fb-date' : ''}"><div><b>${esc(f.title)}</b>${res}${f.when ? `<span class="ht-mute"> · ${esc(f.when)}</span>` : ''}${recapSpoiler(f.text, f.parts, f.kind === 'date' && (f.friendly ? 'friendly' : true))}</div>${btn}</div>`;
     }).join('');
 
     // Вкладки сверху: праздник сейчас и прошедшие за год — год не растягивает инфоблок вниз
@@ -3590,8 +3607,8 @@ function bodyHtml(view, live, tab = 'now') {
             ${section('memories', 'fa-clock-rotate-left', L().flashbacks, memories)}</div>`;
     }
 
-    const planned = view.planned ? `<div class="ht-planned"><i class="fa-solid fa-heart"></i><div>
-            <span>${L().datePlanned}${view.planned.when ? ` · ${esc(view.planned.when)}` : ''}</span>
+    const planned = view.planned ? `<div class="ht-planned${view.planned.friendly ? ' ht-friendly' : ''}"><i class="fa-solid ${view.planned.friendly ? 'fa-handshake' : 'fa-heart'}"></i><div>
+            <span>${view.planned.friendly ? L().outingPlanned : L().datePlanned}${view.planned.when ? ` · ${esc(view.planned.when)}` : ''}</span>
             <b>${esc(view.planned.title)}${view.planned.where ? ` · ${esc(view.planned.where)}` : ''}</b>
             ${view.planned.goal ? `<em>${esc(view.planned.goal)}</em>` : ''}</div></div>` : '';
     const plannedBd = view.plannedBd && ![...(view.also || []), view.hCard].some(x => x?.name === view.plannedBd.name) ? `<div class="ht-planned ht-planned-bd"><i class="fa-solid ${view.plannedBd.extra ? 'fa-champagne-glasses' : 'fa-gift'}"></i><div>

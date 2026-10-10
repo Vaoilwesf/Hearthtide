@@ -7,7 +7,7 @@ import { acceptedExtras, extrasDue } from './invites.js';
 
 // За сколько дней начинается подготовка: ИИ указывает сам для каждого праздника,
 // это — запасные значения, если не указал
-export const PREP_DEFAULT = { personal: 2, family: 3, fast: 1, memorial: 1 };
+export const PREP_DEFAULT = { personal: 2, family: 3, fast: 1, memorial: 1, gathering: 1 };
 export const PREP_DEFAULT_OTHER = 5;
 export function prepWindow(state, h) {
     if (!h) return 0;

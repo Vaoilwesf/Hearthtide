@@ -90,6 +90,20 @@ export const DATE_RESULTS = [
     { key: 'bad', min: 10, f: -4, r: -8 },
     { key: 'terrible', min: 0, f: -8, r: -15 },
 ];
+// Дружеская встреча (романтики нет или ниже нуля): итог двигает в основном дружбу, романтику — чуть-чуть
+export const DATE_RESULTS_FRIENDLY = { great: { f: 12, r: 3 }, good: { f: 7, r: 1 }, awkward: { f: 1, r: 0 }, bad: { f: -5, r: -2 }, terrible: { f: -10, r: -4 } };
+/**
+ * Какая встреча: свидание (romantic) или дружеская встреча, чтобы узнать друг друга (friendly).
+ * Романтика выше 0 — свидание; ниже 0 — только дружеская; ровно 0 — как решили модель или история (asked), иначе свидание.
+ */
+export function dateKindFor(pair, asked = null) {
+    const r = pair?.r ?? 0;
+    if (r < 0) return 'friendly';
+    if (r > 0) return 'romantic';
+    return asked === 'friendly' ? 'friendly' : 'romantic';
+}
+export const isFriendlyDate = (d) => d?.kind === 'friendly';
+
 // Шанс, что {{char}} позовёт на свидание после ответа (%) и пауза между свиданиями (ответов)
 export const DATE_CHANCE = { base: 6 };   // по умолчанию; меняется в настройках
 export const DATE_COOLDOWN = 10;
@@ -106,7 +120,7 @@ export function newDate(d, turn, started) {
         v: 2,
         // одно и то же свидание при повторной обработке ответа — тот же id (уведомление и анимация — один раз)
         id: `d-${turn}-${idOf(d.title)}`,
-        title: d.title, goal: shortGoal(d.goal), hook: d.hook || null, where: d.where || null, at: d.at || null,
+        title: d.title, goal: shortGoal(d.goal), hook: d.hook || null, where: d.where || null, at: d.at || null, kind: d.kind === 'friendly' ? 'friendly' : 'romantic',
         steps: [], nextN: 1, score: 0, goalDone: false, thought: null, vibe: null, notes: [], log: [], gifts: [], closing: null,
         learned: { char: [], user: [] },          // что {{char}} узнал о {{user}} и наоборот — только сказанное или показанное
         status: started ? 'active' : 'offered',
@@ -258,16 +272,17 @@ export function finishDate(state, turn) {
     d.endTurn = turn;
     const p = state.pair || (state.pair = { ...PAIR_DEFAULT });
     const before = { f: p.f, r: p.r };
-    p.f = clamp(p.f + res.f, -100, 100);
-    p.r = clamp(p.r + res.r, -100, 100);
+    const k = isFriendlyDate(d) ? DATE_RESULTS_FRIENDLY[res.key] : res;
+    p.f = clamp(p.f + k.f, -100, 100);
+    if (!p.kin) p.r = clamp(p.r + k.r, -100, 100);
     d.delta = { f: p.f - before.f, r: p.r - before.r };
     state.lastDateEnd = turn;
-    state.datesDone = [...(state.datesDone || []), { id: d.id, title: d.title, result: res.key, score: d.score }].slice(-20);
+    state.datesDone = [...(state.datesDone || []), { id: d.id, title: d.title, result: res.key, score: d.score, kind: d.kind || 'romantic' }].slice(-20);
     return d;
 }
 
-/** Романтика пары, с которой {{char}} уже может позвать: любая искра выше нуля */
-export const DATE_ROM_MIN = 1;
+/** Романтика пары, с которой зовут на свидание (ниже — на дружескую встречу) */
+export const DATE_ROM_MIN = 0;
 
 /**
  * Шанс, что {{char}} позовёт на свидание после этого ответа, и почему он такой.
@@ -278,13 +293,14 @@ export function dateChanceInfo(state, turn, base = DATE_CHANCE.base) {
     const p = state.pair;
     if (!p) return { chance: 0, why: 'nopair' };
     if (p.kin) return { chance: 0, why: 'kin' };
-    if (p.r < DATE_ROM_MIN) return { chance: 0, why: 'norom', r: p.r };
+    // в открытой вражде не зовут никуда; без романтики — дружеская встреча, чтобы узнать друг друга
+    if (p.f <= -40 && p.r < 0) return { chance: 0, why: 'enmity', f: p.f };
     if (['active', 'offered', 'scheduled', 'pending'].includes(state.date?.status)) return { chance: 0, why: state.date.status };
     const left = DATE_COOLDOWN - (turn - (state.lastDateEnd ?? -99));
     if (left > 0) return { chance: 0, why: 'cooldown', left };
     // дружба заметно упала за последние ответы — помириться: шанс в 2,5 раза выше
     if ((state.pairDrop ?? -99) >= turn - 6) return { chance: Math.min(100, Math.round(base * 2.5)), why: 'quarrel' };
-    return { chance: base, why: 'ok' };
+    return { chance: base, why: p.r < 0 ? 'friendly' : p.r === 0 ? 'open' : 'ok' };
 }
 export const dateChance = (state, turn, base) => dateChanceInfo(state, turn, base).chance;
 
