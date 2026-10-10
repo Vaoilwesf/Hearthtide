@@ -35,15 +35,30 @@ export function isBanned(state, name) {
     const banned = state.banned || [];
     if (!banned.length) return false;
     const keys = banKeys(name);
-    return keys.some(k => banned.some(b => b === k || (k.length >= 5 && b.length >= 5 && (k.includes(b) || b.includes(k)))));
+    return keys.some(k => banned.some(b => keysMatch(k, b)));
 }
 
-/** Один и тот же праздник под чуть другим названием (опечатка, скобки) — или уже другой */
+/**
+ * Один и тот же праздник под чуть другим названием (опечатка, скобки, лишнее слово) — или уже другой.
+ * Раньше хватало совпадения первых шести букв: «День рождения Егора» и «День рождения Ани», «Поездка на дачу»
+ * и «Поездка в город» считались одним праздником, и второй повод молча пропадал. Теперь каждое значимое слово
+ * короткого названия должно найтись в длинном (по основе), а число в названии — совпасть.
+ */
+const nameWords = (k) => k.split(' ').filter(w => w.length >= 3 || /\d/.test(w)).map(w => (/\d/.test(w) ? w : w.slice(0, Math.min(5, w.length))));
+function keysMatch(k, x) {
+    if (k === x) return true;
+    const A = nameWords(k), B = nameWords(x);
+    if (!A.length || !B.length) return false;
+    const [s, l] = A.length <= B.length ? [A, B] : [B, A];
+    // одно слово против одного — опечатка в длинном слове («Масленица» / «Масленница»)
+    if (s.length === 1 && l.length === 1) return s[0] === l[0] || (k.length >= 6 && x.length >= 6 && k.slice(0, 6) === x.slice(0, 6));
+    // лишнее слово — только после: «Поездка» и «Поездка на дачу» — одно; «Новый год» и «Старый Новый год» — разное
+    return s.every(w => l.includes(w)) && (s.length === l.length || l[0] === s[0]);
+}
 export function namesMatch(a, b) {
     const A = banKeys(a), B = banKeys(b);
     if (!A.length || !B.length) return false;
-    if (A[0].length >= 6 && B[0].length >= 6 && A[0].slice(0, 6) === B[0].slice(0, 6)) return true;
-    return A.some(k => B.some(x => x === k || (k.length >= 5 && x.length >= 5 && (k.includes(x) || x.includes(k)))));
+    return A.some(k => B.some(x => keysMatch(k, x)));
 }
 
 export function holidayId(h) {
@@ -90,7 +105,13 @@ export function npcBirthdays(state) {
         for (const from of [state.today - 1, state.today]) {
             const start = nextOccurrence({ m: c.bday.m, d: c.bday.d }, from);
             if (start - state.today > NPC_BD_AHEAD || !npcBdOn(state, c, start)) continue;
-            const h = npcHoliday(c, start);
+            let h = npcHoliday(c, start);
+            // история отменила — дня рождения нет; перенесла — тот же человек, другой день
+            const off = state.cancelled?.[h.id];
+            if (off) {
+                if (off.how !== 'moved' || off.to == null || off.to < state.today - 1) continue;
+                h = { ...npcHoliday(c, off.to), movedFrom: h.id };
+            }
             if (!out.some(x => x.id === h.id)) out.push(h);
         }
     }
@@ -99,7 +120,8 @@ export function npcBirthdays(state) {
 
 /** Праздники из календаря + ближайшие дни рождения, по порядку */
 export function allHolidays(state) {
-    const list = (state.holidays || []).filter(h => !isBanned(state, h.name)).map(h => ({ ...h, id: holidayId(h) }));
+    const off = state.cancelled || {};
+    const list = (state.holidays || []).filter(h => !isBanned(state, h.name)).map(h => ({ ...h, id: holidayId(h) })).filter(h => !off[h.id]);
     if (state.today != null) {
         for (const who of ['user', 'char']) {
             const md = state.birthdays?.[who];
@@ -109,7 +131,7 @@ export function allHolidays(state) {
                 const start = nextOccurrence(md, from);
                 const h = { start, days: 1, name: null, who, birthday: true, type: 'personal' };
                 h.id = holidayId(h);
-                if (!list.some(x => x.id === h.id)) list.push(h);
+                if (!off[h.id] && !list.some(x => x.id === h.id)) list.push(h);
             }
         }
         for (const h of npcBirthdays(state)) if (!list.some(x => x.id === h.id)) list.push(h);
@@ -144,6 +166,30 @@ export function phaseOf(state) {
     if (!next) return { kind: 'none', ...base };
     return { kind: inPrep ? 'prep' : 'far', ...base };
 }
+
+/**
+ * Что сейчас готовится — несколько поводов сразу: идущий сегодня, те, чьё окно подготовки открыто,
+ * и всё, на что игрок уже согласился (приглашение, повод из истории), — за три недели.
+ * Раньше следили только за одним праздником: принятый второй вытеснял первый, и его подготовка терялась.
+ */
+export const TRACK_AHEAD = 21;
+export const TRACK_MAX = 3;
+export function trackedOccasions(state) {
+    const today = state.today;
+    if (today == null) return [];
+    const out = [];
+    for (const h of allHolidays(state)) {
+        if (h.start + h.days - 1 < today) continue;
+        const d = h.start - today;
+        const chosen = h.npc || h.extra || h.story;            // позвали и игрок принял, или повод из самой истории
+        if (d <= 0 || d <= prepWindow(state, h) || (chosen && d <= TRACK_AHEAD) || (h.birthday && !h.npc && d <= 7)) out.push(h);
+        if (out.length >= TRACK_MAX) break;
+    }
+    return out;
+}
+
+/** Подарок {{char}} к этому празднику (у каждого праздника — свой) */
+export const charGiftOf = (state, hid) => (hid ? state.charGifts?.[hid] || null : null);
 
 /** Этот праздник в текущем году уже прошёл — повторно не предлагаем; в следующем году — снова можно */
 export function passedThisYear(state, name, start) {
@@ -232,7 +278,9 @@ export function sideNeeds(state, phase) {
         if (ev?.kind === 'party' && ev.status === 'joined') n.add('moments');
     }
     if (active && !h.birthday && !state.giftTo?.[h.id] && state.gifts?.[h.id]) n.add('giftto');
-    if (active || (phase.kind === 'far' && h && phase.daysTo <= 14)) n.add('beat');
+    // подготовка по истории: что сделано, подарки, отменили ли — для всех праздников, которые сейчас готовятся
+    if (trackedOccasions(state).length) n.add('ready');
+    if (active || (phase.kind === 'far' && h && phase.daysTo <= 14) || trackedOccasions(state).length) n.add('beat');
     if ((state.holidays || []).some(x => x.needMeaning && !isBanned(state, x.name))) n.add('mean');
     n.add('new');   // поводы из истории ищем при каждом запросе — это почти ничего не стоит
     n.add('cast');  // новые люди истории и перемены в отношениях — тоже
@@ -271,9 +319,21 @@ export function sideDue(state, phase, needs) {
     // пара ещё не ясна — спросить сразу, но не чаще раза в 5 ответов, если помощник её не дал
     if (needs.has('bond') && !state.pair && (state.turn || 0) - (state.bondSide ?? -99) >= 5) return true;
     const since = (state.turn || 0) - (state.lastSideTurn ?? -99);
+    // чем ближе ближайший из готовящихся праздников, тем чаще помощник читает историю (за пару дней — через ответ)
+    const near = trackedOccasions(state).reduce((m, x) => Math.min(m, Math.max(0, x.start - state.today)), 99);
+    if (since >= readyEvery(near)) return true;
     if (phase.kind === 'prep') return needs.has('prep') || since >= SIDE_EVERY.prep;   // новый день — тоже
     if (phase.kind === 'today') return since >= SIDE_EVERY.today;
     return since >= SIDE_EVERY.far;
+}
+
+/** Как часто читать подготовку по истории: сегодня и за 3 дня — через ответ, за неделю — раз в 3, дальше — раз в 4 */
+export function readyEvery(daysTo) {
+    if (daysTo == null || daysTo >= 99) return 99;
+    if (daysTo <= 3) return 2;
+    if (daysTo <= 7) return 3;
+    if (daysTo <= 14) return 4;
+    return 6;
 }
 
 /** Как часто упоминать подготовку: чем ближе праздник, тем чаще (в ответах) */

@@ -10,11 +10,11 @@ import {
 import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
-import { slimSmallTag, parseExtras, parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseDateUp, parseRecapParts, stripBlocks } from './tag.js';
+import { slimSmallTag, parseReady, tidyValue, parseExtras, parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseDateUp, parseRecapParts, stripBlocks } from './tag.js';
 import { PAIR_DEFAULT, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, levelOf, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN, DATE_SKIP_END, DATE_SKIP_HARD, DATE_CLOSE_TURNS, DATE_QUIET, goalNeed, paceAuto, stepKinds, MISS_PAIR } from './romance.js';
 import { CAST_GROUPS, KIN_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast, nameCandidates } from './cast.js';
-import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE_DEFAULT, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday, giftJoint } from './calendar.js';
-import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, buildDateSideMessages, buildDateRefillMessages, giftTarget, hName } from './prompts.js';
+import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE_DEFAULT, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday, giftJoint, trackedOccasions, charGiftOf } from './calendar.js';
+import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, buildDateSideMessages, buildDateRefillMessages, giftTarget, hName, readyNoted } from './prompts.js';
 import { inviteCandidates, bdKey, extraKey, mergeExtras, INVITE_TRIES, INVITE_COOL, INVITE_AHEAD } from './invites.js';
 import { listProfiles, gatherSources, loreFor, sendSide, reasonOf } from './side.js';
 import { strings } from './i18n.js';
@@ -154,7 +154,12 @@ function defaultState() {
         giftTo: {},             // hid → кому по обычаю дарят (виновник торжества)
         charNow: null,          // { hid, text, turn } — мысль или действие персонажа сейчас
         charLog: {},            // hid → [{ text, turn }] — цепочка шагов персонажа, чтобы действия были последовательны
-        charGift: null,         // { hid, text, done } — подарок персонажа игроку
+        charGifts: {},          // hid → { text, got, done, turn } — подарок {{char}} к этому празднику (у каждого свой)
+        ready: {},              // hid → { log: [{ t, who, turn }], sum, gifts: { имя: { text, stage } } } — подготовка, как её показала история
+        cancelled: {},          // hid → { how: cancelled|moved, to, why, turn, name } — история отменила или перенесла праздник
+        offNote: null,          // { name, how, to, why, turn } — сказать основной модели, что праздника больше нет (или он позже)
+        readySeenMsg: null,     // до какого сообщения помощник уже записал подготовку
+        readyOcc: [],           // какие праздники (id по порядку) основная модель видела в списке HT-READY
         userGift: {},           // hid → { text, done, by: hand|story } — подарок {{user}} имениннику: вписал игрок или {{user}} сам сказал
         giftMode: {},           // hid → joint|own — подарок имениннику общий или каждый свой (выбор игрока)
         langSlip: false,        // в прошлом ответе значения пришли не на том языке
@@ -195,6 +200,16 @@ function loadState() {
     // старые итоги праздников → в воспоминания
     if (!state.flashbacks.length && state.recaps?.length) {
         state.flashbacks = state.recaps.map((r, i) => ({ id: `fb-old-${i}`, title: r.name, text: r.text, when: null, kind: 'holiday' }));
+    }
+    // подарок {{char}} был один на всё — теперь у каждого праздника свой
+    if (state.charGift?.hid) {
+        if (!state.charGifts[state.charGift.hid]) state.charGifts[state.charGift.hid] = { text: state.charGift.text, got: !!state.charGift.done, done: !!state.charGift.done, turn: state.turn };
+        delete state.charGift;
+    }
+    for (const sn of state.snapshots || []) {
+        const d = sn.data;
+        if (d?.charGift?.hid) { d.charGifts = { ...(d.charGifts || {}), [d.charGift.hid]: { text: d.charGift.text, got: !!d.charGift.done, done: !!d.charGift.done } }; delete d.charGift; }
+        if (d) for (const k of ['charGifts', 'ready', 'cancelled']) if (!d[k]) d[k] = {};
     }
     // место, сохранённое вместе с английским словом-типом («settlement Деревня Березовка»)
     if (state.place) state.place = tidyPlace(state.place);
@@ -249,6 +264,7 @@ function ctxFor(request = null) {
     const placeName = state.place || state.setting?.place || null;
     return {
         state, phase, request,
+        tracked: trackedOccasions(state),
         userName: getUserName(), charName: getCharName(),
         part: dayPart(state.clock),
         placeName,
@@ -590,6 +606,9 @@ function processReply(N) {
     const calSide = sideText && !(state.calIgnore || []).includes(hashText(sideText)) ? parseCalendar(sideText) : null;
     const cal = calRaw || calSide;
     const prep = both(parsePrep);
+    // подготовка по истории: у основной модели — список, который она видела в промпте; у помощника — тот, что ушёл с запросом
+    const readyMain = apiOn() ? null : parseReady(src);
+    const readySide = sideText && sideAsked.includes('ready') ? parseReady(sideText) : null;
     const day = both(parseDay);
     const recap = both(parseRecap);
     const recapParts = both(parseRecapParts);
@@ -862,6 +881,11 @@ function processReply(N) {
     } : null;
     if (confirmNeed && !confirmNeed.date && !confirmNeed.inv.length) confirmNeed = null;
 
+    // ── Подготовка по истории: что сделано, подарки, отменили или перенесли ──
+    if (readyMain && applyReady(readyMain, state.readyOcc)) slip = true;
+    if (readySide && applyReady(readySide, sideRec.occ || trackedOccasions(state).map(h => h.id))) slip = true;
+    if (sideAsked.includes('ready')) state.readySeenMsg = N;
+
     // ── Подготовка, день праздника, итог — привязываем к текущей фазе ──
     let phase = phaseOf(state);
     if (prep && phase.h && (phase.kind === 'prep' || phase.kind === 'far' || phase.kind === 'today')) {
@@ -869,7 +893,7 @@ function processReply(N) {
             state.prep = { hid: phase.h.id, day: state.today, turn: state.turn, people: prep.people, mood: prep.mood };
         } else slip = true;
         if (prep.gifts != null) state.gifts[phase.h.id] = prep.gifts;
-        if (prep.giftTo && langOk(prep.giftTo)) state.giftTo[phase.h.id] = prep.giftTo;
+        if (prep.giftTo && langOk(prep.giftTo) && giftToName(prep.giftTo)) state.giftTo[phase.h.id] = giftToName(prep.giftTo);
         if (prep.care) state.care[phase.h.id] = prep.care;
     }
     // Люди: список заменяется целиком — один человек, одна строка
@@ -911,7 +935,7 @@ function processReply(N) {
     }
     // Мысль/действие персонажа и его подарок — из маленького тега
     if (sm && phase.h && (phase.kind === 'prep' || phase.kind === 'today')) {
-        if (sm.giftTo && langOk(sm.giftTo) && !phase.h.birthday) state.giftTo[phase.h.id] = sm.giftTo;
+        if (sm.giftTo && langOk(sm.giftTo) && !phase.h.birthday && giftToName(sm.giftTo)) state.giftTo[phase.h.id] = giftToName(sm.giftTo);
         // шаг, почти повторяющий прошлые словами, не принимаем — цепочка должна идти дальше
         const echo = (t) => (state.charLog[phase.h.id] || []).slice(-3).some(x => echoes(x.text, t));
         if (sm.char && echo(sm.char)) sm.char = null;
@@ -926,19 +950,18 @@ function processReply(N) {
         }
         if (sm.gift || sm.giftDone) {
             if (sm.gift && !langOk(sm.gift)) slip = true;
-            const prev = state.charGift?.hid === phase.h.id ? state.charGift : null;
-            state.charGift = {
-                hid: phase.h.id,
+            const prev = charGiftOf(state, phase.h.id);
+            state.charGifts = { ...(state.charGifts || {}), [phase.h.id]: {
                 text: sm.gift && langOk(sm.gift) ? sm.gift : prev?.text || null,
-                done: !!(sm.giftDone || prev?.done),
-            };
+                got: !!(prev?.got || sm.giftDone), done: !!(sm.giftDone || prev?.done), turn: state.turn,
+            } };
         }
         // подарок {{user}} имениннику — то, что {{user}} сам написал; вписанное игроком не перезаписываем
         if (phase.h.npc && (sm.ugift || sm.ugiftDone) && !giftJoint(state, phase.h)) {
             const hid = phase.h.id, prev = state.userGift?.[hid];
             if (sm.ugift && !langOk(sm.ugift)) slip = true;
             const text = prev?.by === 'hand' && prev.text ? prev.text : (sm.ugift && langOk(sm.ugift) ? sm.ugift : prev?.text || null);
-            state.userGift = { ...(state.userGift || {}), [hid]: { text, done: !!(sm.ugiftDone || prev?.done), by: prev?.by === 'hand' ? 'hand' : 'story' } };
+            state.userGift = { ...(state.userGift || {}), [hid]: { text, got: !!prev?.got, done: !!(sm.ugiftDone || prev?.done), by: prev?.by === 'hand' ? 'hand' : 'story' } };
         }
     }
     if (day && phase.kind === 'today' && ['title', 'where', 'morning', 'day', 'evening', 'night'].some(k => day[k] && !langOk(day[k]))) { slip = true; }
@@ -1052,7 +1075,10 @@ function processReply(N) {
 
     // ── Упоминать ли подготовку в следующем ответе (чем ближе, тем чаще) ──
     state.mentionNow = false;
-    if (phase.kind === 'prep' && state.turn - state.lastMention >= mentionEvery(phase.daysTo)) {
+    // и когда готовятся к принятому приглашению или поводу из истории — чем ближе день, тем чаще
+    const nearTracked = trackedOccasions(state).filter(x => x.start > state.today).reduce((m, x) => (m == null ? x.start - state.today : Math.min(m, x.start - state.today)), null);
+    const mentionDays = phase.kind === 'prep' ? phase.daysTo : nearTracked;
+    if ((phase.kind === 'prep' || (phase.kind !== 'today' && nearTracked != null)) && state.turn - state.lastMention >= mentionEvery(mentionDays)) {
         state.mentionNow = true;
         state.lastMention = state.turn;
     }
@@ -1089,6 +1115,140 @@ function processReply(N) {
     saveState();
     injectPrompts();
     scheduleRenderAll();
+}
+
+// ═══ Подготовка по истории ═══
+// Инфоблок не придумывает подготовку: инджект подталкивает мир (BEAT), основная модель показывает это в ролплее,
+// помощник читает историю и записывает сделанное (HT-READY). Только потом это появляется в инфоблоке.
+const factKey = (t) => String(t || '').toLowerCase().replace(/ё/g, 'е').replace(/[^\p{L}\d ]+/gu, ' ').replace(/\s+/g, ' ').trim();
+/** Тот же факт другими словами: совпадает, входит один в другой или почти все основы слов общие */
+function sameFact(a, b) {
+    const x = factKey(a), y = factKey(b);
+    if (!x || !y) return false;
+    if (x === y || x.includes(y) || y.includes(x)) return true;
+    const st = (t) => new Set(t.split(' ').filter(w => w.length >= 4).map(w => w.slice(0, 5)));
+    const A = st(x), B = st(y);
+    if (!A.size || !B.size) return false;
+    let n = 0;
+    for (const w of A) if (B.has(w)) n++;
+    return n / Math.min(A.size, B.size) >= 0.6;
+}
+/** Слово из имени без падежа: «Егору», «Егора» — это Егор */
+function stemEq(word, name) {
+    const w = String(word || '').toLowerCase().replace(/ё/g, 'е'), n = String(name || '').toLowerCase().replace(/ё/g, 'е');
+    if (n.length < 3 || w.length < 3) return false;
+    const st = n.length > 4 ? n.slice(0, n.length - 2) : n.slice(0, 3);
+    return w.startsWith(st) && w.length <= n.length + 3;
+}
+/**
+ * Кому дарят — имя, а не «имениннику Егору» или «для Егора»: снимаем предлог и роль, падеж сводим к имени
+ * из списка людей (или {{user}} / {{char}}). Длинное описание вместо имени не принимаем.
+ */
+function giftToName(v) {
+    let x = String(v || '').trim().replace(/^(?:для|ко?|to|for)\s+/i, '');
+    x = x.replace(/(?<![\p{L}])(?:именинни(?:к|ку|ка|ком|це|ца|цу|цы)|виновни(?:к|ку|ка|це|ца|цу)(?:\s+торжества)?|юбиляр\S*|the\s+birthday\s+(?:boy|girl|person)|the\s+guest\s+of\s+honou?r|the\s+host(?:ess)?)(?![\p{L}])/giu, ' ').replace(/\s+/g, ' ').trim();
+    if (!x) return null;
+    const known = [getUserName(), getCharName(), ...(state?.cast || []).map(c => c.name)].filter(Boolean);
+    const words = x.split(' ');
+    for (const k of known) if (words.some(w => stemEq(w, String(k).split(/\s+/)[0]))) return k;
+    if (words.length > 3) return null;
+    // незнакомое имя в дательном: «Егору» → «Егор», «Андрею» → «Андрей» (женские формы не трогаем — их не угадать)
+    if (words.length === 1 && /^[А-ЯЁ]/.test(x)) x = x.replace(/^(.{2,}[бвгджзклмнпрстфхцчшщ])у$/u, '$1').replace(/^(.{2,})ею$/u, '$1ей');
+    return x.charAt(0).toUpperCase() + x.slice(1);
+}
+/** Кто это в строке подготовки: user / char / оба / имя */
+function whoOf(v) {
+    const w = String(v || '').trim(), l = w.toLowerCase().replace(/ё/g, 'е');
+    if (!w) return { kind: 'none', name: null };
+    if (/^(both|оба|обе|вместе|together|они|they)$/.test(l) || (stemEq(l.split(/\s+/)[0], getCharName()) && l.split(/\s+/).some(x => stemEq(x, getUserName())))) return { kind: 'both', name: `${getCharName()} и ${getUserName()}` };
+    if (/^(user|юзер|игрок|\{\{user\}\})$/.test(l) || stemEq(l.split(/\s+/)[0], getUserName().split(/\s+/)[0])) return { kind: 'user', name: getUserName() };
+    if (/^(char|чар|\{\{char\}\})$/.test(l) || stemEq(l.split(/\s+/)[0], getCharName().split(/\s+/)[0])) return { kind: 'char', name: getCharName() };
+    return { kind: 'other', name: w.charAt(0).toUpperCase() + w.slice(1) };
+}
+/** Блок HT-READY → в состояние. occ — id праздников в том порядке, в каком модель видела их номера */
+function applyReady(r, occ) {
+    if (!r) return false;
+    let slip = false;
+    const all = allHolidays(state);
+    const byI = (i) => { const id = occ?.[i - 1]; return id ? all.find(h => h.id === id) || null : null; };
+    state.ready = state.ready || {};
+    const rec = (hid) => state.ready[hid] || (state.ready[hid] = { log: [], sum: null, gifts: {} });
+    const log = [];
+    for (const s of r.sum) {
+        const h = byI(s.i);
+        if (!h) continue;
+        if (!langOk(s.t)) { slip = true; continue; }
+        const R = rec(h.id);
+        R.sum = s.t;
+        R.log = R.log.slice(-3);                                  // сжали: старое — в одну фразу, последние — как были
+        log.push(`${displayName(h)}: сводка`);
+    }
+    for (const d of r.done) {
+        const h = byI(d.i);
+        if (!h) { log.push(`№${d.i} — нет такого праздника, пропущено`); continue; }
+        if (!langOk(d.t)) { slip = true; continue; }
+        const R = rec(h.id);
+        if ([R.sum, ...R.log.map(x => x.t)].some(t => t && sameFact(t, d.t))) continue;   // уже записано
+        const who = whoOf(d.who);
+        R.log.push({ t: d.t, who: who.kind === 'none' ? null : who.name, turn: state.turn });
+        if (R.log.length > 12) R.log = R.log.slice(-12);
+        log.push(`${displayName(h)}: ${d.t}`);
+    }
+    for (const g of r.gifts) {
+        const h = byI(g.i);
+        if (!h) continue;
+        if (!langOk(g.t)) { slip = true; continue; }
+        const who = whoOf(g.who);
+        const got = g.stage !== 'idea', done = g.stage === 'given';
+        if (who.kind === 'char' || who.kind === 'both') {
+            const prev = charGiftOf(state, h.id);
+            state.charGifts = { ...(state.charGifts || {}), [h.id]: { text: g.t, got: got || !!prev?.got, done: done || !!prev?.done, turn: state.turn } };
+        }
+        if (who.kind === 'user' || who.kind === 'both') {
+            // свой подарок {{user}} — то, что {{user}} сам написал; вписанное игроком не перезаписываем, только этап
+            const prev = state.userGift?.[h.id];
+            const hand = prev?.by === 'hand' && prev.text;
+            state.userGift = { ...(state.userGift || {}), [h.id]: { text: hand ? prev.text : g.t, got: got || !!prev?.got, done: done || !!prev?.done, by: hand ? 'hand' : 'story' } };
+        }
+        if (who.kind === 'other') rec(h.id).gifts[who.name] = { text: g.t, stage: g.stage };
+        log.push(`${displayName(h)}: подарок (${who.name || '?'}) — ${g.t}, ${g.stage}`);
+    }
+    for (const o of r.off) {
+        const h = byI(o.i);
+        if (h) cancelOccasion(h, o.how, o.to, o.why && langOk(o.why) ? o.why : null);
+    }
+    if (log.length) console.info(`[Hearthtide] подготовка по истории: ${log.join('; ')}`);
+    return slip;
+}
+/**
+ * История отменила праздник или перенесла его на другой день. Отменённый пропадает из инфоблока вместе с подготовкой,
+ * людьми и мыслями {{char}}, в «Текущем году» — «отменили»; перенесённый уходит на новую дату со всем, что к нему готовили.
+ */
+function cancelOccasion(h, how, to, why) {
+    if (!h || state.cancelled?.[h.id]) return;
+    if (how === 'moved' && (to == null || to === h.start || (h.birthday && !h.npc))) return;   // свой день рождения не переносится
+    const name = displayName(h);
+    state.cancelled = { ...(state.cancelled || {}), [h.id]: { how, to: how === 'moved' ? to : null, why: why || null, turn: state.turn, name } };
+    if (how === 'moved') {
+        let newId = h.id;                                         // дополнительный праздник: тот же id, другой день
+        if (h.npc) newId = holidayId({ npc: true, cid: h.cid, start: to });
+        else if (!h.extra) {
+            const x = (state.holidays || []).find(y => holidayId(y) === h.id);
+            if (x) { x.start = to; x.edited = true; newId = holidayId(x); state.holidays.sort((a, b) => a.start - b.start); }
+        }
+        if (newId !== h.id) {
+            renameHidIn(state, h.id, newId);
+            for (const map of ['userGift', 'giftMode']) if (state[map]?.[h.id]) { state[map] = { ...state[map], [newId]: state[map][h.id] }; delete state[map][h.id]; }
+        }
+    } else {
+        forgetHolidayIn(state, h.id);
+        if (state.activeHid === h.id) { state.people = []; state.lastPeopleTurn = -99; state.nudge = null; }
+        state.beat = null;                                         // подсказка могла быть о нём
+        const log = ensureYear();
+        if (log) logItem(log, { id: h.id, name: h.npc || h.birthday ? name : h.name, birthday: !!h.birthday, npc: !!h.npc, who: h.who, type: h.type, start: h.start, days: h.days, kept: false, result: 'cancelled' });
+    }
+    state.offNote = { name, how, to: how === 'moved' ? to : null, why: why || null, turn: state.turn };
+    console.info(`[Hearthtide] ${name}: ${how === 'moved' ? `перенесли на ${isoOf(to)}` : 'отменили'} по истории${why ? ` (${why})` : ''}`);
 }
 
 // Повторяет ли фраза прошлую: хотя бы 3 общих слова (по корням длиной 5) и это 40% и больше
@@ -1457,8 +1617,14 @@ function takeOffers(list) {
         const owner = birthdayOwner(o.name);
         if (owner && (state.birthdays?.[owner] || state.birthdayOff?.[owner])) continue;   // уже известен или удалён игроком
         if (owner) o.bday = owner;                                                         // день рождения узнали из истории
+        // день рождения человека из «Людей» — это его день рождения, а не отдельный праздник: подарки, круг именинника
+        const bp = owner ? null : birthdayPerson(o.name);
+        if (bp) {
+            if (state.bdDecisions?.[bdKey(bp.id, o.start)] || state.cancelled?.[holidayId({ npc: true, cid: bp.id, start: o.start })]) continue;
+            o.npcCid = bp.id;
+        }
         if (offerKnown(o)) continue;
-        if (state.offers.some(x => namesMatch(x.name, o.name))) continue;
+        if (state.offers.some(x => namesMatch(x.name, o.name) && Math.abs(x.start - o.start) <= 14)) continue;
         state.offers.push({ ...o, id: `of-${state.turn}-${Date.now().toString(36)}-${state.offers.length}`, turn: state.turn });
     }
     // устаревшие: дата прошла, игрок давно не решает
@@ -1480,6 +1646,24 @@ function acceptOffer(oid, edit = null) {
         if (start == null) { window.toastr?.warning?.(L().badDate, 'Hearthtide'); return false; }
     }
     const toBday = String(edit?.type || '').startsWith('bday_') ? edit.type.slice(5) : (!edit?.type && o.bday) || null;
+    if (!toBday && o.npcCid && (!edit || namesMatch(String(edit.name || '').trim() || o.name, o.name))) {
+        // день рождения человека из «Людей»: записываем ему дату и считаем приглашение принятым
+        const md = fromDayNum(start);
+        const apply = (st) => {
+            const c = (st.cast || []).find(x => x.id === o.npcCid);
+            if (c && (!c.bday || c.bday.m !== md.m || c.bday.d !== md.d)) c.bday = { d: md.d, m: md.m, y: c.bday?.y ?? null };
+            dropOfferIn(st, oid);
+        };
+        apply(state);
+        applyToSnapshots(apply);
+        const key = bdKey(o.npcCid, start);
+        state.bdDecisions = { ...(state.bdDecisions || {}), [key]: 'accepted' };
+        noteDecision('bd', key, lastProcessedMsg());
+        saveState();
+        injectPrompts();
+        window.toastr?.success?.(L().offerAdded, 'Hearthtide');
+        return true;
+    }
     if (toBday) {
         const md = fromDayNum(start);
         const apply = (st) => {
@@ -1528,6 +1712,15 @@ function declineOffer(oid) {
     window.toastr?.info?.(L().offerDropped, 'Hearthtide');
 }
 
+/** «День рождения Егора», «Именины Ани» — чей это день рождения из «Людей» (или null) */
+function birthdayPerson(name) {
+    const n = String(name || '');
+    if (!/(день\s*рожд|днюх|именин|birthday)/i.test(n)) return null;
+    const words = n.replace(/(день\s*рождения|днюх\S*|именин\S*|birthday|'s)/gi, ' ').split(/[^\p{L}]+/u).filter(w => w.length >= 3);
+    if (!words.length) return null;
+    return (state.cast || []).find(c => c.name && !c.off && words.some(w => stemEq(w, String(c.name).split(/\s+/)[0]))) || null;
+}
+
 // «День рождения Нины» строкой праздника — это дубль дня рождения из B-строк
 function birthdayOwner(name) {
     if (!/(день\s*рожд|днюх|именинн|birthday)/i.test(String(name))) return null;
@@ -1542,6 +1735,12 @@ function mergeHolidays(list) {
     for (const h of list) {
         if (isBanned(state, h.name) || passedThisYear(state, h.name, h.start)) continue;
         const owner = birthdayOwner(h.name);
+        const bp = owner ? null : birthdayPerson(h.name);
+        if (bp) {
+            // день рождения человека из «Людей» — дата ему, праздник появится, когда позовут и игрок примет
+            if (!bp.bday && !bp.edited) { const md = fromDayNum(h.start); bp.bday = { d: md.d, m: md.m, y: null }; }
+            continue;
+        }
         if (owner) {
             if (!state.birthdays[owner]) {
                 const d = new Date(h.start * 86400000);
@@ -1623,11 +1822,10 @@ function renameHidIn(st, oldId, newId) {
     for (const k of Object.keys(st.planPart || {})) {
         if (k.startsWith(`${oldId}#`)) { st.planPart[k.replace(oldId, newId)] = st.planPart[k]; delete st.planPart[k]; }
     }
-    for (const map of ['charLog', 'highlights', 'care', 'gifts', 'giftTo', 'recapDone', 'lived']) {
+    for (const map of ['charLog', 'highlights', 'care', 'gifts', 'giftTo', 'recapDone', 'lived', 'charGifts', 'ready']) {
         if (st[map] && oldId in st[map]) { st[map][newId] = st[map][oldId]; delete st[map][oldId]; }
     }
     if (st.charNow?.hid === oldId) st.charNow.hid = newId;
-    if (st.charGift?.hid === oldId) st.charGift.hid = newId;
     for (const e of st.evts || []) if (e.hid === oldId) e.hid = newId;
     if (st.activeHid === oldId) st.activeHid = newId;
 }
@@ -1638,9 +1836,8 @@ function forgetHolidayIn(st, id) {
     for (const map of ['days', 'planPart']) {
         for (const k of Object.keys(st[map] || {})) if (k.startsWith(`${id}#`)) delete st[map][k];
     }
-    for (const map of ['charLog', 'care', 'gifts', 'giftTo']) if (st[map]) delete st[map][id];
+    for (const map of ['charLog', 'care', 'gifts', 'giftTo', 'charGifts', 'ready']) if (st[map]) delete st[map][id];
     if (st.charNow?.hid === id) st.charNow = null;
-    if (st.charGift?.hid === id) st.charGift = null;
 }
 
 function saveHolidayEdit(hid, name, dateStr, type, meaning = null) {
@@ -1762,7 +1959,7 @@ function deleteHoliday(hid) {
         st.holidays = (st.holidays || []).filter(x => !isBanned(state, x.name));
         if (st.prep?.hid === hid) st.prep = null;
         if (st.charNow?.hid === hid) st.charNow = null;
-        if (st.charGift?.hid === hid) st.charGift = null;
+        if (st.charGifts) delete st.charGifts[hid];
         if (h.npc) npcOff(st);
         else if (h.extra) { /* решено выше */ }
         else if (h.birthday) st.birthdayOff = { ...(st.birthdayOff || {}), [h.who]: true };
@@ -1771,7 +1968,8 @@ function deleteHoliday(hid) {
     for (const k of Object.keys(state.days)) if (k.startsWith(`${hid}#`)) delete state.days[k];
     state.recaps = state.recaps.filter(r => r.hid !== hid);
     if (state.charNow?.hid === hid) state.charNow = null;
-    if (state.charGift?.hid === hid) state.charGift = null;
+    if (state.charGifts) delete state.charGifts[hid];
+    if (state.ready) delete state.ready[hid];
     if (state.highlights) delete state.highlights[hid];
     saveState();
     injectPrompts();
@@ -1824,7 +2022,11 @@ function viewSnapshot(phase) {
         plan: phase.kind === 'today' ? planFor(phase.h, phase.dayIndex) : null,
         prep: phase.kind === 'prep' && state.prep?.hid === phase.h?.id ? state.prep : null,
         ended: phase.ended ? { name: displayName(phase.ended), recap: state.recaps.find(r => r.hid === phase.ended.id)?.text || null } : null,
-        upcoming: (phase.upcoming || []).filter(x => !phase.h || x.id !== phase.h.id).slice(0, 4)
+        // другие праздники, к которым уже готовятся, — своими карточками, чтобы второй не вытеснял первый
+        also: trackedOccasions(state).filter(x => x.id !== phase.h?.id).map(trackCard),
+        // праздник в шапке издали, но к нему уже готовятся (приглашение принято) — его подготовка прямо в главном разделе
+        hCard: phase.h && phase.kind !== 'prep' && phase.kind !== 'today' && trackedOccasions(state).some(x => x.id === phase.h.id) ? trackCard(phase.h) : null,
+        upcoming: (phase.upcoming || []).filter(x => (!phase.h || x.id !== phase.h.id) && !trackedOccasions(state).some(t => t.id === x.id)).slice(0, 4)
             .map(x => ({ id: x.id, name: displayName(x), raw: x.name, iso: isoOf(x.start), type: x.type, meaning: x.meaning, daysTo: x.start - state.today, birthday: !!x.birthday, who: x.who, npc: !!x.npc })),
         recaps: state.recaps.slice(-3).reverse(),
         year: (state.yearLog?.items || []).map(i => ({
@@ -1853,20 +2055,23 @@ function viewSnapshot(phase) {
         })() : null,
         ...(() => {
             const act = phase.h && (phase.kind === 'prep' || phase.kind === 'today');
-            if (!act) return { people: [], highlights: [], care: null, charNow: null, charSteps: [], charGift: null, gifts: false };
+            if (!act) return { people: [], highlights: [], care: null, charNow: null, charSteps: [], charGift: null, gifts: false, ready: null };
             const hid = phase.h.id;
+            const cg = charGiftOf(state, hid);
             return {
+                ready: readyView(hid),
+                userGift: !phase.h.npc && state.userGift?.[hid] ? { ...state.userGift[hid] } : null,
                 people: clone(peopleSeen()),
                 care: state.care[hid] || null,
                 charNow: state.charNow?.hid === hid ? state.charNow.text : null,
                 charSteps: (state.charLog?.[hid] || []).slice(-4, -1).map(x => x.text),
                 highlights: clone(state.highlights?.[hid] || []),
-                charGift: state.charGift?.hid === hid ? { text: state.charGift.text, done: state.charGift.done } : null,
-                giftTo: giftTarget(state, phase.h, getUserName(), getCharName()),
+                charGift: cg ? { ...cg } : null,
+                giftTo: giftToName(giftTarget(state, phase.h, getUserName(), getCharName())) || giftTarget(state, phase.h, getUserName(), getCharName()),
                 // у чужого дня рождения подарки — своим блоком: общий или от каждого
                 npcGifts: phase.h.npc ? {
                     joint: giftJoint(state, phase.h),
-                    char: state.charGift?.hid === hid ? { text: state.charGift.text, done: state.charGift.done } : null,
+                    char: cg ? { ...cg } : null,
                     user: state.userGift?.[hid] ? { ...state.userGift[hid] } : null,
                 } : null,
                 gifts: !phase.h.npc && hasGifts(state, phase.h) && giftTarget(state, phase.h, getUserName(), getCharName()).toLowerCase() !== getCharName().toLowerCase(),
@@ -1876,6 +2081,21 @@ function viewSnapshot(phase) {
 }
 
 function liveView() { return viewSnapshot(phaseOf(state)); }
+
+/** Праздник, к которому готовятся, — карточкой: когда, приглашение, что сделано, подарки */
+function trackCard(x) {
+    return { id: x.id, name: displayName(x), iso: isoOf(x.start), daysTo: x.start - state.today, type: x.birthday ? 'personal' : x.type,
+        invited: !!(x.npc || x.extra), host: x.extra ? x.host || null : null, ready: readyView(x.id),
+        charGift: charGiftOf(state, x.id) ? { ...charGiftOf(state, x.id) } : null, userGift: state.userGift?.[x.id] ? { ...state.userGift[x.id] } : null };
+}
+
+/** Подготовка к празднику для инфоблока — только то, что показала история */
+function readyView(hid) {
+    const r = state.ready?.[hid];
+    if (!r || (!r.sum && !r.log?.length && !Object.keys(r.gifts || {}).length)) return null;
+    return { sum: r.sum || null, log: (r.log || []).slice(-5).map(x => ({ t: x.t, who: x.who || null, fresh: x.turn === state.turn })),
+        more: Math.max(0, (r.log || []).length - 5), gifts: Object.entries(r.gifts || {}).map(([who, g]) => ({ who, ...g })) };
+}
 
 // ═══════════════════════════════════════════════════════════════
 // ИНДЖЕКТ
@@ -1889,6 +2109,8 @@ function currentRequest() {
 function injectPrompts() {
     const on = isEnabled() && state;
     const ctx = on ? ctxFor(currentRequest()) : null;
+    // номера праздников в HT-READY основной модели — чтобы потом разобрать, о каком речь
+    if (ctx && !ctx.api) state.readyOcc = ctx.tracked.map(h => h.id);
     // scan = false: лорбук не читает наши блоки — иначе имена из «Людей» и праздника срабатывают на ключи
     setExtensionPrompt(PROMPT_STATE, on ? buildStatePrompt(ctx) : '', extension_prompt_types.IN_CHAT, 4, false, extension_prompt_roles.SYSTEM);
     setExtensionPrompt(PROMPT_TAG, on && !isChatCompletion() ? buildTagPrompt(ctx) : '', extension_prompt_types.IN_CHAT, 0, false, extension_prompt_roles.SYSTEM);
@@ -2097,11 +2319,14 @@ async function runSide(N, needs) {
         ctx.castHint = castHint();
         // перепись людей читает больше сообщений, чем обычный запрос
         // ход свидания судим только по новым сообщениям — помечаем их [NEW]
+        // подготовку записываем только по новым сообщениям — помечаем их [NEW] и отдаём целиком
         const newFrom = needs.has('date') ? (state.dateSeenMsg != null && state.dateSeenMsg < N ? state.dateSeenMsg : Math.max(-1, N - 2))
-            : needs.has('confirm') ? N - 1 : null;
+            : needs.has('confirm') ? N - 1
+            : needs.has('ready') ? (state.readySeenMsg != null && state.readySeenMsg < N ? state.readySeenMsg : Math.max(-1, N - 4)) : null;
         // план свидания — по большему окну истории и с бóльшим куском лорбука
         const depth = Math.max(sideDepth(), needs.has('census') ? CENSUS_DEPTH : 0, needs.has('dateplan') ? 20 : 0);
-        const src = await gatherSources(N, depth, newFrom, needs.has('dateplan') ? 3600 : undefined);
+        const src = await gatherSources(N, depth, newFrom, needs.has('dateplan') ? 3600 : undefined, needs.has('ready') ? 2500 : undefined);
+        const occ = (ctx.tracked || []).map(h => h.id);
         const messages = buildSideMessages(ctx, needs, src);
         console.debug('[Hearthtide] отдельный запрос →', [...needs].join(', '), messages);
         let text = await sendSide(apiProfile(), messages, ctl.signal);
@@ -2139,7 +2364,7 @@ async function runSide(N, needs) {
         console.debug(`[Hearthtide] ответ за ${((Date.now() - t0) / 1000).toFixed(1)} с:\n${text}`);
         msg.extra = msg.extra || {};
         const map = msg.extra.ht_side || {};
-        map[hash] = { text, asked: [...needs] };
+        map[hash] = { text, asked: [...needs], occ };
         // храним для нескольких свайпов, не больше
         const keys = Object.keys(map);
         if (keys.length > 4) delete map[keys[0]];
@@ -3141,6 +3366,32 @@ function offerHtml() {
     </div>`;
 }
 
+const capFirst = (t) => { const x = String(t || '').trim(); return x ? x.charAt(0).toUpperCase() + x.slice(1) : x; };
+/** Этап подарка — маленькой меткой: придумали / есть / вручён */
+const giftStage = (g) => (g?.done ? '' : `<small class="ht-gift-stage">${esc(g?.got ? L().giftGot : L().giftIdea)}</small>`);
+/** Что уже сделано к празднику по истории: сводка, последние пункты, подарки других людей */
+function readyHtml(rd, live, max = 5) {
+    if (!rd) return '';
+    const items = rd.log.slice(-max);
+    const more = rd.more + (rd.log.length - items.length);
+    return `<div class="ht-ready">
+        <span class="ht-ready-title">${esc(L().readyDone)}</span>
+        ${rd.sum ? `<p class="ht-ready-sum">${esc(capFirst(rd.sum))}</p>` : ''}
+        ${items.length ? `<ul>${items.map(x => `<li class="${x.fresh && live ? 'ht-ready-new' : ''}"><i class="fa-solid fa-check"></i><span>${esc(capFirst(x.t))}${x.who ? `<em>${esc(x.who)}</em>` : ''}</span></li>`).join('')}</ul>` : ''}
+        ${more > 0 && !rd.sum ? `<small class="ht-mute">${esc(L().readyMore(more))}</small>` : ''}
+        ${(rd.gifts || []).map(g => `<em class="ht-chip"><i class="fa-solid fa-gift"></i>${esc(`${g.who}: ${g.text}`)}</em>`).join('')}
+    </div>`;
+}
+
+/** Что о готовящемся празднике видно: приглашение, сделанное по истории, подарки */
+function trackBody(x, live, max) {
+    const gifts = [x.charGift?.text && `${getCharName()}: ${x.charGift.text}${x.charGift.done ? ` · ${L().giftGiven}` : ''}`,
+        x.userGift?.text && `${getUserName()}: ${x.userGift.text}${x.userGift.done ? ` · ${L().giftGiven}` : ''}`].filter(Boolean);
+    return `${x.invited ? `<span class="ht-also-tag"><i class="fa-solid fa-envelope-open-text"></i>${esc(L().alsoInvited)}${x.host ? ` · ${esc(x.host)}` : ''}</span>` : ''}
+        ${readyHtml(x.ready, live, max) || `<p class="ht-mute">${esc(L().readyNone)}</p>`}
+        ${gifts.map(t => `<em class="ht-chip"><i class="fa-solid fa-gift"></i>${esc(t)}</em>`).join('')}`;
+}
+
 function bodyHtml(view, live, tab = 'now') {
     const delBtn = (hid) => {
         if (!live || !hid) return '';
@@ -3179,18 +3430,23 @@ function bodyHtml(view, live, tab = 'now') {
                     <div><b>${L().part[p]}${p === view.part ? L().now : ''}</b><span>${esc(plan[p])}</span></div>
                 </div>`).join('');
             const where = plan.where ? `<p class="ht-plan-where"><i class="fa-solid fa-location-dot"></i><span>${esc(plan.where)}</span></p>` : '';
-            main = section('main', h.npc ? 'fa-cake-candles' : 'fa-fire', plan.title && !namesMatch(plan.title, h.name) ? esc(plan.title) : L().festiveDay, `${where}<div class="ht-parts">${rows}</div>`, sideMark + editBtn(h.id) + delBtn(h.id));
+            const prepared = view.ready ? `<details class="ht-ready-more"><summary><i class="fa-solid fa-list-check"></i>${esc(L().readyBefore)}<i class="fa-solid fa-chevron-down ht-recap-chev"></i></summary>${readyHtml(view.ready, false)}</details>` : '';
+            main = section('main', h.npc ? 'fa-cake-candles' : 'fa-fire', plan.title && !namesMatch(plan.title, h.name) ? esc(plan.title) : L().festiveDay, `${where}<div class="ht-parts">${rows}</div>${prepared}`, sideMark + editBtn(h.id) + delBtn(h.id));
         } else {
             main = section('main', h.npc ? 'fa-cake-candles' : 'fa-fire', L().festiveDay, `${h.meaning ? `<p class="ht-text">${esc(h.meaning)}</p>` : ''}${apiOn() ? '' : `<p class="ht-mute">${L().planSoon}</p>`}`, sideMark + editBtn(h.id) + delBtn(h.id));
         }
     } else if (view.kind === 'prep' && h) {
-        const p = view.prep;
-        main = section('main', 'fa-wand-magic-sparkles', L().prep, p ? `
-            ${p.people ? `<p class="ht-text">${esc(p.people)}</p>` : ''}
-            ${p.mood ? `<p class="ht-mood"><i class="fa-solid fa-feather-pointed"></i>${esc(p.mood)}</p>` : ''}`
-            : `<p class="ht-text">${esc(h.meaning || '')}</p>${apiOn() ? '' : `<p class="ht-mute">${L().prepSoon}</p>`}`, sideMark + editBtn(h.id) + delBtn(h.id));
+        // подготовка — только то, что уже показала история; пока ничего не было — так и пишем, без выдумок
+        const p = view.prep, rd = view.ready;
+        const mood = p?.mood ? `<p class="ht-mood"><i class="fa-solid fa-feather-pointed"></i>${esc(capFirst(p.mood))}</p>` : '';
+        const legacy = !rd && p?.people ? `<p class="ht-text">${esc(capFirst(p.people))}</p>` : '';   // запись из прошлой версии
+        main = section('main', 'fa-wand-magic-sparkles', L().prep,
+            `${mood}${readyHtml(rd, live) || legacy || `<p class="ht-mute">${esc(L().readyNone)}</p>`}${h.meaning && !rd && !legacy ? `<p class="ht-text ht-meaning">${esc(capFirst(h.meaning))}</p>` : ''}`,
+            sideMark + editBtn(h.id) + delBtn(h.id));
     } else if (view.kind === 'after' && view.ended) {
         main = section('main', 'fa-moon', esc(L().ended(view.ended.name)), `<p class="ht-text">${esc(view.ended.recap || L().afterDefault)}</p>`);
+    } else if (h && view.hCard) {
+        main = section('main', TYPE_ICON[h.birthday ? 'personal' : h.type] || 'fa-star', esc(h.name), trackBody(view.hCard, live, 5), sideMark + editBtn(h.id) + delBtn(h.id));
     } else if (h) {
         main = section('main', TYPE_ICON[h.type] || 'fa-star', esc(h.name), `<p class="ht-text">${esc(h.meaning || '')}</p>`, editBtn(h.id) + delBtn(h.id));
     } else if (view.diag) {
@@ -3216,7 +3472,7 @@ function bodyHtml(view, live, tab = 'now') {
     if (bp && ng) {
         const u = getUserName(), c = getCharName();
         const row = (who, g, extra = '', empty = L().giftUndecided) => `<div class="ht-gift-row${g?.done ? ' ht-done' : ''}"><i class="fa-solid ${g?.done ? 'fa-circle-check' : 'fa-gift'}"></i>
-            <div><span>${esc(who)}</span><b class="${g?.text || g?.done ? '' : 'ht-mute-b'}">${esc(g?.done ? (g.text || L().giftGiven) : (g?.text || empty))}</b></div>${extra}</div>`;
+            <div><span>${esc(who)}</span><b class="${g?.text || g?.done ? '' : 'ht-mute-b'}">${esc(g?.done ? (g.text || L().giftGiven) : (g?.text || empty))}</b>${g?.text && !g.done ? giftStage(g) : ''}</div>${extra}</div>`;
         let body;
         if (ng.joint) body = row(L().giftFromBoth(c, u), ng.char);
         else {
@@ -3240,12 +3496,15 @@ function bodyHtml(view, live, tab = 'now') {
     if ((view.kind === 'prep' || view.kind === 'today') && view.care) {
         const g = view.charGift;
         const gift = view.gifts ? `<div class="ht-char-gift${g?.done ? ' ht-done' : ''}"><i class="fa-solid ${g?.done ? 'fa-circle-check' : 'fa-gift'}"></i>
-            <div><span>${esc(L().giftForUser(view.giftTo || getUserName()))}</span><b>${esc(g?.done ? (g.text || L().giftGiven) : (g?.text || L().giftUndecided))}</b></div></div>` : '';
+            <div><span>${esc(L().giftForUser(view.giftTo || getUserName()))}</span><b>${esc(g?.done ? (g.text || L().giftGiven) : (g?.text || L().giftUndecided))}</b>${g?.text && !g.done ? giftStage(g) : ''}</div></div>` : '';
+        const ug = view.userGift;
+        const ugift = ug?.text ? `<div class="ht-char-gift${ug.done ? ' ht-done' : ''}"><i class="fa-solid ${ug.done ? 'fa-circle-check' : 'fa-gift'}"></i>
+            <div><span>${esc(L().giftFrom(getUserName()))}</span><b>${esc(ug.text)}</b>${ug.done ? '' : giftStage(ug)}</div></div>` : '';
         // прошлые шаги в инфоблок не выводим — они нужны только модели, чтобы цепочка шла дальше
         charCard = `<div class="ht-char${live && view.care === 'high' ? ' ht-glow' : ''}">
             <div class="ht-char-head"><i class="fa-solid fa-user"></i><b>${esc(getCharName())}</b><span class="ht-care ht-care-${view.care}">${esc(L().care[view.care])}</span></div>
             ${view.care !== 'low' ? `<div class="ht-char-now"><span>${L().thinks}</span>${view.charNow ? `«${esc(view.charNow.replace(/^[«"“]+|[»"”]+$/g, ''))}»` : esc(L().charIdle)}</div>` : ''}
-            ${gift}
+            ${gift}${ugift}
         </div>`;
     }
 
@@ -3259,6 +3518,13 @@ function bodyHtml(view, live, tab = 'now') {
     const standout = (view.highlights || []).length ? `<div class="ht-group ht-standout"><div class="ht-group-title"><i class="fa-solid fa-star"></i>${L().standout}</div>${view.highlights.map(x => `
             <div class="ht-person"><b>${esc(x.name)}</b><span>${esc(x.text)}</span></div>`).join('')}</div>` : '';
     const peopleSec = section('people', 'fa-users', L().people, groups + standout);
+    // Другие праздники, к которым уже готовятся: у каждого свой журнал и свои подарки
+    const whenIn = (d) => (d <= 0 ? L().offerToday : d === 1 ? L().tomorrow : L().inDays(daysWord(d)));
+    const alsoRows = (view.also || []).map(x => `<div class="ht-also">
+            <div class="ht-also-head"><i class="fa-solid ${TYPE_ICON[x.type] || 'fa-star'}"></i><b>${esc(x.name)}</b><em>${esc(whenIn(x.daysTo))}</em></div>
+            ${trackBody(x, live, 3)}</div>`).join('');
+    const primary = view.kind === 'prep' || view.kind === 'today' || view.hCard;
+    const alsoSec = section('also', 'fa-list-check', primary ? L().alsoAhead : L().prepAhead, alsoRows);
     // События дня: идущее сверху, мероприятие — своей раскрывающейся карточкой
     const evRows = (view.evts || []).filter(e => e.status !== 'offered' && e.status !== 'missed').slice().reverse().map(e => {
         const st = L().evStatus[e.status] || e.status;
@@ -3280,6 +3546,7 @@ function bodyHtml(view, live, tab = 'now') {
     const yearRows = (view.year || []).map(i => {
         const [, m, d] = i.iso.split('-');
         const res = i.type === 'date' && i.result ? i.result : null;
+        if (i.result === 'cancelled') return `<div class="ht-yr ht-yr-missed ht-yr-off"><time>${d}.${m}</time><i class="fa-solid fa-ban"></i><div><b>${esc(i.name)}</b></div><em>${esc(L().yearCancelled)}</em></div>`;
         return `<div class="ht-yr${i.kept ? '' : ' ht-yr-missed'}${res ? ` ht-res-${res}` : ''}">
             <time>${d}.${m}</time><i class="fa-solid ${TYPE_ICON[i.type] || 'fa-star'}"></i>
             <div><b>${esc(i.name)}</b>${recapSpoiler(i.recap, i.parts, i.type === 'date')}</div>
@@ -3313,7 +3580,7 @@ function bodyHtml(view, live, tab = 'now') {
             <span>${L().datePlanned}${view.planned.when ? ` · ${esc(view.planned.when)}` : ''}</span>
             <b>${esc(view.planned.title)}${view.planned.where ? ` · ${esc(view.planned.where)}` : ''}</b>
             ${view.planned.goal ? `<em>${esc(view.planned.goal)}</em>` : ''}</div></div>` : '';
-    const plannedBd = view.plannedBd ? `<div class="ht-planned ht-planned-bd"><i class="fa-solid ${view.plannedBd.extra ? 'fa-champagne-glasses' : 'fa-gift'}"></i><div>
+    const plannedBd = view.plannedBd && ![...(view.also || []), view.hCard].some(x => x?.name === view.plannedBd.name) ? `<div class="ht-planned ht-planned-bd"><i class="fa-solid ${view.plannedBd.extra ? 'fa-champagne-glasses' : 'fa-gift'}"></i><div>
             <span>${view.plannedBd.extra ? L().exPlanned : L().bdPlanned}${view.plannedBd.when ? ` · ${esc(view.plannedBd.when)}` : ''}</span>
             <b>${esc(view.plannedBd.name)}</b></div></div>` : '';
     return `<div class="ht-body">
@@ -3325,6 +3592,7 @@ function bodyHtml(view, live, tab = 'now') {
         ${giftsCard}
         ${eventsSec}
         ${main}
+        ${alsoSec}
         ${peopleSec}
         ${section('upcoming', 'fa-calendar-days', L().upcoming, upcoming)}
         ${live ? `<div class="ht-actions"><button class="ht-btn" data-act="rebuild" title="${L().rebuildTip}"><i class="fa-solid fa-arrows-rotate"></i>${L().rebuild}</button></div>` : ''}

@@ -56,8 +56,8 @@ export function parseSmall(text, name = 'HT') {
         when: clean(f.when, 80),
         clock: parseClock(f.time),
         place: clean(f.place, 60),
-        char: clean(f.char, 160),                                   // мысль или действие персонажа сейчас
-        gift: clean(f.gift, 160),                                   // мысль персонажа о подарке
+        char: tidyValue(clean(f.char, 160)),                                   // мысль или действие персонажа сейчас
+        gift: tidyValue(clean(f.gift, 160)),                                   // мысль персонажа о подарке
         ev: (() => {                                                // статус текущего ивента
             const v = String(f.ev || '').trim().toLowerCase();
             return ['done', 'skipped', 'joined', 'declined'].find(x => v.startsWith(x.slice(0, 4))) || null;
@@ -67,7 +67,7 @@ export function parseSmall(text, name = 'HT') {
         giftDone: /^(true|yes|1|да)$/i.test(String(f.gift_done || '').trim()),
         giftTo: clean(f.gift_to, 60),
         // подарок {{user}} имениннику — только то, что {{user}} сам написал в своём сообщении
-        ugift: clean(f.ugift, 160),
+        ugift: tidyValue(clean(f.ugift, 160)),
         ugiftDone: /^(true|yes|1|да)$/i.test(String(f.ugift_done || '').trim()),
         // {{char}} и {{user}}: дружба / романтика −100…100 и коротко, как они сейчас
         bond: parseBond(f.bond, inner),
@@ -93,7 +93,7 @@ export function parseSmall(text, name = 'HT') {
         // один человек праздника: чего он хочет теперь — «Имя: желание»
         who: (() => {
             const m = String(f.who || '').match(/^\s*(.{2,60}?)\s*(?::|\s[—–-]\s)\s*(.+)$/);
-            const name = m && clean(m[1], 60), text = m && clean(m[2], 160);
+            const name = m && clean(m[1], 60), text = m && tidyValue(clean(m[2], 160));
             return name && text ? { name, text } : null;
         })(),
     };
@@ -215,7 +215,7 @@ export function parsePrep(text) {
     const g = String(f.gifts || '').trim().toLowerCase();
     const c = String(f.care || '').trim().toLowerCase();
     const r = {
-        people: clean(f.people), mood: clean(f.mood),
+        people: tidyValue(clean(f.people)), mood: tidyValue(clean(f.mood)),
         giftTo: clean(f.gift_to, 60),                               // кому по обычаю дарят
         gifts: /^(yes|true|да|1)/.test(g) ? true : /^(no|false|нет|0)/.test(g) ? false : null,
         care: /^(high|важ|выс)/.test(c) ? 'high' : /^(low|низ|мал|прох)/.test(c) ? 'low' : /^(norm|mid|обыч|сред)/.test(c) ? 'normal' : null,
@@ -229,7 +229,7 @@ export function parseDay(text) {
     if (inner == null) return null;
     const f = fields(inner);
     // where — где отмечают (у дня рождения человека из истории: чей дом или какое место)
-    const r = { title: clean(f.title, 120), where: clean(f.where, 80), morning: clean(f.morning), day: clean(f.day), evening: clean(f.evening), night: clean(f.night) };
+    const r = { title: tidyValue(clean(f.title, 120)), where: tidyValue(clean(f.where, 80)), morning: tidyValue(clean(f.morning)), day: tidyValue(clean(f.day)), evening: tidyValue(clean(f.evening)), night: tidyValue(clean(f.night)) };
     return r.morning || r.day || r.evening || r.night ? r : null;
 }
 
@@ -261,7 +261,7 @@ export function parsePeople(text) {
         const kind = (cols[0] || '').toUpperCase();
         if (kind === 'D') {
             const name = clean(cols[1], 60), text = clean(cols[2], 160);
-            if (name && text) done.push({ name, text });
+            if (name && text) done.push({ name, text: tidyValue(text) });
             continue;
         }
         if (kind !== 'P') continue;
@@ -271,8 +271,8 @@ export function parsePeople(text) {
         out.push({
             name,
             group: GROUPS.find(x => g.startsWith(x.slice(0, 4))) || (/(род|сем|famil|kin)/.test(g) ? 'relative' : /(друг|подруг)/.test(g) ? 'friend' : 'acquaintance'),
-            now: clean(cols[3], 160),
-            gift: clean(cols[4], 120),
+            now: tidyValue(clean(cols[3], 160)),
+            gift: tidyValue(clean(cols[4], 120)),
         });
     }
     if (!out.length && !done.length) return null;
@@ -466,6 +466,58 @@ export function stepText(v, max = 120) {
     return t;
 }
 
+/**
+ * Подготовка по истории — что уже сделано к каждому из готовящихся праздников (номер — из списка в запросе):
+ *   DONE | № | КТО | ЧТО СДЕЛАНО
+ *   GIFT | № | char|user|both|ИМЯ | ПОДАРОК | idea|got|given
+ *   OFF  | № | cancelled|moved | YYYY-MM-DD (если перенесли) | ПОЧЕМУ
+ *   SUM  | № | всё сделанное к нему одним предложением (сжатие журнала)
+ */
+export function parseReady(text) {
+    const inner = findBlock(text, 'HT-READY');
+    if (inner == null) return null;
+    const r = { done: [], gifts: [], off: [], sum: [] };
+    const num = (v) => { const m = String(v || '').match(/^\s*#?(\d{1,2})\b/); return m ? +m[1] : null; };
+    for (const raw of inner.split(/\n+/)) {
+        if (/<[^>]*>/.test(raw)) continue;                            // образец, переписанный как есть
+        const cols = raw.split('|').map(x => x.trim());
+        const k = (cols[0] || '').replace(/^[\s\-*•]+/, '').replace(/[:.]+$/, '').toUpperCase();
+        const i = num(cols[1]);
+        if (i == null) continue;
+        if (k === 'DONE') {
+            const t = tidyValue(stepText(cols[3], 140));
+            if (t) r.done.push({ i, who: clean(cols[2], 40), t });
+        } else if (k === 'GIFT') {
+            const t = tidyValue(stepText(cols[3], 120));
+            const w = String(cols[2] || '').trim();
+            const st = String(cols[4] || '').toLowerCase();
+            if (t && w && !/^(who|кто)$/i.test(w)) r.gifts.push({ i, who: w, t,
+                stage: /^(given|gave|вруч|подар|отдал)/.test(st) ? 'given' : /^(got|bought|made|ready|куп|сдел|готов|есть)/.test(st) ? 'got' : 'idea' });
+        } else if (k === 'OFF') {
+            const how = /^(mov|перен)/i.test(cols[2] || '') ? 'moved' : /^(cancel|off|отмен|сорв|не будет)/i.test(cols[2] || '') ? 'cancelled' : null;
+            if (!how) continue;
+            const to = parseDate(cols[3]);
+            r.off.push({ i, how: how === 'moved' && to == null ? 'cancelled' : how, to, why: tidyValue(stepText(to == null ? cols[3] || cols[4] : cols[4], 120)) });
+        } else if (k === 'SUM') {
+            const t = tidyValue(stepText(cols[2], 220));
+            if (t) r.sum.push({ i, t });
+        }
+    }
+    return r.done.length || r.gifts.length || r.off.length || r.sum.length ? r : null;
+}
+
+/**
+ * Значение для инфоблока: без служебных пометок («идея:», «шаг:», «stage —»), без кавычек вокруг, с заглавной буквы.
+ * Модель любит начинать подарок с этапа («идея: купить шарф») — этап и так виден, а фраза должна быть сразу по делу.
+ */
+export function tidyValue(v) {
+    let x = String(v ?? '').trim();
+    if (!x) return null;
+    for (let i = 0; i < 2; i++) x = x.replace(/^(?:идея|задумка|мысль|план|этап|шаг|стадия|статус|сейчас|idea|plan|stage|step|status|now)\s*[:—–-]\s*/i, '').trim();
+    x = x.replace(/^[«"“'*_]+|[»"”'*_]+$/g, '').trim();
+    return x ? x.charAt(0).toUpperCase() + x.slice(1) : null;
+}
+
 /** Итог прошедшего праздника — одна строка */
 export function parseRecap(text) {
     const inner = findBlock(text, 'HT-RECAP');
@@ -505,8 +557,8 @@ export function slimSmallTag(text) {
 export function stripBlocks(text) {
     let t = String(text ?? '');
     t = t.replace(/```[a-z]*\s*(?:<!--\s*)?HT(?:-[A-Z]+)?\b[\s\S]*?```/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT|CAST|DATE-UP|DATE|EXTRA)\b[\s\S]*?-->/gi, '');
-    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT|CAST|DATE-UP|DATE|EXTRA)\b(?![\s\S]*-->)[\s\S]*$/i, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT|CAST|DATE-UP|DATE|EXTRA|READY)\b[\s\S]*?-->/gi, '');
+    t = t.replace(/\s*<!--\s*HT-(?:CAL|PREP|DAY|RECAP|EVENT|PEOPLE|EV|NEW|S|BEAT|CAST|DATE-UP|DATE|EXTRA|READY)\b(?![\s\S]*-->)[\s\S]*$/i, '');
     t = t.replace(/^\s*HT(?:-[A-Z]+)?\b[\s:]+[^\n]*$/gim, '');
     return t.replace(/\s+$/, '');
 }

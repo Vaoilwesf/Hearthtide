@@ -2,7 +2,7 @@
 // Весь инджект — на английском. Значения для инфоблока ИИ пишет на выбранном языке.
 
 import { isoOf, fromDayNum, easterJulian, easterGregorian } from './dates.js';
-import { hasGifts, charDue, isIntimate, openEvent, dateHoursLeft, giftJoint } from './calendar.js';
+import { hasGifts, charDue, isIntimate, openEvent, dateHoursLeft, giftJoint, charGiftOf } from './calendar.js';
 import { openSteps, goalOpen, DATE_OPEN, DATE_MOMENTS } from './romance.js';
 import { ageOf, relLevel } from './cast.js';
 
@@ -47,7 +47,7 @@ function inviteLines(ctx) {
     }
     // принятые и ещё не наступившие — модель знает дату и что это впереди
     const cur = (phase.kind === 'prep' || phase.kind === 'today') ? phase.h?.id : null;
-    const ahead = (ctx.acceptedAhead || []).filter(h => h.id !== cur && h.start > today).slice(0, 2);
+    const ahead = (ctx.acceptedAhead || []).filter(h => h.id !== cur && h.start > today && !(ctx.tracked || []).some(t => t.id === h.id)).slice(0, 2);
     if (ahead.length) out.push(`Accepted invitations ahead: ${ahead.map(h => `${hName(h, ctx)} on ${isoOf(h.start)} (${inDays(h.start - today)})`).join('; ')} — they haven't happened yet; they come on their day.`);
     if (state.invDeclined?.turn >= (state.turn || 0) - 1) out.push(`${userName} declined the invitation to ${state.invDeclined.name} — ${state.invDeclined.host || 'the host'} takes it in their own way; don't push it.`);
     // обещали прийти и не пришли — обида живёт несколько ответов
@@ -74,7 +74,59 @@ function charGiftActive(ctx) {
     if (!h || (phase.kind !== 'prep' && phase.kind !== 'today')) return false;
     if (!hasGifts(state, h) || sameName(giftTarget(state, h, ctx.userName, ctx.charName), ctx.charName)) return false;
     if (state.care?.[h.id] === 'low' && !(h.birthday && h.who === 'user')) return false;
-    return !(state.charGift?.hid === h.id && state.charGift.done);
+    return !charGiftOf(state, h.id)?.done;
+}
+
+// ═══ Подготовка по истории ═══
+// Инфоблок не придумывает подготовку: инджект подталкивает мир (BEAT), основная модель показывает это в ролплее,
+// помощник читает историю и записывает сделанное (HT-READY), и только потом оно появляется в инфоблоке.
+const daysWord = (d) => (d <= 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`);
+/** Что уже сделано к празднику (по истории): сводка старого + последние пункты */
+export function readyNoted(state, h, n = 3) {
+    const r = state.ready?.[h.id];
+    return [r?.sum, ...(r?.log || []).slice(-n).map(x => (x.who ? `${x.who}: ${x.t}` : x.t))].filter(Boolean);
+}
+/** Подарки, уже известные из истории, — коротко */
+function giftsNoted(ctx, h) {
+    const { state, userName, charName } = ctx;
+    const st = (g) => (g.done ? 'given' : g.got ? 'got' : 'idea');
+    const out = [];
+    const cg = charGiftOf(state, h.id);
+    if (cg?.text) out.push(`${giftJoint(state, h) ? `${charName} and ${userName}` : charName}: ${cg.text} (${st(cg)})`);
+    const ug = h.npc && !giftJoint(state, h) ? state.userGift?.[h.id] : null;
+    if (ug?.text) out.push(`${userName}: ${ug.text} (${ug.done ? 'given' : ug.got ? 'got' : 'idea'})`);
+    for (const [who, g] of Object.entries(state.ready?.[h.id]?.gifts || {})) out.push(`${who}: ${g.text} (${g.stage})`);
+    return out.join('; ');
+}
+/** Нумерованный список готовящихся праздников — номера в HT-READY */
+function readyList(ctx, withNoted = true) {
+    const { state } = ctx;
+    return (ctx.tracked || []).map((h, i) => {
+        const noted = withNoted ? readyNoted(state, h, 4) : [];
+        const g = withNoted ? giftsNoted(ctx, h) : '';
+        return `${i + 1}. ${hName(h, ctx)} — ${daysWord(h.start - state.today)} (${isoOf(h.start)})${h.npc || h.extra ? ', invitation accepted' : h.story ? ', set up in the story' : ''}${noted.length ? `; already noted: ${noted.join('; ')}` : ''}${g ? `; gifts noted: ${g}` : ''}`;
+    }).join('\n');
+}
+const READY_FORMAT = (sum) => `<!-- HT-READY
+DONE | <№> | <who> | <what they did for it>
+GIFT | <№> | <char, user, both or a name> | <the gift> | <idea, got or given>
+OFF | <№> | <cancelled or moved> | <new date YYYY-MM-DD if moved> | <why>${sum ? '\nSUM | <№> | <everything done for it so far>' : ''}
+-->`;
+function readyRule(ctx) {
+    const { state, userName } = ctx;
+    const long = (ctx.tracked || []).map((h, i) => ((state.ready?.[h.id]?.log || []).length > 6 ? i + 1 : null)).filter(Boolean);
+    return `${READY_FORMAT(long.length)}
+Occasions being prepared:
+${readyList(ctx)}
+Fill in the lines; never copy the <…> placeholders or field names. Only what the messages marked [NEW] actually show — never invent, predict or plan ahead; nothing already noted.
+- DONE: something someone did for that occasion (got ready, bought, cooked, decorated, invited, arranged, rehearsed): a plain fact, past tense, 3–8 words, starting with a capital letter.
+- GIFT: whenever someone settles on, gets (buys, makes, orders) or hands over a gift for it — ${userName}'s own too, exactly as ${userName} wrote it: the gift itself in a few words, no stage words, no "idea:".
+- OFF: only if the story clearly called it off or moved it to another day.${long.length ? `\n- SUM for ${long.map(n => `№${n}`).join(', ')}: all that is noted for it, as one short sentence.` : ''}
+Leave the block out if there is nothing new. In ${langOf(ctx)}.`;
+}
+/** Основной модели без помощника — коротко */
+function readyRuleLite(ctx) {
+    return `If this reply shows something done for a coming occasion, a gift picked, bought or given for it, or the occasion called off or moved, add after the HT line (only those lines, in ${langOf(ctx)}): ${READY_FORMAT(false).replace(/\n/g, ' ')}. Occasions: ${readyList(ctx, false).replace(/\n/g, '; ')}.`;
 }
 /** Подарок {{user}} имениннику: что вписал игрок или что {{user}} сам сказал в истории */
 const userGiftOf = (state, h) => (h?.npc && !giftJoint(state, h) ? state.userGift?.[h.id] || null : null);
@@ -93,18 +145,32 @@ export function buildStatePrompt(ctx) {
 
     const h = phase.h;
     const active = (phase.kind === 'prep' || phase.kind === 'today') && h;
-    if (phase.kind === 'far' && h) {
+    if (phase.kind === 'far' && h && !(ctx.tracked || []).some(x => x.id === h.id)) {
         lines.push(`Next: ${hName(h, ctx)} in ${phase.daysTo} days${h.meaning ? ` (${h.meaning})` : ''}. Not relevant yet — don't bring it up.`);
     }
+    // другие праздники, к которым уже готовятся (принятое приглашение, повод из истории) — по строке, чтобы ни один не терялся
+    for (const x of (ctx.tracked || []).filter(x => x.id !== ((phase.kind === 'prep' || phase.kind === 'today') ? h?.id : null)).slice(0, 2)) {
+        const noted = readyNoted(state, x, 2);
+        const cg = charGiftOf(state, x.id);
+        lines.push(`Also coming: ${hName(x, ctx)} — ${daysWord(x.start - state.today)}, on ${isoOf(x.start)}${x.npc || x.extra ? ' (invitation accepted)' : ''}${noted.length ? `; done so far: ${noted.join('; ')}` : ''}${cg?.text ? `; ${charName}'s gift: ${cg.text}${cg.done ? ' (given)' : ''}` : ''}. Getting ready may show in passing; the day itself hasn't come.`);
+    }
+    // без помощника: изредка (чем ближе, тем чаще) — пусть подготовка к принятому покажется в мире сама
+    if (phase.kind !== 'prep' && phase.kind !== 'today' && !state.beat && state.mentionNow && (ctx.tracked || []).length) {
+        lines.push('This reply: let one of the coming occasions show once, in passing — someone of this world getting ready for it or speaking of it, a step not taken yet; never force it.');
+    }
+    // история отменила или перенесла праздник — модель знает, что его больше нет (пара ответов)
+    const off = state.offNote && (state.turn || 0) - state.offNote.turn <= 2 ? state.offNote : null;
+    if (off) lines.push(off.how === 'moved'
+        ? `${off.name} was moved to ${isoOf(off.to)}${off.why ? ` (${off.why})` : ''} — it happens then, not sooner.`
+        : `${off.name} was called off in the story${off.why ? ` (${off.why})` : ''} — it no longer happens; those involved take it in their own way, no preparations for it any more.`);
     if (phase.kind === 'prep' && h) {
         // срок — словами и датой: иначе модель говорит «завтра» о празднике через пять дней
         const when = phase.daysTo === 1 ? 'tomorrow' : phase.daysTo === 2 ? 'the day after tomorrow' : `in ${phase.daysTo} days, not sooner`;
         lines.push(`Coming: ${hName(h, ctx)} — ${when} (on ${isoOf(h.start)}; today is ${isoOf(state.today)})${h.meaning ? ` (${h.meaning})` : ''}. Whoever mentions it keeps the timing right.`);
         const p = state.prep && state.prep.hid === h.id ? state.prep : null;
-        if (p) {
-            const bits = [p.people && `around ${ctx.placeName || userName}: ${p.people}`, p.mood && `mood: ${p.mood}`].filter(Boolean);
-            if (bits.length) lines.push(`Preparations — ${bits.join(' · ')}`);
-        }
+        const noted = readyNoted(state, h);
+        const bits = [noted.length && `done so far: ${noted.join('; ')}`, p?.mood && `mood: ${p.mood}`].filter(Boolean);
+        if (bits.length) lines.push(`Preparations — ${bits.join(' · ')}. Carry on from there, never redo it.`);
         if (h.extra) lines.push(`It is a gathering held by ${h.host || 'its hosts'}${h.meaning ? ` (${h.meaning})` : ''}; ${whomOf(ctx, h.whom)} ${h.whom === 'both' ? 'were' : 'was'} invited and ${userName} accepted — the hosts get ready, the invited may get ready too (clothes, a gift, a word).`);
         if (h.npc) {
             const about = npcAbout(ctx, h);
@@ -149,12 +215,13 @@ export function buildStatePrompt(ctx) {
         else if (care === 'low') lines.push(`For ${charName} it means little — a passing remark at most.`);
         // Подарок персонажа
         if (charGiftActive(ctx)) {
-            const g = state.charGift?.hid === h.id ? state.charGift.text : null;
+            const cg = charGiftOf(state, h.id);
+            const g = cg?.text || null;
             const near = !busy && (phase.kind === 'today' || phase.daysTo <= 2);
             const joint = giftJoint(state, h);
             lines.push(joint
-                ? `${charName} and ${userName} give ${h.name} one gift together: ${g || 'not decided yet'} — ${charName} moves ${charName}'s share in small steps when the scene allows (an idea, asking ${userName}'s view, finding or making it); ${userName}'s say and share are ${userName}'s own.${near && !state.charGift?.done ? ` Time is short: ${g ? 'the next step' : `${charName} brings up what to give`} in this reply if the scene allows.` : ''}`
-                : `${charName}'s gift for ${giftTarget(state, h, userName, charName)}: ${g || 'not decided yet'} — it moves forward in small steps when the scene allows, never all at once.${near && !state.charGift?.done ? ` Time is short: ${g ? 'the next step' : `${charName} settles on it`} in this reply if the scene allows.` : ''}`);
+                ? `${charName} and ${userName} give ${h.name} one gift together: ${g || 'not decided yet'} — ${charName} moves ${charName}'s share in small steps when the scene allows (an idea, asking ${userName}'s view, finding or making it); ${userName}'s say and share are ${userName}'s own.${near && !cg?.done ? ` Time is short: ${g ? 'the next step' : `${charName} brings up what to give`} in this reply if the scene allows.` : ''}`
+                : `${charName}'s gift for ${giftTarget(state, h, userName, charName)}: ${g || 'not decided yet'} — it moves forward in small steps when the scene allows, never all at once.${near && !cg?.done ? ` Time is short: ${g ? 'the next step' : `${charName} settles on it`} in this reply if the scene allows.` : ''}`);
         }
         // свой подарок {{user}} — выбор игрока: модель его не двигает, только видит
         const ug = userGiftOf(state, h);
@@ -522,7 +589,8 @@ function dateOfferRule(ctx) {
     const { state, userName, charName } = ctx;
     const p = state.pair || {};
     const past = (state.datesDone || []).slice(-3).map(d => d.title);
-    const gift = state.charGift && !state.charGift.done && state.charGift.text ? ` ${charName}'s gift is ready (${state.charGift.text}) — it may be part of it.` : '';
+    const cg = charGiftOf(state, ctx.phase?.h?.id);
+    const gift = cg && !cg.done && cg.got && cg.text ? ` ${charName}'s gift is ready (${cg.text}) — it may be part of it.` : '';
     return `${state.dateRollTry ? 'REQUIRED — your last reply skipped it. ' : ''}This reply ${charName} asks ${userName} on a date, in ${charName}'s own way, as fits who ${charName} is and how they stand (friendship ${p.f ?? 0}, romance ${p.r ?? 0}${p.note ? `, ${p.note}` : ''}): openly, shyly, in passing or as a half-joke; after a quarrel — as a way to make up. ${dateSense(ctx)}
 Write only the asking; ${userName} answers. Only if ${charName} actually said it to ${userName} in this reply (not just thought of it), add after the HT line: ${DATE_FORMAT} — ${dateFields(ctx)}${gift} In ${langOf(ctx)}.${past.length ? ` Different from: ${past.join(' / ')}.` : ''} If the scene is urgent or dangerous, don't ask yet and add nothing.`;
 }
@@ -589,7 +657,6 @@ function inviteAskRule(ctx) {
 function prepRule(ctx) {
     const { state, phase, userName, charName } = ctx;
     const h = phase.h;
-    const prev = state.prep?.hid === h.id ? state.prep : null;
     const scope = h.extra
         ? `This is a gathering held by ${h.host || 'its hosts'}: the hosts get ready; for ${whomOf(ctx, h.whom)} it is an accepted invitation (clothes, a gift or a word for the hosts, getting there).`
         : h.npc
@@ -597,8 +664,8 @@ function prepRule(ctx) {
         : isIntimate(h)
         ? `This is a personal or family occasion: only ${h.birthday && h.who === 'user' ? `the people close to ${userName}` : 'the household and close circle'} get ready — not the whole community.`
         : `This is a public holiday: the community around ${userName} gets ready.`;
-    return `<!-- HT-PREP people=… | mood=… | gifts=yes|no | gift_to=… | care=high|normal|low -->
-How things get ready for ${hName(h, ctx)} (in ${phase.daysTo} day${phase.daysTo === 1 ? '' : 's'}) in ${ctx.placeName || `the place around ${userName}`}. ${scope} people: the next stage of the preparations by the customs of this era and place, one or two sentences, in general terms (in the houses, in the household, at the market) — never a named person caught doing something the story hasn't shown, since the story may show them otherwise; never a retelling of what just happened, never about ${userName}; mood: the feeling in the air.${prev?.people ? ` Before it was: "${prev.people}" — show what has moved on since, don't restate it.` : ''} Only what is visible or commonly known — no secret plans the story hasn't shown. gifts: does this holiday involve giving gifts by custom; gift_to: to whom they go by custom here — the one being honoured, as the story names them. care: how much it matters to ${charName} personally, judging by who ${charName} is.${h.birthday && h.who === 'user' ? ` A surprise for ${userName} stays unspoiled.` : ''}`;
+    return `<!-- HT-PREP mood=… | gifts=yes|no | gift_to=… | care=high|normal|low -->
+${hName(h, ctx)} is ${daysWord(phase.daysTo)}. ${scope} mood: the feeling in the air about it now, a few words, capital letter — only what is visible or commonly known, no secret plans the story hasn't shown. gifts: does this occasion involve giving gifts by custom; gift_to: to whom they go — the name only, as the story names them, in its plain form (never "for …", never a role word). care: how much it matters to ${charName} personally, judging by who ${charName} is.${h.birthday && h.who === 'user' ? ` A surprise for ${userName} stays unspoiled.` : ''}`;
 }
 
 function dayRule(ctx) {
@@ -626,12 +693,13 @@ function recapRule(ctx) {
     const { state, phase, userName, charName } = ctx;
     const e = phase.ended;
     const hl = (state.highlights?.[e.id] || []).map(x => `${x.name} — ${x.text}`).join('; ');
-    const g = state.charGift?.hid === e.id && state.charGift.done ? state.charGift.text : null;
+    const g = charGiftOf(state, e.id)?.done ? charGiftOf(state, e.id).text : null;
     const ug = e.npc && state.userGift?.[e.id]?.text ? state.userGift[e.id] : null;
+    const noted = readyNoted(state, e, 4);
     const gl = g && (giftJoint(state, e) ? `${charName} and ${userName}'s gift: ${g}` : `${charName}'s gift: ${g}`);
     const ul = ug && `${userName}'s gift: ${ug.text}${ug.done ? '' : ' (if the story showed it given)'}`;
     const inv = e.npc || e.extra;
-    return `<!-- HT-RECAP text=… | done=… | gifts=… | best=…${inv ? ' | went=yes|no' : ''} -->${inv ? ` went — did ${charName} and ${userName} actually come to it, as the story shows (no if they didn't make it).` : ''} In ${langOf(ctx)}, only what the story showed: text — how ${hName(e, ctx)} went for ${userName} and ${charName}, one or two short sentences (under 40 words); done — what was done or kept, a few short items separated by ;; gifts — who gave what to whom, separated by ; (empty if none); best — the one moment worth remembering, a few words.${hl || gl || ul ? ` Facts: ${[gl, ul, hl].filter(Boolean).join('; ')}.` : ''}`;
+    return `<!-- HT-RECAP text=… | done=… | gifts=… | best=…${inv ? ' | went=yes|no' : ''} -->${inv ? ` went — did ${charName} and ${userName} actually come to it, as the story shows (no if they didn't make it).` : ''} In ${langOf(ctx)}, only what the story showed: text — how ${hName(e, ctx)} went for ${userName} and ${charName}, one or two short sentences (under 40 words); done — what was done or kept, a few short items separated by ;; gifts — who gave what to whom, separated by ; (empty if none); best — the one moment worth remembering, a few words.${hl || gl || ul || noted.length ? ` Facts: ${[gl, ul, hl, noted.length && `prepared: ${noted.join('; ')}`].filter(Boolean).join('; ')}.` : ''}`;
 }
 
 // ─── 2. Правило тега (конец промпта) ───
@@ -681,7 +749,7 @@ All text values in these comments: ${lang} only.`];
     }
     if (!lean && charGiftActive(ctx)) {
         if (giftJoint(state, h)) out.push(`Add gift=… to the HT line: the current step with ${charName} and ${userName}'s joint gift for ${h.name}, under 8 words — what ${charName} did or what the two settled on in this story, never ${userName}'s part decided for ${userName}. Add gift_done=true once it is given. Leave gift out until there is a real step.`);
-        else out.push(`Add gift=… to the HT line: ${charName}'s current step with a gift for ${giftTarget(state, h, userName, charName)}, under 8 words, no reason clause; it moves as the story does (idea → finding or making → ready and hidden → given). Add gift_done=true once it is given. Leave gift out until there is a real step — never write that it isn't decided.`);
+        else out.push(`Add gift=… to the HT line: what ${charName}'s gift for ${giftTarget(state, h, userName, charName)} is now, one short phrase starting with a capital letter, no stage word like "idea:"; it moves as the story does (picked → found or made → ready and hidden → given). Add gift_done=true once it is given. Leave gift out until there is a real step — never write that it isn't decided.`);
     }
     // свой подарок {{user}} — только записать то, что {{user}} сам написал; игрок мог вписать его сам
     if (!lean && h?.npc && (phase.kind === 'prep' || phase.kind === 'today') && !giftJoint(state, h)) {
@@ -699,6 +767,7 @@ All text values in these comments: ${lang} only.`];
     if (phase.kind === 'today' && h && request !== 'day' && request !== 'replan' && state.days?.[`${h.id}#${phase.dayIndex}`]) {
         out.push(`If today's plans change in the story, re-send <!-- HT-DAY … --> with the parts still ahead.`);
     }
+    if ((ctx.tracked || []).length) out.push(readyRuleLite(ctx));
     if (ctx.meaningFor) out.push(`Add mean=… to the HT line: what "${ctx.meaningFor}" is and how it is kept in this era and place, one sentence.`);
     if (request !== 'cal') {
         const known = ctx.offerNames?.length ? ` Already known: ${ctx.offerNames.join(', ')}.` : '';
@@ -756,6 +825,7 @@ export function buildSideMessages(ctx, needs, src) {
     const task = [`Reply with these blocks, each at most once, nothing else. Values meant for the player in ${lang}; BEAT in English.`];
     if (needs.has('cal')) task.push(calRule(ctx, false));
     if (needs.has('prep') && h) task.push(prepRule(ctx));
+    if (needs.has('ready') && (ctx.tracked || []).length) task.push(readyRule(ctx));
     if (needs.has('day') && h) task.push(dayRule(ctx));
     if (needs.has('replan') && h) task.push(replanRule(ctx));
     else if (needs.has('plancheck') && h) task.push(`Only if the latest messages have moved away from today's plan (something happened earlier, later or differently): ${replanRule(ctx)} Leave this block out if the plan still holds.`);
@@ -767,9 +837,9 @@ export function buildSideMessages(ctx, needs, src) {
     // Короткие поля одной строкой
     const sf = [];
     if (needs.has('char') && h) sf.push(`char=a short thought of ${charName}'s about the holiday right now, in ${charName}'s own voice, the way people speak in this era, setting and story, under 12 words — never a description of what ${charName} is doing; not echoing earlier ones`);
-    if (needs.has('char') && h && charGiftActive(ctx)) sf.push(`gift=${giftJoint(state, h) ? `the current step with ${charName} and ${userName}'s joint gift` : `${charName}'s current step with a gift`} for ${giftTarget(state, h, userName, charName)}, under 8 words, no reason clause (idea → finding or making → ready and hidden → given); gift_done=true once the story shows it given. Leave gift out until there is a real step — never write that it isn't decided`);
+    if (needs.has('char') && h && charGiftActive(ctx)) sf.push(`gift=${giftJoint(state, h) ? `the current step with ${charName} and ${userName}'s joint gift` : `${charName}'s current step with a gift`} for ${giftTarget(state, h, userName, charName)}: what the gift is now, one short phrase with a capital letter, no stage word like "idea:" (picked → found or made → ready and hidden → given); gift_done=true once the story shows it given. Leave gift out until there is a real step — never write that it isn't decided`);
     // кому дарят — если подготовка не успела сказать
-    if (needs.has('giftto') && h) sf.push(`gift_to=to whom gifts go by custom on this occasion — the one being honoured, as the story names them`);
+    if (needs.has('giftto') && h) sf.push(`gift_to=to whom gifts go by custom on this occasion — the name only, in its plain form as the story names them, never "for …" or a role word`);
     const evOpen = ctx.evTarget ? openEvent(state, ctx.evTarget.hid) : null;
     if (evOpen?.status === 'invited') sf.push(`ev=joined if ${userName} accepted the invitation "${evOpen.title}", ev=declined if refused; leave out if not decided yet`);
     else if (evOpen) sf.push(`ev=done with ev_note=its outcome in one sentence once "${evOpen.title}" is over in the story${evOpen.kind === 'party' ? '' : `; ev=skipped if ${userName} turned away`}`);
@@ -798,12 +868,15 @@ goal: what the date is for — general, 2–5 words, a task. Only if the latest 
         task.push(`<!-- HT-NEW CAUSE | YYYY-MM-DD | DAYS | NAME | MEANING | TYPE | PREP -->
 Only if the story has set up a coming occasion not yet in the calendar — someone's life event that custom marks with a celebration or rite, an announced celebration, an invitation to one. CAUSE: what happened, a few words. Date: if the story names the day or how soon (tomorrow, in a week, on some feast), count exactly that from today; otherwise as custom suggests. TYPE: family | personal | religious | folk | memorial. One per line, at most two. Leave the block out if there is none.${known.length ? ` Already known: ${known.join(', ')}.` : ''}`);
     }
-    if (needs.has('beat') && h) {
-        const what = phase.kind === 'today' ? `the festive day (${hName(h, ctx)})`
-            : phase.kind === 'prep' ? `the coming ${hName(h, ctx)} and the preparations`
+    if (needs.has('beat') && (h || (ctx.tracked || []).length)) {
+        // что дать миру сделать в следующем ответе: шаг подготовки, которого ещё не было, — живыми людьми, вскользь;
+        // в сам день — то, что день несёт сейчас. Потом помощник запишет это из истории в журнал (HT-READY)
+        const tr = (ctx.tracked || []).map(x => `${hName(x, ctx)} (${daysWord(x.start - state.today)})`);
+        const what = phase.kind === 'today' && h ? `the festive day (${hName(h, ctx)}) — what it holds right now`
+            : tr.length ? `a step of getting ready for ${tr.join(' or ')} that hasn't happened yet (see what is already noted) — the nearer the day, the more visible`
             : `the coming ${hName(h, ctx)} (in ${phase.daysTo} days — a passing mention at most)`;
         task.push(`<!-- HT-BEAT … -->
-One sentence in English for the story model: one concrete small thing ${what} could bring into the NEXT reply, grounded in the notes and what is happening now — through a person, a custom or a word; vary the kind and never repeat an earlier one${state.beatLog?.length ? ` (earlier: ${state.beatLog.join(' / ')})` : ''}. It must fit the current scene. At most one person per beat; for a family occasion, kin and those the custom involves may come in even if not seen yet. Write none if the scene is urgent or tense, ${userName} is away from people, the scene is already full, or nothing fits naturally — leaving room is fine. Never decide what ${userName} does.`);
+One sentence in English for the story model: one concrete small thing for the NEXT reply — ${what} — — shown through someone of this world doing it or speaking of it in passing, true to who they are, the era and the place; it moves things forward, never redoes what is done. Vary the kind and never repeat an earlier one${state.beatLog?.length ? ` (earlier: ${state.beatLog.join(' / ')})` : ''}. It must fit the current scene. At most one person per beat; for a family occasion, kin and those the custom involves may come in even if not seen yet. Write none if the scene is urgent or tense, ${userName} is away from people, the scene is already full, or nothing fits naturally — leaving room is fine. Never decide what ${userName} does, and never spoil a surprise meant for ${userName}.`);
     }
     task.push('Never write the story, comments outside the blocks, or explanations.');
     return [

@@ -85,8 +85,17 @@ export function extraHoliday(x) {
 /** Принятые дополнительные праздники: вчерашний (для «после») и все будущие */
 export function acceptedExtras(state) {
     if (state.today == null) return [];
-    return (state.extras || []).filter(x => state.bdDecisions?.[extraKey(x.id)] === 'accepted' && x.start + (x.days || 1) - 1 >= state.today - 1)
-        .map(extraHoliday);
+    const out = [];
+    for (const x of state.extras || []) {
+        if (state.bdDecisions?.[extraKey(x.id)] !== 'accepted') continue;
+        // история отменила — праздника нет; перенесла — тот же праздник (тот же id), другой день
+        const off = state.cancelled?.[`x-${x.id}`];
+        if (off && off.how !== 'moved') continue;
+        const start = off?.how === 'moved' && off.to != null ? off.to : x.start;
+        if (start + (x.days || 1) - 1 < state.today - 1) continue;
+        out.push(extraHoliday({ ...x, start }));
+    }
+    return out;
 }
 
 /** Новые дополнительные праздники от модели → в список: без повторов, без прошедших, не больше шести впереди */
@@ -105,7 +114,7 @@ export function mergeExtras(state, list, langOk, namesMatch) {
     }
     // прошедшие и отклонённые не копим
     state.extras = state.extras
-        .filter(x => state.today == null || x.start + (x.days || 1) - 1 >= state.today - 7)
+        .filter(x => state.today == null || (state.cancelled?.[`x-${x.id}`]?.to ?? x.start) + (x.days || 1) - 1 >= state.today - 7)
         .filter(x => state.bdDecisions?.[extraKey(x.id)] !== 'declined')
         .sort((a, b) => a.start - b.start).slice(0, 8);
     return slip;

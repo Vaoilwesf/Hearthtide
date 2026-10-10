@@ -6,6 +6,8 @@ import { plural } from './dates.js';
 // составные, иностранные и непонятные имена оставляем как есть
 function genitive(name) {
     const n = String(name || '').trim();
+    // имя с фамилией — по словам: «Анна Петрова» → «Анны Петровой», «Егор Петров» → «Егора Петрова»
+    if (/^[А-ЯЁ][а-яё-]+(\s+[А-ЯЁ][а-яё-]+){1,2}$/.test(n)) return n.split(/\s+/).map((w, i) => (i ? surnameGen(w, n) : genitive(w))).join(' ');
     if (!/^[А-ЯЁ][а-яё-]+$/.test(n)) return n;
     if (n === 'Любовь') return 'Любови';
     if (/ия$/.test(n)) return n.slice(0, -1) + 'и';                 // Мария → Марии
@@ -15,6 +17,15 @@ function genitive(name) {
     if (/[йь]$/.test(n)) return n.slice(0, -1) + 'я';               // Андрей → Андрея, Игорь → Игоря
     if (/[бвгджзклмнпрстфхцчшщ]$/.test(n)) return n + 'а';          // Ярослав → Ярослава
     return n;
+}
+
+function surnameGen(w, full) {
+    if (/(ова|ева|ёва|ина|ына)$/.test(w)) return w.slice(0, -1) + 'ой';      // Петрова → Петровой
+    if (/(ская|цкая)$/.test(w)) return w.slice(0, -2) + 'ой';                // Вяземская → Вяземской
+    if (/(ский|цкий)$/.test(w)) return w.slice(0, -2) + 'ого';               // Вяземский → Вяземского
+    if (/(ов|ев|ёв|ин|ын)$/.test(w)) return w + 'а';                         // Петров → Петрова
+    // отчество и прочее — как обычное имя, если похоже; иначе как есть
+    return /(вна|чна)$/.test(w) ? w.slice(0, -1) + 'ы' : /(вич|ич)$/.test(w) ? w + 'а' : genitive(w);
 }
 
 const RU = {
@@ -71,7 +82,10 @@ const RU = {
     giftJointTip: 'Сделать подарок общим', giftOwnTip: 'Пусть каждый дарит свой',
     userGiftNone: 'решаете вы — впишите, когда придумаете',
     userGiftEdit: 'Вписать свой подарок', userGiftPh: 'что подарите',
-    giftGiven: 'вручён',
+    giftGiven: 'вручён', giftGot: 'есть', giftIdea: 'задумка',
+    readyDone: 'Уже сделано', readyNone: 'Пока ничего не сделано — история ещё не дошла до подготовки.', readyBefore: 'Как готовились',
+    readyMore: (n) => `и ещё ${n} ${plural(n, ['дело', 'дела', 'дел'])} раньше`,
+    alsoAhead: 'Тоже готовятся', prepAhead: 'Готовятся', alsoInvited: 'приглашение принято', yearCancelled: 'отменили',
     charIdle: 'пока ни о чём особенном не думает',
     upcoming: 'Дальше',
     memories: 'Вспоминают',
@@ -238,7 +252,10 @@ const EN = {
     giftJointTip: 'Make it a joint gift', giftOwnTip: 'Let each give their own',
     userGiftNone: 'your call — write it in once you know',
     userGiftEdit: 'Write in your gift', userGiftPh: 'what you will give',
-    giftGiven: 'given',
+    giftGiven: 'given', giftGot: 'got it', giftIdea: 'idea',
+    readyDone: 'Done so far', readyNone: 'Nothing done yet — the story hasn’t got to it.', readyBefore: 'How they got ready',
+    readyMore: (n) => `and ${n} more before`,
+    alsoAhead: 'Also getting ready', prepAhead: 'Getting ready', alsoInvited: 'invitation accepted', yearCancelled: 'called off',
     charIdle: 'nothing special on their mind yet',
     upcoming: 'Coming up',
     memories: 'Remembered',
