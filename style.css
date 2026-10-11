@@ -115,9 +115,6 @@
 .ht-text { margin: 0; }
 .ht-mute { margin: 4px 0 0; color: var(--ht-mute); font-size: 0.9em; }
 
-.ht-line { display: flex; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--ht-line); }
-.ht-line:last-child { border-bottom: 0; }
-.ht-line > i { color: var(--ht-mute); padding-top: 2px; }
 
 /* Распорядок дня праздника */
 .ht-parts { display: flex; flex-direction: column; gap: 4px; }
@@ -140,7 +137,6 @@
 .ht-up > span { flex: 1; min-width: 0; }
 .ht-up > b { font-weight: 600; white-space: nowrap; color: var(--ht-mute); }
 
-.ht-actions { display: flex; justify-content: flex-end; }
 :is(.ht-ib, .ht-modal, .ht-cards) .ht-btn {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 5px 11px; border: 1px solid var(--ht-line-strong); border-radius: 6px; font-size: 0.92em;
@@ -170,10 +166,6 @@
 /* ─── Персонаж, подарки, люди ─── */
 .ht-care { display: inline-block; margin-bottom: 4px; padding: 1px 8px; border-radius: 999px; font-size: 0.82em; border: 1px solid var(--ht-line-strong); color: var(--ht-mute); }
 .ht-care-high { border-color: var(--ht-fire); color: var(--ht-fire); }
-.ht-gift { display: flex; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--ht-line); }
-.ht-gift:last-child { border-bottom: 0; }
-.ht-gift > i { color: var(--ht-acc); padding-top: 2px; }
-.ht-gift-done { opacity: 0.65; }
 .ht-group + .ht-group { margin-top: 6px; }
 .ht-group-title { font-size: 0.82em; color: var(--ht-mute); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
 .ht-person { display: flex; flex-direction: column; padding: 4px 0 4px 10px; border-left: 2px solid var(--ht-line-strong); margin-bottom: 4px; }
@@ -221,8 +213,6 @@
     background: color-mix(in srgb, var(--ht-acc) 22%, transparent); color: var(--ht-fg);
     vertical-align: 1px;
 }
-.ht-trail { margin-top: 4px; font-size: 0.86em; color: var(--ht-mute); }
-.ht-trail > span { font-style: italic; }
 .ht-char-gift {
     display: flex; gap: 9px; margin-top: 8px; padding-top: 8px;
     border-top: 1px dashed color-mix(in srgb, var(--ht-acc) 35%, transparent);
@@ -238,11 +228,11 @@
     width: 40%; height: 2px;
     background: linear-gradient(90deg, transparent, var(--ht-acc), transparent);
     transform: translateX(-100%);
-    animation: ht-sweep 5s linear infinite;
+    animation: ht-glow-sweep 5s linear infinite;
     will-change: transform;
     pointer-events: none;
 }
-@keyframes ht-sweep { to { transform: translateX(350%); } }
+@keyframes ht-glow-sweep { to { transform: translateX(350%); } }
 @media (prefers-reduced-motion: reduce) { .ht-glow::after { animation: none; display: none; } }
 
 /* Близкие и знакомые */
@@ -368,9 +358,6 @@
 .ht-sub.ht-sub-wrap { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; line-height: 1.3; }
 
 /* ─── Отдельный запрос в пути: перо тихо покачивается (только transform) ─── */
-.ht-busy { color: var(--ht-mute); font-size: 0.85em; margin-right: 4px; animation: ht-busy 1.4s ease-in-out infinite; }
-@keyframes ht-busy { 50% { transform: translateY(-2px) rotate(-12deg); } }
-@media (prefers-reduced-motion: reduce) { .ht-busy { animation: none; } }
 :is(.ht-ib, .ht-cards, .ht-modal) .ht-retry { color: var(--ht-acc); font-size: 0.85em; margin-right: 4px; cursor: pointer; padding: 4px; }
 .ht-retry:hover { transform: rotate(60deg); transition: transform 0.25s ease; }
 
@@ -433,7 +420,6 @@
 .ht-date { border-style: solid; border-color: color-mix(in srgb, var(--ht-rom) 60%, transparent); background: color-mix(in srgb, var(--ht-rom) 9%, transparent); }
 .ht-date .ht-offer-cause > i, .ht-date .ht-offer-mean > i { color: var(--ht-rom); }
 .ht-date .ht-offer-cause { display: flex; align-items: center; gap: 4px; }
-.ht-date-pct { margin-left: auto; color: var(--ht-rom); font-size: 1.05em; }
 .ht-date-meter { height: 7px; border-radius: 999px; background: var(--ht-line); overflow: hidden; }
 .ht-date-meter > i { display: block; height: 100%; width: calc(var(--v) * 1%); border-radius: inherit; background: var(--ht-rom); transition: width 0.4s ease; }
 .ht-date-steps { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
@@ -462,8 +448,6 @@
 .ht-date-toast-card > span { font-size: 0.85em; opacity: 0.8; }
 .ht-date-toast-card > b { font-size: 1.35em; color: var(--ht-rom); }
 .ht-date-toast-card > p { margin: 0; font-size: 0.9em; }
-.ht-date-delta { opacity: 0.85; }
-.ht-date-delta > i { color: var(--ht-rom); }
 .ht-date-hearts { display: flex; gap: 6px; color: var(--ht-rom); }
 .ht-date-hearts > i { animation: ht-heart 1.2s ease-in-out infinite; }
 .ht-date-hearts > i:nth-child(2) { animation-delay: 0.15s; font-size: 1.3em; }
@@ -538,7 +522,6 @@
 .ht-mini-bar::after { content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--ht-line-strong); opacity: 0.5; }
 .ht-mini-bar > i { position: absolute; top: 0; bottom: 0; left: 50%; width: calc(var(--v) * 0.5%); border-radius: inherit; background: hsl(var(--h) 60% 46%); }
 .ht-mini-bar.ht-neg > i { left: auto; right: 50%; }
-.ht-mini-wrap { width: 100%; }
 /* «Статус» — слова об отношениях в свёрнутой плашке, чтобы карточки были ровными */
 .ht-cc-status { width: 100%; font-size: 0.72em; color: var(--ht-mute); text-align: left; }
 .ht-cc-status > summary { list-style: none; cursor: pointer; text-align: center; padding: 1px 0; border-radius: 6px; }
@@ -559,15 +542,11 @@
 .ht-cc.ht-bd-today { border-color: var(--ht-fire); background: color-mix(in srgb, var(--ht-fire) 12%, transparent); }
 /* {{char}} и {{user}}: шире, первые; романтика — розовая подсветка и бьющееся сердце */
 /* карточка {{char}} — того же размера, что у остальных людей */
-.ht-pair-avas { display: flex; align-items: center; gap: 6px; }
 :is(.ht-ib, .ht-cards, .ht-modal) .ht-pair-mid { color: var(--ht-mute); font-size: 0.95em; }
 .ht-cc-love { border-color: color-mix(in srgb, var(--ht-rom) 65%, transparent); background: color-mix(in srgb, var(--ht-rom) 10%, transparent);
     box-shadow: 0 0 10px color-mix(in srgb, var(--ht-rom) 30%, transparent); }
 .ht-cc-love .ht-pair-mid { color: var(--ht-rom); animation: ht-beat 1.6s ease-in-out infinite; will-change: transform; }
 @keyframes ht-beat { 0%, 60%, 100% { transform: scale(1); } 20% { transform: scale(1.22); } 40% { transform: scale(1.05); } }
-.ht-rom-chip { display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border-radius: 999px; font-size: 0.74em;
-    color: var(--ht-rom); border: 1px solid color-mix(in srgb, var(--ht-rom) 55%, transparent); }
-.ht-rom-chip.ht-rom-neg { color: hsl(0 60% 55%); border-color: hsl(0 60% 45% / .6); }
 @media (prefers-reduced-motion: reduce) { .ht-cc-love .ht-pair-mid { animation: none; } }
 /* правка: на всю ширину галереи */
 .ht-gallery > .ht-cast-edit { grid-column: 1 / -1; }
@@ -659,11 +638,8 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-mini-rom .ht-mini-bar:not(.ht-neg) > i { background: var(--ht-rom); }
 .ht-cc-unknown .ht-pair-bars { opacity: 0.55; }
 .ht-cc-pair .ht-cc-name { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
-.ht-pair-date { display: flex; align-items: baseline; justify-content: center; gap: 4px; width: 100%; font-size: 0.7em; color: var(--ht-mute); line-height: 1.25; overflow-wrap: anywhere; }
-.ht-pair-date > i { color: var(--ht-rom); flex: none; }
 
 /* правка пары: два ползунка −100…100 и пометка */
-.ht-pair-edit .ht-pair-avas { justify-content: center; margin-bottom: 2px; }
 .ht-pair-edit .ht-pair-mid { color: var(--ht-rom); }
 .ht-range > span { display: flex; align-items: center; gap: 6px; }
 .ht-range > span > i { color: var(--ht-acc); }
@@ -741,11 +717,6 @@ dialog.ht-modal:not([open]) { display: none; }
 
 
 /* кого часто называют в истории — добавить одним нажатием */
-.ht-hints { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 10px; font-size: 0.82em; color: var(--ht-mute); }
-.ht-hints > span > i { margin-right: 5px; color: var(--ht-acc); }
-:is(.ht-ib) .ht-hints > button { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; border: 1px dashed var(--ht-line-strong); color: var(--ht-fg); cursor: pointer; }
-:is(.ht-ib) .ht-hints > button:hover { background: var(--ht-soft-2); }
-.ht-hints em { font-style: normal; font-size: 0.85em; color: var(--ht-mute); }
 
 /* ═══ Свидание: намечено (в инфоблоке) ═══ */
 .ht-planned { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 8px; padding: 7px 10px; border-radius: 8px;
@@ -773,7 +744,6 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-dstrip > i { display: block; width: 100%; height: 100%; border-radius: inherit; background: var(--c);
     transform: scaleY(calc(0.04 + var(--v) / 104)); transform-origin: bottom; transition: transform 0.6s ease; }
 .ht-dvibe { font-size: 0.88em; font-style: italic; color: var(--c); }
-.ht-date-on .ht-date-pct { color: var(--c); font-size: 1.15em; margin-left: auto; align-self: flex-start; }
 .ht-date-on .ht-date-meter > i { background: var(--c); }
 .ht-dgoal { display: flex; align-items: baseline; gap: 7px; margin-top: 4px; font-size: 0.92em; }
 .ht-dgoal > span { flex: 1; min-width: 0; }
@@ -817,10 +787,6 @@ dialog.ht-modal:not([open]) { display: none; }
     background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--ht-fg) 35%, transparent), transparent);
     animation: ht-busy 1.2s linear infinite; }
 @keyframes ht-busy { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
-.ht-dnotes { list-style: none; margin: 4px 0 0; padding: 6px 0 0; border-top: 1px dashed var(--ht-line); display: flex; flex-direction: column; gap: 2px; font-size: 0.84em; color: var(--ht-mute); }
-.ht-dnotes > li { display: flex; gap: 6px; align-items: baseline; }
-.ht-dnotes > li > i { color: var(--c); flex: none; font-size: 0.85em; }
-.ht-dnotes > li.ht-bad > i { color: var(--ht-mute); }
 @media (prefers-reduced-motion: reduce) {
     .ht-dhearts > i, .ht-slot-anim .ht-step-gone, .ht-step-new, .ht-date-busy .ht-date-meter::after { animation: none; }
     .ht-slot-anim .ht-step-gone > span { text-decoration: line-through; }
@@ -916,19 +882,8 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-date-on .ht-date-step > em { align-self: center; padding: 1px 8px; border-radius: 999px; font-size: 0.74em; border: 1px solid currentColor; }
 
 /* ход свидания — свёрнут, для памяти */
-.ht-dlog { font-size: 0.86em; }
-.ht-dlog > summary { display: flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; color: var(--ht-mute); padding: 2px 0; }
-.ht-dlog > summary::-webkit-details-marker { display: none; }
-.ht-dlog > summary > i:first-child { color: var(--c); }
-.ht-dlog > summary > em { font-style: normal; font-size: 0.85em; padding: 0 6px; border-radius: 999px; border: 1px solid var(--ht-line); }
 .ht-dlog-chev { margin-left: auto; font-size: 0.8em; transition: transform 0.2s ease; }
 .ht-dlog[open] .ht-dlog-chev { transform: rotate(180deg); }
-.ht-dlog > ol { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.ht-dlog li { display: grid; grid-template-columns: 1.1em minmax(0, 1fr) auto; gap: 7px; align-items: baseline; line-height: 1.35; }
-.ht-dlog li > i { color: var(--c); }
-.ht-dlog li > b { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--c); }
-.ht-dlog li.ht-log-failed > i, .ht-dlog li.ht-log-failed > b, .ht-dlog li.ht-log-down > i, .ht-dlog li.ht-log-down > b { color: var(--ht-mute); }
-.ht-dlog li.ht-log-moment > i { color: var(--ht-acc); }
 @media (prefers-reduced-motion: reduce) { .ht-dlog-chev { transition: none; } }
 
 /* в «Отмеченных праздниках»: свидание — с итогом и цветом */
@@ -1000,7 +955,6 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-dgifts { display: flex; align-items: baseline; gap: 8px; margin: 0; font-size: 0.9em; }
 .ht-dgifts > i { color: var(--c, var(--ht-rom)); flex: none; }
 .ht-dgifts > span { overflow-wrap: anywhere; }
-.ht-dlog li.ht-log-gift > i { color: var(--ht-acc); }
 
 /* приглашение на дополнительный праздник — иконка вместо портрета */
 .ht-ava.ht-ava-icon { font-size: 1.2em; color: var(--ht-acc); }

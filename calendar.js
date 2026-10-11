@@ -106,13 +106,11 @@ export function npcBirthdays(state) {
             const start = nextOccurrence({ m: c.bday.m, d: c.bday.d }, from);
             if (start - state.today > NPC_BD_AHEAD || !npcBdOn(state, c, start)) continue;
             let h = npcHoliday(c, start);
-            // история отменила — дня рождения нет; перенесла — тот же человек, другой день
-            const off = state.cancelled?.[h.id];
-            if (off) {
-                if (off.how !== 'moved' || off.to == null || off.to < state.today - 1) continue;
-                h = { ...npcHoliday(c, off.to), movedFrom: h.id };
+            // история отменила — дня рождения нет; перенесла — тот же человек, другой день (а могли перенести и ещё раз)
+            for (let off = state.cancelled?.[h.id], i = 0; h && off && i < 4; off = h && state.cancelled?.[h.id], i++) {
+                h = off.how === 'moved' && off.to != null && off.to >= state.today - 1 ? { ...npcHoliday(c, off.to), movedFrom: h.movedFrom || h.id } : null;
             }
-            if (!out.some(x => x.id === h.id)) out.push(h);
+            if (h && !out.some(x => x.id === h.id)) out.push(h);
         }
     }
     return out;

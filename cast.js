@@ -2,7 +2,7 @@
 // Люди истории: кто кому кем приходится, дни рождения, отношения с {{user}} и {{char}}.
 // ИИ вносит каждого один раз; игрок может поправить или убрать — тогда ИИ его не вернёт.
 
-import { dayNum, fromDayNum, nextOccurrence } from './dates.js';
+import { fromDayNum, nextOccurrence } from './dates.js';
 
 // родня {{user}} · родня {{char}} · общая семья (их дети, внуки) · друзья · знакомые · прочие
 export const CAST_GROUPS = ['kin_user', 'kin_char', 'kin_both', 'friend', 'acquaintance', 'other'];
@@ -130,7 +130,6 @@ export function mergeCast(state, parsed, langOk, turn, log = null) {
         ex.note = ex.note || { user: null, char: null };
         if (u.noteU && langOk(u.noteU)) ex.note.user = u.noteU;
         if (u.noteC && langOk(u.noteC)) ex.note.char = u.noteC;
-        ex.relTurn = turn;
     }
     if (state.cast.length > 40) state.cast = state.cast.slice(-40);
     return slip;

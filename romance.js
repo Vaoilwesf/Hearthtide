@@ -238,7 +238,7 @@ export function applyDateUp(d, up, turn, level) {
     if (up.thought) d.thought = up.thought;
     if (up.goal && !d.goalDone) {
         // цель достигается только после нескольких шагов и при неплохом ходе свидания
-        if (goalOpen(d, level)) { d.goalDone = true; d.goalTurn = turn; d.score += L.goal; note('goal', d.goal, L.goal); moved = true; }
+        if (goalOpen(d, level)) { d.goalDone = true; d.score += L.goal; note('goal', d.goal, L.goal); moved = true; }
         else ignoredGoal = true;
     }
     if (up.recap) d.recap = up.recap;
@@ -258,7 +258,7 @@ export function applyDateUp(d, up, turn, level) {
 export function toggleStep(date, n, turn, level) {
     const s = date?.steps?.find(x => x.n === n);
     if (!s || date.status !== 'active' || s.state !== 'open') return;
-    s.state = 'done'; s.endTurn = turn; s.manual = true;
+    s.state = 'done'; s.endTurn = turn;
     date.score = clamp(date.score + levelOf(level).step, 0, 100);
     (date.log = date.log || []).push({ kind: 'done', t: s.t, delta: levelOf(level).step, turn });
     date.lastUpdate = turn;
@@ -295,8 +295,6 @@ export function finishDate(state, turn, level = 'easy', pace = null) {
     return d;
 }
 
-/** Романтика пары, с которой зовут на свидание (ниже — на дружескую встречу) */
-export const DATE_ROM_MIN = 0;
 
 /**
  * Шанс, что {{char}} позовёт на свидание после этого ответа, и почему он такой.
@@ -316,7 +314,6 @@ export function dateChanceInfo(state, turn, base = DATE_CHANCE.base) {
     if ((state.pairDrop ?? -99) >= turn - 6) return { chance: Math.min(100, Math.round(base * 2.5)), why: 'quarrel' };
     return { chance: base, why: p.r < 0 ? 'friendly' : p.r === 0 ? 'open' : 'ok' };
 }
-export const dateChance = (state, turn, base) => dateChanceInfo(state, turn, base).chance;
 
 /** Свидание из старой версии (шаги разом, шкала с 35 %) → новый вид */
 export function migrateDate(state) {

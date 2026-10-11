@@ -57,7 +57,6 @@ export function isoOf(n) {
 }
 
 /** Часть дня по часам: утро 5–11, день 11–17, вечер 17–22, ночь 22–5 */
-export const DAY_PARTS = ['morning', 'day', 'evening', 'night'];
 export function dayPart(hours) {
     if (hours == null) return null;
     const h = ((hours % 24) + 24) % 24;

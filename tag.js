@@ -75,17 +75,8 @@ export function parseSmall(text, name = 'HT') {
         bondNote: clean(f.bond_note, 60),
         // {{char}} и {{user}} — родня друг другу (брат и сестра, родитель и ребёнок…): без романтики и свиданий
         bondKin: /^(yes|true|да)/i.test(String(f.bond_kin || '').trim()) ? true : /^(no|false|нет)/i.test(String(f.bond_kin || '').trim()) ? false : null,
-        // свидание: какой шаг сделан, как идёт, кончилось ли
-        dateStep: (String(f.date_step || '').match(/\d+/g) || []).map(Number).filter(n => n >= 1 && n <= 6),
-        dateMood: /^up|^better|^лучш|^\+/i.test(String(f.date_mood || '').trim()) ? 1 : /^down|^worse|^хуж|^-/i.test(String(f.date_mood || '').trim()) ? -1 : 0,
-        dateEnd: /^(yes|true|1|да|end)/i.test(String(f.date_end || '').trim()),
         // {{char}} в этом ответе позвал на свидание, задуманное помощником
         dateAsked: /^(yes|true|1|да)/i.test(String(f.date_asked || '').trim()),
-        // помощник подтверждает: позвали вслух (yes) или только подумали (no)
-        askedYes: /^(yes|true|да)/i.test(String(f.asked || '').trim()),
-        askedNo: /^(no|false|нет)/i.test(String(f.asked || '').trim()),
-        bdYes: /^(yes|true|да)/i.test(String(f.bd_invited || '').trim()),
-        bdNo: /^(no|false|нет)/i.test(String(f.bd_invited || '').trim()),
         // кто-то в этом ответе вслух позвал {{user}}: на день рождения человека NAME или на дополнительный праздник NAME
         invite: clean(f.invite, 80),
         // таймскип перепрыгнул принятое приглашение: пришли (yes) или нет (no), и коротко как
@@ -232,18 +223,6 @@ export function parseDay(text) {
     // where — где отмечают (у дня рождения человека из истории: чей дом или какое место)
     const r = { title: tidyValue(clean(f.title, 120)), where: tidyValue(clean(f.where, 80)), morning: tidyValue(clean(f.morning)), day: tidyValue(clean(f.day)), evening: tidyValue(clean(f.evening)), night: tidyValue(clean(f.night)) };
     return r.morning || r.day || r.evening || r.night ? r : null;
-}
-
-/** Событие праздника: кто, что за событие, одна фраза */
-const EVENT_KINDS = ['gift', 'wish', 'rumor', 'prep', 'family', 'custom', 'mishap', 'thought'];
-export function parseEvent(text) {
-    const inner = findBlock(text, 'HT-EVENT');
-    if (inner == null) return null;
-    const f = fields(inner);
-    const txt = clean(f.text, 300);
-    if (!txt) return null;
-    const k = String(f.kind || '').toLowerCase();
-    return { who: clean(f.who, 60), kind: EVENT_KINDS.find(x => k.startsWith(x.slice(0, 4))) || 'custom', text: txt };
 }
 
 /**

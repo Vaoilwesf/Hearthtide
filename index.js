@@ -10,11 +10,11 @@ import {
 import { eventSource, event_types } from '../../../../scripts/events.js';
 
 import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.js';
-import { slimSmallTag, parseReady, tidyValue, parseExtras, parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseDateUp, parseRecapParts, stripBlocks } from './tag.js';
-import { PAIR_DEFAULT, bondCap, dateKindFor, isFriendlyDate, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, levelOf, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN, DATE_SKIP_END, DATE_SKIP_HARD, DATE_CLOSE_TURNS, DATE_QUIET, goalNeed, paceAuto, stepKinds, MISS_PAIR } from './romance.js';
+import { slimSmallTag, parseReady, parseExtras, parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseDateUp, parseRecapParts, stripBlocks } from './tag.js';
+import { PAIR_DEFAULT, bondCap, dateKindFor, isFriendlyDate, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN, DATE_SKIP_END, DATE_SKIP_HARD, DATE_CLOSE_TURNS, DATE_QUIET, goalNeed, paceAuto, stepKinds, MISS_PAIR } from './romance.js';
 import { CAST_GROUPS, KIN_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast, nameCandidates } from './cast.js';
 import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE_DEFAULT, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday, giftJoint, trackedOccasions, charGiftOf, activeOccasions, occTier, preparingNow } from './calendar.js';
-import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, buildDateSideMessages, buildDateRefillMessages, giftTarget, hName, readyNoted } from './prompts.js';
+import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, buildDateSideMessages, buildDateRefillMessages, giftTarget, hName } from './prompts.js';
 import { inviteCandidates, bdKey, extraKey, mergeExtras, INVITE_TRIES, INVITE_COOL, INVITE_AHEAD } from './invites.js';
 import { listProfiles, gatherSources, loreFor, sendSide, reasonOf } from './side.js';
 import { strings } from './i18n.js';
@@ -731,7 +731,11 @@ function processReply(N) {
         }
         mergeHolidays(cal.holidays);
         for (const [who, md] of Object.entries(cal.birthdays)) state.birthdays[who] = md;
-        state.forceCal = state.rebuild;                  // пустой календарь при пересборке — спросим ещё раз
+        // пустой календарь при пересборке — спросим ещё раз, но не бесконечно: после двух пустых оставляем прежний
+        if (state.rebuild && askedCal) state.rebuildTries = (state.rebuildTries || 0) + 1;
+        if (state.rebuild && state.rebuildTries >= 2) { state.rebuild = false; console.info('[Hearthtide] «Подобрать заново»: модель дважды не прислала праздников — календарь остаётся прежним'); }
+        if (!state.rebuild) state.rebuildTries = 0;
+        state.forceCal = !!state.rebuild;
         if (askedCal) state.bdayAsked = true;       // не прислал строку B — дня рождения не знаем, не переспрашиваем
         if (cal.passed.some(x => !langOk(x.name))) slip = true;
         logSkipped(cal.passed.filter(x => langOk(x.name)));
@@ -892,7 +896,6 @@ function processReply(N) {
             console.info(`[Hearthtide] что знают друг о друге (${who === 'char' ? getCharName() : getUserName()}): ${(pk[who] || []).length} → ${list.length} — ${list.join('; ')}`);
             pk[who] = list;
         }
-        state.knowTurn = state.turn;
     }
     if (state.dateRecapFor && state.turn - (state.dateRecapTurn ?? state.turn) > 3) state.dateRecapFor = null;   // не дождались — без итога
     if (['offered', 'pending'].includes(state.date?.status) && state.turn - state.date.turn > 4) state.date = null;   // не ответили — забылось
@@ -1156,7 +1159,6 @@ function processReply(N) {
     else if (cal && cal.holidays.length) state.diag = null;
     else if (askedCal && !cal) state.diag = 'nocal';                          // просили календарь — не прислал
     else if (state.diag === 'notag') state.diag = null;
-    state.diagThink = fromThink;
 
     msg.extra.ht = viewSnapshot(phase);
     if (rebuiltNames) {
@@ -1298,7 +1300,9 @@ function applyReady(r, occ) {
  * людьми и мыслями {{char}}, в «Текущем году» — «отменили»; перенесённый уходит на новую дату со всем, что к нему готовили.
  */
 function cancelOccasion(h, how, to, why) {
-    if (!h || state.cancelled?.[h.id]) return;
+    // уже отменён — всё; уже перенесён — можно перенести ещё раз или отменить (у дополнительного праздника id тот же)
+    if (!h || (state.cancelled?.[h.id] && state.cancelled[h.id].how !== 'moved')) return;
+    if (state.cancelled?.[h.id]?.how === 'moved' && state.cancelled[h.id].to === to && how === 'moved') return;
     if (how === 'moved' && (to == null || to === h.start || (h.birthday && !h.npc))) return;   // свой день рождения не переносится
     const name = displayName(h);
     state.cancelled = { ...(state.cancelled || {}), [h.id]: { how, to: how === 'moved' ? to : null, why: why || null, turn: state.turn, name } };
@@ -1311,7 +1315,7 @@ function cancelOccasion(h, how, to, why) {
         }
         if (newId !== h.id) {
             renameHidIn(state, h.id, newId);
-            for (const map of ['userGift', 'giftMode']) if (state[map]?.[h.id]) { state[map] = { ...state[map], [newId]: state[map][h.id] }; delete state[map][h.id]; }
+            for (const map of ['userGift', 'giftMode', 'readyNo']) if (state[map]?.[h.id]) { state[map] = { ...state[map], [newId]: state[map][h.id] }; delete state[map][h.id]; }
         }
     } else {
         forgetHolidayIn(state, h.id);
@@ -1910,7 +1914,7 @@ const storyDateToasted = new Set();     // свидания, договорён�
 function rebuildCalendar() {
     if (!state) loadState();
     // ничего не стираем сразу: старый календарь живёт, пока не придёт новый (processReply)
-    const mark = (st) => { st.rebuild = true; st.forceCal = true; };
+    const mark = (st) => { st.rebuild = true; st.rebuildTries = 0; st.forceCal = true; };
     mark(state);
     applyToSnapshots(mark);
     // Календари из уже пришедших ответов больше не принимаем (при правке или повторной обработке);
@@ -2401,7 +2405,6 @@ function sideMarkHtml() {
     return '';
 }
 
-function sideBusyFor(id) { return !!side && side.N === id; }
 
 function cancelSide() {
     if (side) { try { side.ctl.abort(); } catch (e) { /* пусто */ } side = null; scheduleRenderAll(); }
@@ -2556,10 +2559,6 @@ const TYPE_ICON = {
     personal: 'fa-cake-candles', family: 'fa-house-chimney', supernatural: 'fa-ghost', fast: 'fa-hourglass-half', memorial: 'fa-feather', date: 'fa-heart', gathering: 'fa-champagne-glasses',
 };
 
-const EVENT_ICON = {
-    gift: 'fa-gift', wish: 'fa-star', rumor: 'fa-comments', prep: 'fa-hammer',
-    family: 'fa-people-roof', custom: 'fa-bell', mishap: 'fa-triangle-exclamation', thought: 'fa-cloud',
-};
 const PART_ICON = { morning: 'fa-cloud-sun', day: 'fa-sun', evening: 'fa-cloud-moon', night: 'fa-moon' };
 
 function lastBotIndex() {
@@ -3236,7 +3235,7 @@ function castFormHtml(p, photo) {
             <label class="ht-btn"><i class="fa-solid fa-image"></i>${L().photo}<input type="file" accept="image/*" data-act="cast-photo" data-cid="${esc(p.id)}" hidden></label>
             ${photo ? `<button class="ht-btn ht-btn-quiet" data-act="cast-photo-del" data-cid="${esc(p.id)}" title="${esc(L().remove)}"><i class="fa-solid fa-xmark"></i></button>` : ''}
         </div>
-        <label>${L().fName}<input class="text_pole" data-ed="name" value="${esc(p.name || '')}"></label>
+        <label>${L().fPersonName}<input class="text_pole" data-ed="name" value="${esc(p.name || '')}"></label>
         <div class="ht-edit-two">
             <label>${esc(L().toWhom(getUserName()))}<input class="text_pole" data-ed="toU" value="${esc(p.toU || '')}"></label>
             <label>${esc(L().toWhom(getCharName()))}<input class="text_pole" data-ed="toC" value="${esc(p.toC || '')}"></label>
@@ -3307,22 +3306,6 @@ function saveCast(cid, f) {
     injectPrompts();
     window.toastr?.success?.(L().saved, 'Hearthtide');
     return true;
-}
-
-// Человек из «часто упоминаются»: вносим с именем, роли и отношения ИИ допишет при следующей проверке людей
-function addCastByHand(name) {
-    const n = String(name || '').trim();
-    if (!n || findCast(state, n)) return;
-    state.castNo = (state.castNo || []).filter(x => !samePerson(x, n));
-    const c = { id: `c-${state.turn}-h-${Math.random().toString(36).slice(2, 6)}`, name: n, group: 'other', toU: null, toC: null, bday: null,
-        rel: { user: 0, char: 0 }, note: { user: null, char: null }, rom: { user: null, char: null }, scale: 2, turn: state.turn, byHand: true };
-    const apply = (st) => { st.cast = st.cast || []; if (!st.cast.some(x => samePerson(x.name, n))) st.cast.push(clone(c)); };
-    apply(state);
-    applyToSnapshots(apply);
-    state.lastCastTurn = -99;            // спросить о нём в ближайшем ответе
-    saveState();
-    injectPrompts();
-    renderAll();
 }
 
 // «Глазок»: выключенный человек не идёт в промпт, но остаётся в списке — ИИ не внесёт его заново
@@ -3881,8 +3864,6 @@ function bindBlock(block) {
             injectPrompts();
             if (state.recall) window.toastr?.info?.(L().recallToast(getCharName()), 'Hearthtide');
             renderBlock(id);
-        } else if (t.dataset.act === 'rebuild') {
-            rebuildCalendar();
         } else if (t.dataset.act === 'sec') {
             toggleSec(t.dataset.key);
             renderAll();   // во всех инфоблоках раздел свёрнут одинаково
