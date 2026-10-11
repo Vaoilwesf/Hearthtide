@@ -349,15 +349,38 @@ function hashText(t) {
  * в сообщение; раньше от этого менялся отпечаток, и ответ помощника молча выбрасывался (людей не добавлялось,
  * шаги свидания не засчитывались). Теперь картинка отпечаток не меняет.
  */
-function coreHash(t) {
-    return hashText(String(t || '')
-        .replace(/<!--[\s\S]*?-->/g, ' ')
-        .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
-        .replace(/<[^>]*>/g, ' ')
-        .replace(/\s+/g, ' ').trim());
+const coreText = (t) => String(t || '')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+function coreHash(t) { return hashText(coreText(t)); }
+/** Какой это свайп сообщения: ответы помощника привязаны к свайпу, а не к точному тексту */
+const swOf = (msg) => msg?.swipe_id ?? 0;
+/**
+ * Записи помощника к сообщению (ht_side, ht_date, ht_confirm): сначала по точному тексту; если текст поправило
+ * другое расширение (перевод, картинки, форматирование) или сам игрок — по тому же свайпу. Раньше любая чужая
+ * правка текста «отвязывала» ответ помощника: карточки «Принять / Отклонить», распорядок, люди пропадали
+ * при повторной обработке.
+ */
+function recOf(msg, field, text) {
+    const map = msg?.extra?.[field];
+    if (!map) return null;
+    const exact = map[coreHash(text)] || map[hashText(text)];
+    if (exact) return exact;
+    const same = Object.values(map).filter(r => r && typeof r === 'object' && r.swipe != null && r.swipe === swOf(msg));
+    return same.length ? same[same.length - 1] : null;
 }
-// записи прошлых версий хранятся под старым отпечатком
-const sideOf = (msg, text) => msg?.extra?.ht_side?.[coreHash(text)] || msg?.extra?.ht_side?.[hashText(text)] || null;
+const sideOf = (msg, text) => recOf(msg, 'ht_side', text);
+/** Уже есть ответ к этому тексту — или к почти тому же (чужая правка), а не к сильно дописанному («продолжить») */
+function recFresh(msg, field, text) {
+    const r = recOf(msg, field, text);
+    if (!r) return false;
+    if (msg.extra[field][coreHash(text)] || msg.extra[field][hashText(text)]) return true;
+    return r.len == null || coreText(text).length - r.len < 300;
+}
+/** Сообщение всё то же: тот же номер и свайп (текст другое расширение могло поправить — это не повод выбрасывать ответ) */
+const sameReply = (N, swipe) => { const m = chat[N]; return !!m && swOf(m) === swipe && N === lastProcessedMsg(); };
 
 // ─── Был ли человек в ролплее: имя в последних сообщениях (с учётом падежей) ───
 function recentStoryText(n = 8) {
@@ -568,7 +591,7 @@ function processReply(N) {
     // при свайпе назад или повторной обработке берём их оттуда
     let text = msg.mes;
     const saved = msg.extra?.ht_raw;
-    const source = saved && (saved.hash === coreHash(text) || saved.hash === hashText(text)) ? saved.raw : text;
+    const source = saved && (saved.hash === coreHash(text) || saved.hash === hashText(text) || (saved.swipe != null && saved.swipe === swOf(msg))) ? saved.raw : text;
 
     // Модели с «думалкой» иногда пишут теги в рассуждениях, а в ответ не переносят — тогда берём оттуда
     const think = String(msg.extra?.reasoning || '');
@@ -586,7 +609,7 @@ function processReply(N) {
         try { stModule?.updateMessageBlock?.(N, msg); } catch (e) { /* пусто */ }
     }
     msg.extra = msg.extra || {};
-    if (source !== text || !saved) msg.extra.ht_raw = { raw: source, hash: coreHash(text) };
+    if (source !== text || !saved) msg.extra.ht_raw = { raw: source, hash: coreHash(text), swipe: swOf(msg) };
 
     // Ответ отдельного запроса к этому тексту (если уже пришёл): те же блоки, читаем вместе с ответом
     const sideRec = apiOn() ? sideOf(msg, text) : null;
@@ -622,7 +645,7 @@ function processReply(N) {
     const planIn = sideText && sideAsked.includes('dateplan') ? parseDateBlock(sideText) : null;
     let dateIn = parseDateBlock(src) || (sideText && sideAsked.includes('datewatch') ? parseDateBlock(sideText) : null);
     // Позвали ли вслух — короткий отдельный запрос «да/нет» (при помощнике). Нет ответа — ждём его; запрос упал — верим основной модели
-    const conf = apiOn() ? (msg.extra?.ht_confirm?.[coreHash(text)] || null) : null;
+    const conf = apiOn() ? recOf(msg, 'ht_confirm', text) : null;
     // {{char}} позвал по плану помощника — приглашение из плана: место и время тоже из плана.
     // Отметку date_asked модели часто забывают — поэтому годится и подтверждение «да» из проверки
     const plan = hadDateRoll ? state.datePlan : null;
@@ -775,7 +798,7 @@ function processReply(N) {
     let dateEnded = null;
     const lvl = dateLevel();
     // ход свидания: при помощнике — из отдельного запроса о свидании (каждый ответ), без него — из ответа основной модели
-    const dateRec = apiOn() ? (msg.extra?.ht_date?.[coreHash(text)] || null) : null;
+    const dateRec = apiOn() ? recOf(msg, 'ht_date', text) : null;
     let upRaw = (dateRec ? parseDateUp(dateRec.text) : null) || (apiOn() ? null : parseDateUp(src));
     // новые шаги, дозапрошенные у помощника, когда в оценке их не хватило
     const refill = dateRec?.refill ? parseDateUp(`<!-- HT-DATE-UP\n${dateRec.refill}\n-->`) : null;
@@ -994,14 +1017,18 @@ function processReply(N) {
         }
     }
     if (day && phase.kind === 'today' && ['title', 'where', 'morning', 'day', 'evening', 'night'].some(k => day[k] && !langOk(day[k]))) { slip = true; }
-    else if (day && phase.kind === 'today') {
-        // Распорядок дополняется: пришедшие части заменяют старые, прошедшие остаются
-        const key = `${phase.h.id}#${phase.dayIndex}`;
-        const prevPlan = state.days[key] || {};
-        for (const k of Object.keys(day)) if (day[k] == null) delete day[k];
-        Object.assign(day, { ...prevPlan, ...day });
-        state.planPart[key] = dayPart(state.clock) || 'morning';
-        state.days[`${phase.h.id}#${phase.dayIndex}`] = day;
+    else if (day && (phase.kind === 'today' || sideRec?.dayKey)) {
+        // Распорядок дополняется: пришедшие части заменяют старые, прошедшие остаются.
+        // Ключ — праздник, о котором помощника спрашивали (если сегодня их несколько, главный мог смениться в этом же ответе)
+        const asked = sideRec?.dayKey && !parseDay(src) && activeOccasions(state).some(h => sideRec.dayKey.startsWith(`${h.id}#`)) ? sideRec.dayKey : null;
+        const key = asked || (phase.kind === 'today' ? `${phase.h.id}#${phase.dayIndex}` : null);
+        if (key) {
+            const prevPlan = state.days[key] || {};
+            for (const k of Object.keys(day)) if (day[k] == null) delete day[k];
+            Object.assign(day, { ...prevPlan, ...day });
+            state.planPart[key] = dayPart(state.clock) || 'morning';
+            state.days[key] = day;
+        }
     }
     if (recap && !langOk(recap)) slip = true;
     if (recap && phase.ended && langOk(recap)) {
@@ -1753,7 +1780,7 @@ function acceptOffer(oid, edit = null) {
     } else {
         const name = String(edit?.name || '').trim() || o.name;
         const meanIn = edit ? String(edit.meaning ?? '').trim() : null;
-        const h = { start, days: o.days, name, type: edit?.type || o.type, prep: o.prep, edited: true, story: true };
+        const h = { start, days: o.days, name, type: edit?.type || o.type, prep: o.prep, edited: true, story: true, cause: o.cause || null };
         if (meanIn && meanIn !== (o.meaning || '')) h.meaning = meanIn;              // игрок сам написал смысл
         else if (namesMatch(name, o.name)) h.meaning = o.meaning;
         else { h.meaning = null; h.needMeaning = true; }                             // переименовал в другое — смысл допишет ИИ
@@ -2101,7 +2128,8 @@ function displayName(h) {
     if (h.npc) return L().birthday(h.name);
     if (h.extra) return occasionName(h.name, h.meaning, h.host);
     if (h.birthday) return L().birthday(h.who === 'user' ? getUserName() : getCharName());
-    return h.name;
+    // повод из истории, названный именем человека, — по описанию
+    return h.story ? occasionName(h.name, h.cause, h.meaning) : h.name;
 }
 
 function viewSnapshot(phase) {
@@ -2232,10 +2260,10 @@ async function runConfirmSide(N) {
     const need = confirmNeed;
     if (!apiOn() || !isEnabled() || !need || need.N !== N || N !== lastProcessedMsg()) return;
     const msg = chat[N];
-    if (!msg || coreHash(msg.mes) !== need.hash || msg.extra?.ht_confirm?.[need.hash]) return;
+    if (!msg || recFresh(msg, 'ht_confirm', msg.mes)) return;
     if (confirmSide?.hash === need.hash) return;                  // уже спрашиваем
     confirmSide?.ctl.abort();
-    const me = { N, hash: need.hash, ctl: new AbortController() };
+    const me = { N, hash: need.hash, swipe: swOf(msg), ctl: new AbortController() };
     confirmSide = me;
     let res;
     try {
@@ -2250,10 +2278,10 @@ async function runConfirmSide(N) {
     } finally {
         if (confirmSide === me) confirmSide = null;
     }
+    if (!sameReply(N, me.swipe)) return;
     const m = chat[N];
-    if (!m || coreHash(m.mes) !== me.hash || N !== lastProcessedMsg()) return;
     m.extra = m.extra || {};
-    m.extra.ht_confirm = { [me.hash]: res };
+    m.extra.ht_confirm = { [coreHash(m.mes)]: { ...res, swipe: me.swipe, len: coreText(m.mes).length } };
     processReply(N);
 }
 
@@ -2299,10 +2327,9 @@ async function runDateSide(N, attempt = 1) {
     if (!apiOn() || !isEnabled() || !state || !dateSideDue()) return;
     const msg = chat[N];
     if (!msg || msg.is_user || msg.is_system || N !== lastProcessedMsg()) return;
-    const hash = coreHash(msg.mes);
-    if (msg.extra?.ht_date?.[hash]) return;                 // к этому тексту уже есть
+    if (recFresh(msg, 'ht_date', msg.mes)) return;          // к этому тексту уже есть
     dateSide?.ctl.abort();
-    const me = { N, ctl: new AbortController() };
+    const me = { N, swipe: swOf(msg), ctl: new AbortController() };
     dateSide = me;
     scheduleRenderAll();
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -2316,13 +2343,14 @@ async function runDateSide(N, attempt = 1) {
         // 3000: модели с рассуждениями не успевали дописать блок в 1500
         const text = await sendSide(apiProfile(), buildDateSideMessages(ctx, src), me.ctl.signal, 3000);
         if (dateSide !== me) return;
-        const stale = () => { const m = chat[N]; return !m || coreHash(m.mes) !== hash || N !== lastProcessedMsg(); };
-        if (stale()) { console.info('[Hearthtide] свидание: ответ помощника отброшен — текст уже другой'); return; }
+        const stale = () => !sameReply(N, me.swipe);
+        if (stale()) { console.info('[Hearthtide] свидание: ответ помощника отброшен — другой свайп или чат ушёл дальше'); return; }
+        const hash = coreHash(chat[N].mes);
         console.info(`[Hearthtide] свидание — помощник:\n${text}`);
         if (!/HT-DATE-UP/i.test(text)) console.warn('[Hearthtide] свидание: в ответе помощника нет блока HT-DATE-UP — ход не обновлён');
         const m = chat[N];
         m.extra = m.extra || {};
-        m.extra.ht_date = { [hash]: { text } };
+        m.extra.ht_date = { [hash]: { text, swipe: me.swipe, len: coreText(m.mes).length } };
         processReply(N);
         // освободились места, а новых шагов помощник не дал — коротко дозапросить только их
         const d = state.date;
@@ -2332,7 +2360,8 @@ async function runDateSide(N, attempt = 1) {
                 const refill = await sendSide(apiProfile(), buildDateRefillMessages(ctxFor(null), src, k), me.ctl.signal, 1200);
                 if (dateSide !== me || stale()) return;
                 console.info(`[Hearthtide] свидание: не хватало ${k} шаг(ов) — дозапрос:\n${refill}`);
-                chat[N].extra.ht_date[hash].refill = refill;
+                const rec = recOf(chat[N], 'ht_date', chat[N].mes);
+                if (rec) rec.refill = refill;
                 processReply(N);
             } catch (e) {
                 if (!me.ctl.signal.aborted) console.warn('[Hearthtide] свидание: дозапрос шагов не прошёл —', reasonOf(e));
@@ -2382,7 +2411,7 @@ function maybeSide(N, force = false, extra = []) {
     if (!apiOn() || !state || generating) return;
     const msg = chat[N];
     if (!msg || msg.is_user || msg.is_system || N !== lastProcessedMsg()) return;
-    if (sideOf(msg, msg.mes) && !force) return;       // к этому тексту уже есть
+    if (recFresh(msg, 'ht_side', msg.mes) && !force) return;       // к этому тексту уже есть
     const phase = phaseOf(state);
     const needs = sideNeeds(state, phase);
     for (const k of extra) needs.add(k);
@@ -2397,7 +2426,7 @@ async function runSide(N, needs) {
     cancelSide();
     const ctl = new AbortController();
     const hash = coreHash(chat[N].mes);
-    const me = { N, hash, ctl };
+    const me = { N, hash, swipe: swOf(chat[N]), ctl };
     side = me;
     sideErr = null;
     scheduleRenderAll();
@@ -2423,6 +2452,8 @@ async function runSide(N, needs) {
         const depth = Math.max(sideDepth(), needs.has('census') ? CENSUS_DEPTH : 0, needs.has('dateplan') ? 20 : 0);
         const src = await gatherSources(N, depth, newFrom, needs.has('dateplan') ? 3600 : undefined, needs.has('ready') ? 2500 : undefined);
         const occ = (ctx.tracked || []).map(h => h.id);
+        const ph = ctx.phase;
+        const dayKey = ph.kind === 'today' && ph.h && ['day', 'replan', 'plancheck'].some(k => needs.has(k)) ? `${ph.h.id}#${ph.dayIndex}` : null;
         const messages = buildSideMessages(ctx, needs, src);
         console.debug('[Hearthtide] отдельный запрос →', [...needs].join(', '), messages);
         let text = await sendSide(apiProfile(), messages, ctl.signal);
@@ -2452,15 +2483,16 @@ async function runSide(N, needs) {
             } else console.info('[Hearthtide] свидание: помощник не прислал план — основная модель придумает сама');
         }
         const msg = chat[N];
-        // текст ответа уже другой (свайп, правка) или ушли дальше — ответ помощника не к месту
-        if (!msg || coreHash(msg.mes) !== hash || N !== lastProcessedMsg()) {
-            console.info(`[Hearthtide] ответ помощника отброшен: ${!msg ? 'сообщения нет' : coreHash(msg.mes) !== hash ? 'текст ответа изменился' : 'чат ушёл дальше'}`);
+        // другой свайп или чат ушёл дальше — ответ помощника не к месту; правка текста другим расширением — не помеха
+        if (!sameReply(N, me.swipe)) {
+            console.info(`[Hearthtide] ответ помощника отброшен: ${!msg ? 'сообщения нет' : swOf(msg) !== me.swipe ? 'другой свайп' : 'чат ушёл дальше'}`);
             return;
         }
+        if (coreHash(msg.mes) !== hash) console.info('[Hearthtide] текст ответа поправило другое расширение — ответ помощника всё равно принят');
         console.debug(`[Hearthtide] ответ за ${((Date.now() - t0) / 1000).toFixed(1)} с:\n${text}`);
         msg.extra = msg.extra || {};
         const map = msg.extra.ht_side || {};
-        map[hash] = { text, asked: [...needs], occ };
+        map[coreHash(msg.mes)] = { text, asked: [...needs], occ, dayKey, swipe: me.swipe, len: coreText(msg.mes).length };
         // храним для нескольких свайпов, не больше
         const keys = Object.keys(map);
         if (keys.length > 4) delete map[keys[0]];
@@ -3626,8 +3658,9 @@ function bodyHtml(view, live, tab = 'now') {
     const peopleSec = section('people', 'fa-users', L().people, groups + standout);
     // Другие праздники, к которым уже готовятся: у каждого свой журнал и свои подарки
     const whenIn = (d) => (d <= 0 ? L().offerToday : d === 1 ? L().tomorrow : L().inDays(daysWord(d)));
+    // крестик у карточки — убрать сам повод (встречу, приглашение, повод из истории), а не только пункт журнала
     const alsoRows = (view.also || []).map(x => `<div class="ht-also">
-            <div class="ht-also-head"><i class="fa-solid ${TYPE_ICON[x.type] || 'fa-star'}"></i><b>${esc(x.name)}</b><em>${esc(whenIn(x.daysTo))}</em></div>
+            <div class="ht-also-head"><i class="fa-solid ${TYPE_ICON[x.type] || 'fa-star'}"></i><b>${esc(x.name)}</b><em>${esc(whenIn(x.daysTo))}</em>${delBtn(x.id)}</div>
             ${trackBody(x, live, 3)}</div>`).join('');
     const primary = view.kind === 'prep' || view.kind === 'today' || view.hCard;
     const alsoSec = section('also', 'fa-list-check', primary ? L().alsoAhead : L().prepAhead, alsoRows);
