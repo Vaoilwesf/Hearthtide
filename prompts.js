@@ -2,7 +2,7 @@
 // Весь инджект — на английском. Значения для инфоблока ИИ пишет на выбранном языке.
 
 import { isoOf, fromDayNum, easterJulian, easterGregorian } from './dates.js';
-import { hasGifts, charDue, isIntimate, openEvent, dateHoursLeft, giftJoint, charGiftOf, activeOccasions, occTier } from './calendar.js';
+import { hasGifts, charDue, isIntimate, openEvent, dateHoursLeft, giftJoint, charGiftOf, activeOccasions, occTier, preparingNow } from './calendar.js';
 import { openSteps, goalOpen, DATE_OPEN, DATE_MOMENTS } from './romance.js';
 import { ageOf, relLevel } from './cast.js';
 
@@ -47,7 +47,7 @@ function inviteLines(ctx) {
     }
     // принятые и ещё не наступившие — модель знает дату и что это впереди
     const cur = (phase.kind === 'prep' || phase.kind === 'today') ? phase.h?.id : null;
-    const ahead = (ctx.acceptedAhead || []).filter(h => h.id !== cur && h.start > today && !(ctx.tracked || []).some(t => t.id === h.id)).slice(0, 2);
+    const ahead = (ctx.acceptedAhead || []).filter(h => h.id !== cur && h.start > today && !preparingNow(state, h)).slice(0, 2);
     if (ahead.length) out.push(`Accepted invitations ahead: ${ahead.map(h => `${hName(h, ctx)} on ${isoOf(h.start)} (${inDays(h.start - today)})`).join('; ')} — they haven't happened yet; they come on their day.`);
     if (state.invDeclined?.turn >= (state.turn || 0) - 1) out.push(`${userName} declined the invitation to ${state.invDeclined.name} — ${state.invDeclined.host || 'the host'} takes it in their own way; don't push it.`);
     // обещали прийти и не пришли — обида живёт несколько ответов
@@ -145,11 +145,15 @@ export function buildStatePrompt(ctx) {
 
     const h = phase.h;
     const active = (phase.kind === 'prep' || phase.kind === 'today') && h;
-    if (phase.kind === 'far' && h && !(ctx.tracked || []).some(x => x.id === h.id)) {
+    if (phase.kind === 'far' && h && !preparingNow(state, h)) {
         lines.push(`Next: ${hName(h, ctx)} in ${phase.daysTo} days${h.meaning ? ` (${h.meaning})` : ''}. Not relevant yet — don't bring it up.`);
     }
     // другие праздники, к которым уже готовятся (принятое приглашение, повод из истории) — по строке, чтобы ни один не терялся
-    for (const x of (ctx.tracked || []).filter(x => x.id !== ((phase.kind === 'prep' || phase.kind === 'today') ? h?.id : null)).slice(0, 2)) {
+    // сегодня идёт ещё что-то, кроме главного, — одной строкой, в фоне
+    const todayOther = phase.kind === 'today' ? activeOccasions(state).filter(x => x.id !== h?.id) : [];
+    if (todayOther.length) lines.push(`Also today: ${todayOther.map(x => `${hName(x, ctx)}${x.days > 1 ? ` (day ${state.today - x.start + 1} of ${x.days})` : ''}`).join('; ')} — in the background of the main occasion.`);
+    // другие праздники, к которым уже правда готовятся (окно подготовки или история уже готовится) — по строке
+    for (const x of (ctx.tracked || []).filter(x => x.id !== (active ? h?.id : null) && preparingNow(state, x)).slice(0, 2)) {
         const noted = readyNoted(state, x, 2);
         const cg = charGiftOf(state, x.id);
         lines.push(`Also coming: ${hName(x, ctx)} — ${daysWord(x.start - state.today)}, on ${isoOf(x.start)}${x.npc || x.extra ? ' (invitation accepted)' : ''}${noted.length ? `; done so far: ${noted.join('; ')}` : ''}${cg?.text ? `; ${charName}'s gift: ${cg.text}${cg.done ? ' (given)' : ''}` : ''}. Getting ready may show in passing; the day itself hasn't come.`);

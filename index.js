@@ -13,7 +13,7 @@ import { dayPart, plural, parseDate, fromDayNum, isoOf, dayNum } from './dates.j
 import { slimSmallTag, parseReady, tidyValue, parseExtras, parseSmall, parseCalendar, parsePrep, parseDay, parseRecap, parsePeople, parseEvents, parseOffers, parseBeat, parseCast, parseDateBlock, parseDateUp, parseRecapParts, stripBlocks } from './tag.js';
 import { PAIR_DEFAULT, bondCap, dateKindFor, isFriendlyDate, newDate, startDate, applyDateUp, openSteps, goalOpen, doneCount, levelOf, toggleStep, finishDate, dateChanceInfo, migrateDate, DATE_MISS_HOURS, DATE_OPEN, DATE_SKIP_END, DATE_SKIP_HARD, DATE_CLOSE_TURNS, DATE_QUIET, goalNeed, paceAuto, stepKinds, MISS_PAIR } from './romance.js';
 import { CAST_GROUPS, KIN_GROUPS, ROM_KEYS, isKin, samePerson, findCast, castBanned, parseBday, bdayText, bdayIn, ageOf, relLevel, romLevel, clampRel, mergeCast, migrateCast, nameCandidates } from './cast.js';
-import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE_DEFAULT, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday, giftJoint, trackedOccasions, charGiftOf, activeOccasions, occTier } from './calendar.js';
+import { phaseOf, requestFor, mentionEvery, holidayId, allHolidays, banKeys, isBanned, namesMatch, passedThisYear, hasGifts, openEvent, offeredEvent, EVENT_CHANCE_DEFAULT, EVENT_COOLDOWN, OPEN_STATUSES, sideNeeds, sideDue, CENSUS_DEPTH, dateHoursLeft, npcBdKey, npcBdOn, npcHoliday, giftJoint, trackedOccasions, charGiftOf, activeOccasions, occTier, preparingNow } from './calendar.js';
 import { buildStatePrompt, buildTagPrompt, buildSideMessages, buildDateReview, buildDateSideMessages, buildDateRefillMessages, giftTarget, hName, readyNoted } from './prompts.js';
 import { inviteCandidates, bdKey, extraKey, mergeExtras, INVITE_TRIES, INVITE_COOL, INVITE_AHEAD } from './invites.js';
 import { listProfiles, gatherSources, loreFor, sendSide, reasonOf } from './side.js';
@@ -2147,11 +2147,15 @@ function viewSnapshot(phase) {
         prep: phase.kind === 'prep' && state.prep?.hid === phase.h?.id ? state.prep : null,
         ended: phase.ended ? { name: displayName(phase.ended), recap: state.recaps.find(r => r.hid === phase.ended.id)?.text || null } : null,
         // другие праздники, к которым уже готовятся, — своими карточками, чтобы второй не вытеснял первый
-        also: trackedOccasions(state).filter(x => x.id !== phase.h?.id).map(trackCard),
+        // «Тоже готовятся» — только то, к чему правда готовятся; идущее сегодня — отдельной строкой «Сегодня также»
+        also: trackedOccasions(state).filter(x => x.id !== phase.h?.id && preparingNow(state, x)).map(trackCard),
+        todayAlso: activeOccasions(state).filter(x => x.id !== phase.h?.id)
+            .map(x => ({ id: x.id, name: displayName(x), dayIndex: state.today - x.start + 1, days: x.days, type: x.birthday ? 'personal' : x.type, invited: !!(x.npc || x.extra) })),
         // праздник в шапке издали, но к нему уже готовятся (приглашение принято) — его подготовка прямо в главном разделе
-        hCard: phase.h && phase.kind !== 'prep' && phase.kind !== 'today' && trackedOccasions(state).some(x => x.id === phase.h.id) ? trackCard(phase.h) : null,
-        upcoming: (phase.upcoming || []).filter(x => (!phase.h || x.id !== phase.h.id) && !trackedOccasions(state).some(t => t.id === x.id)).slice(0, 4)
-            .map(x => ({ id: x.id, name: displayName(x), raw: x.name, iso: isoOf(x.start), type: x.type, meaning: x.meaning, daysTo: x.start - state.today, birthday: !!x.birthday, who: x.who, npc: !!x.npc })),
+        hCard: phase.h && phase.kind !== 'prep' && phase.kind !== 'today' && preparingNow(state, phase.h) ? trackCard(phase.h) : null,
+        // «Дальше» — всё остальное впереди, и принятые приглашения тоже (с пометкой), пока к ним не начали готовиться
+        upcoming: (phase.upcoming || []).filter(x => (!phase.h || x.id !== phase.h.id) && !preparingNow(state, x)).slice(0, 5)
+            .map(x => ({ id: x.id, name: displayName(x), raw: x.name, iso: isoOf(x.start), type: x.type, meaning: x.meaning, daysTo: x.start - state.today, birthday: !!x.birthday, who: x.who, npc: !!x.npc, invited: !!(x.npc || x.extra) })),
         recaps: state.recaps.slice(-3).reverse(),
         year: (state.yearLog?.items || []).map(i => ({
             id: i.id, name: i.npc ? i.name : i.birthday ? L().birthday(i.who === 'user' ? getUserName() : getCharName()) : i.name, raw: i.name, npc: !!i.npc, friendly: !!i.friendly,
@@ -3595,7 +3599,10 @@ function bodyHtml(view, live, tab = 'now') {
     if (h && ui.editing === h.id && live && main) main = main.replace('<div class="ht-sec-body">', `<div class="ht-sec-body">${editForm(h)}`);
     const upcoming = (view.upcoming || []).map(u => ui.editing === u.id && live ? editForm(u) : `
         <div class="ht-up"><i class="fa-solid ${TYPE_ICON[u.birthday ? 'personal' : u.type] || 'fa-star'}"></i>
-        <span>${esc(u.name)}</span><b>${u.daysTo === 1 ? L().tomorrow : L().inDays(daysWord(u.daysTo))}</b>${editBtn(u.id)}${delBtn(u.id)}</div>`).join('');
+        <span>${esc(u.name)}${u.invited ? ` <i class="fa-solid fa-envelope-open-text ht-up-inv" title="${esc(L().alsoInvited)}"></i>` : ''}</span><b>${u.daysTo === 1 ? L().tomorrow : L().inDays(daysWord(u.daysTo))}</b>${u.invited ? '' : editBtn(u.id)}${delBtn(u.id)}</div>`).join('');
+    // другие праздники и встречи, которые идут сегодня, — одной строкой, без «готовятся»
+    const todayAlso = (view.todayAlso || []).length ? `<div class="ht-today-also"><i class="fa-solid fa-calendar-day"></i><span>${esc(L().todayAlso)}:</span>${view.todayAlso.map(x =>
+        `<em class="ht-chip"><i class="fa-solid ${TYPE_ICON[x.type] || 'fa-star'}"></i>${esc(x.name)}${x.days > 1 ? ` · ${esc(L().dayOf(x.dayIndex, x.days))}` : ''}${live && x.invited ? delBtn(x.id) : ''}</em>`).join('')}</div>` : '';
 
     // Чей день рождения: портрет (своё фото из «Людей»), кем приходится обоим, сколько исполняется
     const bp = view.bdPerson;
@@ -3726,6 +3733,7 @@ function bodyHtml(view, live, tab = 'now') {
         ${tabs}
         ${planned}${plannedBd}
         ${npcCard}
+        ${todayAlso}
         ${view.kind === 'today' || bp ? (worldMini ? `<div class="ht-world-mini"><i class="fa-solid fa-location-dot"></i>${worldMini}</div>` : '') : (world ? `<div class="ht-world">${world}</div>` : '')}
         ${charCard}
         ${giftsCard}

@@ -1104,3 +1104,10 @@ dialog.ht-modal:not([open]) { display: none; }
 .ht-yr.ht-friendly:is(.ht-res-great, .ht-res-good) > i, .ht-yr.ht-friendly:is(.ht-res-great, .ht-res-good) > em { color: var(--ht-friend); }
 :is(.ht-ib) .ht-ready-del { margin-left: auto; flex: none; padding: 0 5px; border-radius: 5px; color: var(--ht-mute); opacity: 0.55; font-size: 0.85em; }
 :is(.ht-ib) .ht-ready-del:hover, :is(.ht-ib) .ht-ready-del:focus-visible { opacity: 1; color: var(--ht-fg); background: var(--ht-soft-2); }
+
+/* сегодня также — другие идущие сегодня праздники и встречи, одной строкой */
+.ht-today-also { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-bottom: 8px; font-size: 0.86em; color: var(--ht-mute); }
+.ht-today-also > i { color: var(--ht-acc); }
+.ht-today-also .ht-chip { margin-top: 0; color: var(--ht-fg); }
+.ht-today-also .ht-chip .ht-del { padding: 0 0 0 4px; font-size: 0.9em; }
+.ht-up-inv { color: var(--ht-acc); font-size: 0.8em; margin-left: 4px; }

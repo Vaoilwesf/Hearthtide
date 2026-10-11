@@ -209,6 +209,19 @@ export function trackedOccasions(state) {
     return out;
 }
 
+/**
+ * Что из отслеживаемого показывать как «готовятся»: у кого открыто окно подготовки или к кому история уже готовится
+ * (есть сделанное, подарок). Принятое приглашение через две недели без единого шага — это «Дальше», а не «готовятся».
+ * Идущее сегодня — тоже не «готовятся»: это «Сегодня также».
+ */
+export function preparingNow(state, h) {
+    const d = h.start - state.today;
+    if (d <= 0) return false;
+    if (d <= prepWindow(state, h)) return true;
+    const r = state.ready?.[h.id];
+    return !!(r?.sum || r?.log?.length || Object.keys(r?.gifts || {}).length || state.charGifts?.[h.id]?.text || state.userGift?.[h.id]?.text);
+}
+
 /** Подарок {{char}} к этому празднику (у каждого праздника — свой) */
 export const charGiftOf = (state, hid) => (hid ? state.charGifts?.[hid] || null : null);
 
